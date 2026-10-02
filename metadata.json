@@ -1,0 +1,6 @@
+{
+  "name": "Sam AI",
+  "description": "SAM AI - Assistant intelligent et traducteur multimodal",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

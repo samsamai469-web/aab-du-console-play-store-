@@ -1,0 +1,51 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="512dp"
+    android:height="512dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512">
+
+    <!-- Fond Général Noir Pur -->
+    <path
+        android:pathData="M 0,0 h 512 v 512 h -512 Z"
+        android:fillColor="#000000" />
+
+    <!-- Halo / Lueur externe bleue diffuse autour de la boîte -->
+    <path
+        android:pathData="M 176,92 h 160 c 56,0 96,40 96,96 v 160 c 0,56 -40,96 -96,96 h -160 c -56,0 -96,-40 -96,-96 v -160 c 0,-56 40,-96 96,-96 Z"
+        android:strokeWidth="10"
+        android:strokeColor="#183B82F6"
+        android:fillColor="#00000000" />
+
+    <path
+        android:pathData="M 176,94 h 160 c 54,0 94,40 94,94 v 160 c 0,54 -40,94 -94,94 h -160 c -54,0 -94,-40 -94,-94 v -160 c 0,-54 40,-94 94,-94 Z"
+        android:strokeWidth="4"
+        android:strokeColor="#403B82F6"
+        android:fillColor="#00000000" />
+
+    <!-- Fond Squircle Noir Profond / Nuit Bleutée (#080C16) -->
+    <path
+        android:pathData="M 176,96 h 160 c 52,0 92,40 92,92 v 160 c 0,52 -40,92 -92,92 h -160 c -52,0 -92,-40 -92,-92 v -160 c 0,-52 40,-92 92,-92 Z"
+        android:fillColor="#080C16" />
+
+    <!-- Bordure fine lueur néon bleue élégante -->
+    <path
+        android:pathData="M 176,96 h 160 c 52,0 92,40 92,92 v 160 c 0,52 -40,92 -92,92 h -160 c -52,0 -92,-40 -92,-92 v -160 c 0,-52 40,-92 92,-92 Z"
+        android:strokeWidth="2.5"
+        android:strokeColor="#604A90E2"
+        android:fillColor="#00000000" />
+
+    <!-- Reflet bleu néon sous la courbure inférieure droite du 'S' -->
+    <path
+        android:pathData="M 270,336 C 292,336 308,322 312,304 C 314,296 312,286 308,280 C 304,290 298,300 286,308 C 274,316 260,320 246,322 C 254,332 262,336 270,336 Z"
+        android:fillColor="#2979FF" />
+
+    <path
+        android:pathData="M 282,324 C 298,320 308,310 310,298 C 306,306 298,314 286,320 Z"
+        android:fillColor="#00E5FF" />
+
+    <!-- Corps Principal Blanc du 'S' - Typographie Moderne, Proportions Idéales & Orientation Originale -->
+    <path
+        android:pathData="M 305,226 L 278,226 C 278,212 268,204 256,204 C 242,204 233,212 233,224 C 233,237 243,245 258,251 L 273,257 C 295,266 310,282 310,304 C 310,329 288,346 256,346 C 220,346 198,324 198,296 L 226,296 C 226,312 238,324 256,324 C 272,324 282,314 282,302 C 282,288 271,280 254,273 L 240,267 C 218,258 205,244 205,224 C 205,198 227,180 256,180 C 288,180 305,200 305,226 Z"
+        android:fillColor="#FFFFFF" />
+
+</vector>

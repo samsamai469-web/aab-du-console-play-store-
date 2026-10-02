@@ -1,0 +1,47 @@
+[Script Info]
+Title: Le Ditanye en Moore
+ScriptType: v4.00+
+PlayResX: 720
+PlayResY: 1280
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Sub,DejaVu Sans,44,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,1,0,0,100,100,0,0,1,4,2,2,30,30,510,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:08.00,Sub,,0,0,0,,{\an2\pos(360,760)}burkĩmba pĩnd
+n kisga wõrbo
+la yãnde
+Dialogue: 0,0:00:08.00,0:00:12.00,Sub,,0,0,0,,{\an2\pos(360,760)}al yuum tusri
+Dialogue: 0,0:00:12.00,0:00:19.00,Sub,,0,0,0,,{\an2\pos(360,760)}B kisga fãadbã
+sën yi yuga
+hal yuum koabga
+Dialogue: 0,0:00:19.00,0:00:24.00,Sub,,0,0,0,,{\an2\pos(360,760)}n wa ne yembdo
+Dialogue: 0,0:00:24.00,0:00:30.00,Sub,,0,0,0,,{\an2\pos(360,760)}n tõdga sılem-wɛɛgã
+sën toeeme, n lebge
+Dialogue: 0,0:00:30.00,0:00:36.00,Sub,,0,0,0,,{\an2\pos(360,760)}yaoolme yembdo
+Dialogue: 0,0:00:36.00,0:00:48.00,Sub,,0,0,0,,{\an2\pos(360,760)}b kisga sılem-wɛɛgã
+yembdo ne tẽng-
+n-tɛɛndba fãa gilli
+Dialogue: 0,0:00:48.00,0:00:54.00,Sub,,0,0,0,,{\an2\pos(360,760)}wusgo bas raoodo,
+la kẽer me sıd
+zãgsame
+Dialogue: 0,0:00:54.00,0:01:02.00,Sub,,0,0,0,,{\an2\pos(360,760)}la pãn-kongrã,
+la tõogrã,
+la tuulga kaagre
+Dialogue: 0,0:01:02.00,0:01:08.00,Sub,,0,0,0,,{\an2\pos(360,760)}zũmã raagre kenga
+nin-buiida
+pelse
+Dialogue: 0,0:01:08.00,0:01:15.00,Sub,,0,0,0,,{\an2\pos(360,760)}la paasa raood
+n leb zẽk
+b burkĩndi
+Dialogue: 0,0:01:15.00,0:01:21.00,Sub,,0,0,0,,{\an2\pos(360,760)}la yʊng a ye tãa,
+a ye tãa
+Dialogue: 0,0:01:21.00,0:01:28.00,Sub,,0,0,0,,{\an2\pos(360,760)}kʊmba nin-buiidã
+vʊm kıbare
+Dialogue: 0,0:01:28.00,0:01:34.00,Sub,,0,0,0,,{\an2\pos(360,760)}la yʊng a ye tãa
+bal pʊgẽ waa
+Dialogue: 0,0:01:34.00,0:01:40.00,Sub,,0,0,0,,{\an2\pos(360,760)}tɩlgre sor pakame
+Dialogue: 0,0:01:40.00,0:01:47.00,Sub,,0,0,0,,{\an2\pos(360,760)}tɩ b rık n badsɩ
+vɩ-noogo !
