@@ -16,7 +16,7 @@ java {
 }
 
 android {
-  namespace = "com.anvil.samai"
+  namespace = "com.example"
   compileSdk = 36
 
   defaultConfig {
