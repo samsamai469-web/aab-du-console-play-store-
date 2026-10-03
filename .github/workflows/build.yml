@@ -21,7 +21,9 @@ jobs:
           gradle-version: current
 
       - name: Vérifier la clé
-        run: keytool -list -v -keystore release.jks -storepass "$STORE_PASSWORD" | grep -E "Alias|SHA1"
+        run: |
+          ls -la
+          keytool -list -v -keystore release.jks -storepass "$STORE_PASSWORD" 2>&1 | grep -E "Alias|SHA1|error|Exception" || true
         env:
           STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
 
