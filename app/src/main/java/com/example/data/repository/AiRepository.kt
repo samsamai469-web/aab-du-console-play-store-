@@ -89,7 +89,7 @@ class AiRepository(
 
         try {
             val model = GenerativeModel(
-                modelName = "gemini-2.5-flash",
+                modelName = "gemini-3.5-flash-lite",
                 apiKey = apiKey
             )
 
@@ -148,25 +148,25 @@ class AiRepository(
         if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
             return@withContext ""
         }
-        try {
-            val model = GenerativeModel(
-                modelName = "gemini-2.5-flash",
-                apiKey = apiKey
-            )
-            val systemInstruction = com.example.data.engine.MultilingualTranslationEngine.buildSystemInstructionForPair(srcLang, tgtLang, localContext)
-            val prompt = "$systemInstruction\n\nTexte à traduire : \"$srcText\"\nTraduction directe en $tgtLang :"
+        val systemInstruction = com.example.data.engine.MultilingualTranslationEngine.buildSystemInstructionForPair(srcLang, tgtLang, localContext)
+        val prompt = "$systemInstruction\n\nTexte à traduire : \"$srcText\"\nTraduction directe en $tgtLang :"
 
-            val response = model.generateContent(prompt)
-            val result = response.text?.trim()?.removeSurrounding("\"")?.removeSurrounding("'")?.trim() ?: ""
-            // Si l'IA a juste recopié la phrase source alors que les langues sont différentes, on l'ignore
-            if (result.isNotBlank() && !result.equals(srcText.trim(), ignoreCase = true)) {
-                result
-            } else {
-                ""
+        for (candidateModel in listOf("gemini-3.5-flash-lite", "gemini-flash-latest", "gemini-3.5-flash")) {
+            try {
+                val model = GenerativeModel(
+                    modelName = candidateModel,
+                    apiKey = apiKey
+                )
+                val response = model.generateContent(prompt)
+                val result = response.text?.trim()?.removeSurrounding("\"")?.removeSurrounding("'")?.trim() ?: ""
+                if (result.isNotBlank() && !result.equals(srcText.trim(), ignoreCase = true)) {
+                    return@withContext result
+                }
+            } catch (_: Throwable) {
+                // Essayer le modèle suivant
             }
-        } catch (_: Throwable) {
-            ""
         }
+        ""
     }
 
     suspend fun translateImage(
@@ -180,7 +180,7 @@ class AiRepository(
         }
         try {
             val model = GenerativeModel(
-                modelName = "gemini-2.5-flash",
+                modelName = "gemini-3.5-flash-lite",
                 apiKey = apiKey
             )
             val inputContent = content {
@@ -213,7 +213,7 @@ class AiRepository(
             val bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
 
             val model = GenerativeModel(
-                modelName = "gemini-2.5-flash",
+                modelName = "gemini-3.5-flash-lite",
                 apiKey = key
             )
             val inputContent = content {
@@ -247,7 +247,7 @@ class AiRepository(
         }
         try {
             val model = GenerativeModel(
-                modelName = "gemini-2.5-flash",
+                modelName = "gemini-3.5-flash-lite",
                 apiKey = apiKey
             )
             val fullPrompt = if (systemPrompt.isNotBlank()) "$systemPrompt\n\n$prompt" else prompt
@@ -276,7 +276,7 @@ class AiRepository(
         }
         try {
             val model = GenerativeModel(
-                modelName = "gemini-2.5-flash",
+                modelName = "gemini-3.5-flash-lite",
                 apiKey = key
             )
             val historyPrompt = messages.joinToString("\n") { "${it.role}: ${it.content}" }

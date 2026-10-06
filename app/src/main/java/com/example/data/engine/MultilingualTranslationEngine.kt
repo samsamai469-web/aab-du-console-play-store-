@@ -415,7 +415,7 @@ object MultilingualTranslationEngine {
             val srcStripped = DictionaryLookupEngine.stripPunctuation(srcValue).lowercase()
             val normSrc = DictionaryLookupEngine.normalizeHausaSpecialChars(srcStripped).replace("'", "").replace(" ", "")
 
-            if (srcValue.equals(clean, ignoreCase = true) || srcStripped == stripped || normSrc == normClean) {
+            if (srcValue.equals(clean, ignoreCase = true) || (stripped.isNotBlank() && srcStripped == stripped) || (normClean.length >= 3 && normSrc == normClean)) {
                 val tgtKey = entry.keys.find { it.equals(targetLang, ignoreCase = true) }
                 if (tgtKey != null) {
                     val tgtVal = entry[tgtKey]

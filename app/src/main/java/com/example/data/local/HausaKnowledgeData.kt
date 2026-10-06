@@ -1,0 +1,127 @@
+package com.example.data.local
+
+object HausaKnowledgeData {
+    data class HausaEntry(
+        val french: String,
+        val hausa: String,
+        val pronunciation: String = "",
+        val category: String = "Général",
+        val variants: String = ""
+    )
+
+    val FULL_HAUSA_DICTIONARY: List<HausaEntry> = listOf(
+        // Salutations & Formules de politesse
+        HausaEntry("Bonjour", "Ina kwana", pronunciation = "I-na kwa-na", category = "Salutation", variants = "Barka da asuba"),
+        HausaEntry("Bonjour (matin)", "Ina kwana", pronunciation = "I-na kwa-na", category = "Salutation"),
+        HausaEntry("Bonjour (journée)", "Ina wuni", pronunciation = "I-na wou-ni", category = "Salutation", variants = "Barka da rana"),
+        HausaEntry("Bonsoir", "Ina wuni", pronunciation = "I-na wou-ni", category = "Salutation", variants = "Barka da yamma"),
+        HausaEntry("Bonne nuit", "Mu kwana lafiya", pronunciation = "Mou kwa-na la-fi-ya", category = "Salutation"),
+        HausaEntry("Bonne journée", "Barka da yini", pronunciation = "Bar-ka da yi-ni", category = "Salutation"),
+        HausaEntry("Bienvenue", "Barka da zuwa", pronunciation = "Bar-ka da zou-wa", category = "Salutation"),
+        HausaEntry("Bonne arrivée", "Barka da zuwa", pronunciation = "Bar-ka da zou-wa", category = "Salutation"),
+        HausaEntry("Comment ça va ?", "Yaya dai ?", pronunciation = "Ya-ya daï", category = "Salutation", variants = "Ina labari ?"),
+        HausaEntry("Ça va bien", "Lafiya lau", pronunciation = "La-fi-ya laou", category = "Salutation", variants = "Lahiya lau"),
+        HausaEntry("Tout va bien", "Babu matsala", pronunciation = "Ba-bou mat-sa-la", category = "Salutation"),
+        HausaEntry("Merci", "Nagode", pronunciation = "Na-go-dé", category = "Politesse"),
+        HausaEntry("Merci beaucoup", "Nagode sosai", pronunciation = "Na-go-dé so-saï", category = "Politesse", variants = "Nagode kwarai"),
+        HausaEntry("S'il vous plaît", "Don Allah", pronunciation = "Don Al-lah", category = "Politesse"),
+        HausaEntry("S'il te plaît", "Don Allah", pronunciation = "Don Al-lah", category = "Politesse"),
+        HausaEntry("Pardon", "Gafara", pronunciation = "Ga-fa-ra", category = "Politesse", variants = "Yi haƙuri"),
+        HausaEntry("Excusez-moi", "Gafara dai", pronunciation = "Ga-fa-ra daï", category = "Politesse"),
+        HausaEntry("Au revoir", "Sai an jima", pronunciation = "Saï an dji-ma", category = "Salutation"),
+        HausaEntry("À demain", "Sai gobe", pronunciation = "Saï go-bé", category = "Salutation"),
+        HausaEntry("À plus tard", "Sai an jima", pronunciation = "Saï an dji-ma", category = "Salutation"),
+        HausaEntry("Bon voyage", "Sauka lafiya", pronunciation = "Saou-ka la-fi-ya", category = "Salutation"),
+        HausaEntry("Oui", "I", pronunciation = "I", category = "Général", variants = "Eh"),
+        HausaEntry("Non", "A'a", pronunciation = "A-a", category = "Général"),
+
+        // Besoins & Quotidien
+        HausaEntry("Eau", "Ruwa", pronunciation = "Rou-wa", category = "Aliments"),
+        HausaEntry("Donne-moi de l'eau", "Ba ni ruwa", pronunciation = "Ba ni rou-wa", category = "Quotidien"),
+        HausaEntry("Manger", "Ci", pronunciation = "Tchi", category = "Actions"),
+        HausaEntry("Boire", "Sha", pronunciation = "Cha", category = "Actions"),
+        HausaEntry("Nourriture", "Abinci", pronunciation = "A-bin-tchi", category = "Aliments"),
+        HausaEntry("Riz", "Shinkafa", pronunciation = "Chin-ka-fa", category = "Aliments"),
+        HausaEntry("Pain", "Burodi", pronunciation = "Bou-ro-di", category = "Aliments"),
+        HausaEntry("Viande", "Nama", pronunciation = "Na-ma", category = "Aliments"),
+        HausaEntry("Poisson", "Kifi", pronunciation = "Ki-fi", category = "Aliments"),
+        HausaEntry("Lait", "Madara", pronunciation = "Ma-da-ra", category = "Aliments"),
+        HausaEntry("Sucre", "Sukari", pronunciation = "Sou-ka-ri", category = "Aliments"),
+        HausaEntry("Thé", "Shayi", pronunciation = "Cha-yi", category = "Aliments"),
+        HausaEntry("Café", "Kofi", pronunciation = "Ko-fi", category = "Aliments"),
+        HausaEntry("Sel", "Gishiri", pronunciation = "Gi-chi-ri", category = "Aliments"),
+        HausaEntry("J'ai faim", "Ina jin yunwa", pronunciation = "I-na djin youn-wa", category = "Santé"),
+        HausaEntry("J'ai soif", "Ina jin ƙishirwa", pronunciation = "I-na djin ki-chir-wa", category = "Santé"),
+        HausaEntry("Je suis fatigué", "Na gaji", pronunciation = "Na ga-dji", category = "Santé"),
+        HausaEntry("Je veux dormir", "Ina son barci", pronunciation = "I-na son bar-tchi", category = "Quotidien"),
+
+        // Commerce & Argent
+        HausaEntry("Argent", "Kuɗi", pronunciation = "Kou-di", category = "Commerce"),
+        HausaEntry("L'argent", "Kuɗin", pronunciation = "Kou-din", category = "Commerce"),
+        HausaEntry("Marché", "Kasuwa", pronunciation = "Ka-sou-wa", category = "Commerce"),
+        HausaEntry("Boutique", "Kanti", pronunciation = "Kan-ti", category = "Commerce"),
+        HausaEntry("Combien ça coûte ?", "Nawa ne ?", pronunciation = "Na-wa né", category = "Commerce"),
+        HausaEntry("Combien", "Nawa", pronunciation = "Na-wa", category = "Commerce"),
+        HausaEntry("C'est cher", "Yana da tsada", pronunciation = "Ya-na da tsa-da", category = "Commerce"),
+        HausaEntry("Diminue un peu", "Rage mani", pronunciation = "Ra-gué ma-ni", category = "Commerce", variants = "Rage kaɗan"),
+        HausaEntry("Acheter", "Saya", pronunciation = "Sa-ya", category = "Commerce"),
+        HausaEntry("Vendre", "Sayar", pronunciation = "Sa-yar", category = "Commerce"),
+
+        // Famille & Personnes
+        HausaEntry("Homme", "Namiji", pronunciation = "Na-mi-dji", category = "Famille"),
+        HausaEntry("Femme", "Mace", pronunciation = "Ma-tsé", category = "Famille"),
+        HausaEntry("Enfant", "Yaro", pronunciation = "Ya-ro", category = "Famille"),
+        HausaEntry("Garçon", "Yaro", pronunciation = "Ya-ro", category = "Famille"),
+        HausaEntry("Fille", "Yarinya", pronunciation = "Ya-rin-ya", category = "Famille"),
+        HausaEntry("Père", "Uba", pronunciation = "Ou-ba", category = "Famille"),
+        HausaEntry("Mère", "Uwa", pronunciation = "Ou-wa", category = "Famille"),
+        HausaEntry("Frère", "Ɗan'uwa", pronunciation = "Dan-ou-wa", category = "Famille"),
+        HausaEntry("Sœur", "Ƴar'uwa", pronunciation = "Yar-ou-wa", category = "Famille"),
+        HausaEntry("Ami", "Aboki", pronunciation = "A-bo-ki", category = "Famille"),
+        HausaEntry("Amie", "Abokiya", pronunciation = "A-bo-ki-ya", category = "Famille"),
+        HausaEntry("Famille", "Iyali", pronunciation = "I-ya-li", category = "Famille"),
+
+        // Habitation & Lieux
+        HausaEntry("Maison", "Gida", pronunciation = "Gui-da", category = "Habitation"),
+        HausaEntry("Chambre", "Ɗaki", pronunciation = "Da-ki", category = "Habitation"),
+        HausaEntry("Porte", "Ƙofa", pronunciation = "Ko-fa", category = "Habitation"),
+        HausaEntry("Fenêtre", "Taga", pronunciation = "Ta-ga", category = "Habitation"),
+        HausaEntry("Lit", "Gado", pronunciation = "Ga-do", category = "Habitation"),
+        HausaEntry("Je vais à la maison", "Ina tafiya gida", pronunciation = "I-na ta-fi-ya gui-da", category = "Habitation"),
+        HausaEntry("Je vais au marché", "Ina tafiya kasuwa", pronunciation = "I-na ta-fi-ya ka-sou-wa", category = "Habitation"),
+        HausaEntry("École", "Makaranta", pronunciation = "Ma-ka-ran-ta", category = "Lieux"),
+        HausaEntry("Hôpital", "Asibiti", pronunciation = "A-si-bi-ti", category = "Santé"),
+        HausaEntry("Village", "Ƙauye", pronunciation = "Kaou-yé", category = "Lieux"),
+        HausaEntry("Ville", "Birni", pronunciation = "Bir-ni", category = "Lieux"),
+        HausaEntry("Route", "Hanya", pronunciation = "Han-ya", category = "Transport"),
+        HausaEntry("Voiture", "Mota", pronunciation = "Mo-ta", category = "Transport"),
+        HausaEntry("Vélo", "Keke", pronunciation = "Ké-ké", category = "Transport"),
+        HausaEntry("Moto", "Babuɗa", pronunciation = "Ba-bou-da", category = "Transport"),
+
+        // Communication & Sentiments
+        HausaEntry("Je t'aime", "Ina sonka", pronunciation = "I-na son-ka", category = "Culture", variants = "Ina sonki"),
+        HausaEntry("Je comprends", "Na gane", pronunciation = "Na ga-né", category = "Actions"),
+        HausaEntry("Je ne comprends pas", "Ban gane ba", pronunciation = "Ban ga-né ba", category = "Actions"),
+        HausaEntry("Je veux", "Ina so", pronunciation = "I-na so", category = "Actions"),
+        HausaEntry("Je ne veux pas", "Ba na so", pronunciation = "Ba na so", category = "Actions"),
+        HausaEntry("Parle lentement", "Yi magana a hankali", pronunciation = "Yi ma-ga-na a han-ka-li", category = "Actions"),
+        HausaEntry("Aide-moi", "Taimaka mani", pronunciation = "Taï-ma-ka ma-ni", category = "Actions"),
+        HausaEntry("Comment tu t'appelles ?", "Yaya sunanka ?", pronunciation = "Ya-ya sou-nan-ka", category = "Salutation"),
+        HausaEntry("Je m'appelle", "Sunana", pronunciation = "Sou-na-na", category = "Salutation"),
+        HausaEntry("D'où viens-tu ?", "Daga ina kake ?", pronunciation = "Da-ga i-na ka-ké", category = "Salutation"),
+        HausaEntry("Où vas-tu ?", "Ina zaka ?", pronunciation = "I-na za-ka", category = "Salutation"),
+
+        // Culture & Croyances
+        HausaEntry("Dieu", "Allah", pronunciation = "Al-lah", category = "Culture"),
+        HausaEntry("Dieu est grand", "Allahu akbar", pronunciation = "Al-la-hou ak-bar", category = "Culture"),
+        HausaEntry("Que Dieu te bénisse", "Allah ya yi maka albarka", pronunciation = "Al-lah ya yi ma-ka al-bar-ka", category = "Culture"),
+        HausaEntry("Si Dieu le veut", "In sha Allahu", pronunciation = "In cha Al-la-hou", category = "Culture"),
+        HausaEntry("Paix", "Lafiya", pronunciation = "La-fi-ya", category = "Culture"),
+        HausaEntry("Santé", "Lafiya", pronunciation = "La-fi-ya", category = "Santé"),
+        HausaEntry("Soleil", "Rana", pronunciation = "Ra-na", category = "Nature"),
+        HausaEntry("Lune", "Wata", pronunciation = "Wa-ta", category = "Nature"),
+        HausaEntry("Nuit", "Dare", pronunciation = "Da-ré", category = "Nature"),
+        HausaEntry("Jour", "Rana", pronunciation = "Ra-na", category = "Nature"),
+        HausaEntry("Pluie", "Ruwan sama", pronunciation = "Rou-wan sa-ma", category = "Nature")
+    )
+}

@@ -924,7 +924,17 @@ fun TranslationScreen(
                 }
             } else {
                 // Lexicon / Dictionary Tab
-                DictionaryView(allKnowledge = allKnowledge, ttsManager = ttsManager)
+                DictionaryView(
+                    allKnowledge = allKnowledge,
+                    ttsManager = ttsManager,
+                    onSelectWordForTranslation = { word, srcLang, tgtLang ->
+                        selectedTab = 0
+                        viewModel.setSourceLanguage(srcLang)
+                        viewModel.setTargetLanguage(tgtLang)
+                        viewModel.setSourceText(word)
+                        viewModel.translate(srcLang, tgtLang, word)
+                    }
+                )
             }
         }
 
@@ -1092,21 +1102,53 @@ fun LanguageDropdown(
 @Composable
 fun DictionaryView(
     allKnowledge: List<LinguisticKnowledge>,
-    ttsManager: TtsManager
+    ttsManager: TtsManager,
+    onSelectWordForTranslation: (word: String, srcLang: String, tgtLang: String) -> Unit = { _, _, _ -> }
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    var selectedLanguageFilter by remember { mutableStateOf("Toutes") }
     var selectedCategory by remember { mutableStateOf("Tous") }
 
-    val categories = listOf("Tous", "Salutation", "Politesse", "Commerce", "Santé", "Action", "Quotidien", "Culture")
+    val languages = listOf("Toutes", "Mooré", "Dioula", "Haoussa")
+    val categories = listOf("Tous", "Salutations", "Expressions", "Nourriture", "Transport", "Personnes", "Commerce", "Santé", "Action")
 
-    val filteredKnowledge = remember(searchQuery, selectedCategory, allKnowledge) {
-        allKnowledge.filter { entry ->
+    // Fusion intelligente du lexique certifié hors-ligne (2500+ entrées immédiates) avec les données SQLite
+    val unifiedEntries = remember(allKnowledge) {
+        val baseList = com.example.data.engine.DictionaryLookupEngine.unifiedDictionaryList
+        if (allKnowledge.isEmpty()) {
+            baseList
+        } else {
+            val dbConverted = allKnowledge.mapIndexed { idx, k ->
+                com.example.data.engine.UnifiedDictionaryEntry(
+                    id = "db_${k.id}_$idx",
+                    word = k.word,
+                    french = k.translation,
+                    language = k.language,
+                    category = k.category.ifBlank { "Général" },
+                    pronunciation = k.pronunciation ?: "",
+                    variants = k.variants ?: ""
+                )
+            }
+            val existingKeys = baseList.map { "${it.word.lowercase().trim()}_${it.french.lowercase().trim()}" }.toSet()
+            baseList + dbConverted.filter { "${it.word.lowercase().trim()}_${it.french.lowercase().trim()}" !in existingKeys }
+        }
+    }
+
+    val filteredEntries = remember(searchQuery, selectedLanguageFilter, selectedCategory, unifiedEntries) {
+        unifiedEntries.filter { entry ->
             val matchesQuery = searchQuery.isBlank() ||
                     entry.word.contains(searchQuery, ignoreCase = true) ||
-                    entry.translation.contains(searchQuery, ignoreCase = true) ||
-                    entry.variants.contains(searchQuery, ignoreCase = true)
-            val matchesCategory = selectedCategory == "Tous" || entry.category.contains(selectedCategory, ignoreCase = true)
-            matchesQuery && matchesCategory
+                    entry.french.contains(searchQuery, ignoreCase = true) ||
+                    entry.variants.contains(searchQuery, ignoreCase = true) ||
+                    entry.pronunciation.contains(searchQuery, ignoreCase = true)
+            
+            val matchesLang = selectedLanguageFilter == "Toutes" ||
+                    entry.language.equals(selectedLanguageFilter, ignoreCase = true)
+            
+            val matchesCategory = selectedCategory == "Tous" ||
+                    entry.category.contains(selectedCategory, ignoreCase = true)
+            
+            matchesQuery && matchesLang && matchesCategory
         }
     }
 
@@ -1115,11 +1157,12 @@ fun DictionaryView(
             .fillMaxSize()
             .padding(16.dp)
     ) {
+        // Barre de recherche
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
             modifier = Modifier.fillMaxWidth(),
-            placeholder = { Text("Rechercher un mot (ex: Bonjour, Laafi, Wari, Ina kwana)...") },
+            placeholder = { Text("Rechercher en Français, Mooré, Dioula ou Haoussa...") },
             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
             trailingIcon = if (searchQuery.isNotEmpty()) {
                 { IconButton(onClick = { searchQuery = "" }) { Icon(Icons.Default.Clear, contentDescription = "Effacer") } }
@@ -1130,8 +1173,37 @@ fun DictionaryView(
 
         Spacer(modifier = Modifier.height(10.dp))
 
+        // Filtre par Langue
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(
+                text = "Langue :",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                items(languages) { lang ->
+                    FilterChip(
+                        selected = selectedLanguageFilter == lang,
+                        onClick = { selectedLanguageFilter = lang },
+                        label = { Text(lang) }
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(6.dp))
+
+        // Filtre par Catégorie
         LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
             items(categories) { category ->
@@ -1143,76 +1215,156 @@ fun DictionaryView(
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(10.dp))
 
-        Text(
-            text = "${filteredKnowledge.size} entrées trouvées",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "${filteredEntries.size} entrées disponibles",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.primary
+            )
+            if (searchQuery.isNotBlank() || selectedLanguageFilter != "Toutes" || selectedCategory != "Tous") {
+                TextButton(
+                    onClick = {
+                        searchQuery = ""
+                        selectedLanguageFilter = "Toutes"
+                        selectedCategory = "Tous"
+                    },
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text("Réinitialiser filtres", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        }
 
         Spacer(modifier = Modifier.height(8.dp))
 
         LazyColumn(
-            verticalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
             modifier = Modifier.fillMaxSize()
         ) {
-            items(filteredKnowledge) { item ->
+            items(filteredEntries, key = { it.id }) { item ->
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(16.dp),
                     color = MaterialTheme.colorScheme.surface,
                     border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(14.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(14.dp)
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = item.word,
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Surface(
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = MaterialTheme.colorScheme.primaryContainer
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
                                     Text(
-                                        text = item.language,
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        text = item.word,
+                                        style = MaterialTheme.typography.titleMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                    // Badge de langue avec couleur dédiée
+                                    val badgeColor = when (item.language.lowercase()) {
+                                        "mooré", "moore" -> Color(0xFF1B5E20)
+                                        "dioula" -> Color(0xFFE65100)
+                                        "haoussa", "hausa" -> Color(0xFF00695C)
+                                        else -> MaterialTheme.colorScheme.primary
+                                    }
+                                    Surface(
+                                        shape = RoundedCornerShape(6.dp),
+                                        color = badgeColor.copy(alpha = 0.15f)
+                                    ) {
+                                        Text(
+                                            text = item.language,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = badgeColor,
+                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        )
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(4.dp))
+
+                                Text(
+                                    text = "🇫🇷 ${item.french}",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Medium,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+
+                                if (item.pronunciation.isNotBlank() && item.pronunciation != item.word) {
+                                    Text(
+                                        text = "Prononciation : / ${item.pronunciation} /",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = item.translation,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            if (item.pronunciation.isNotBlank()) {
-                                Text(
-                                    text = "/ ${item.pronunciation} /",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+
+                            // Bouton d'écoute audio TTS
+                            IconButton(onClick = { ttsManager.speak(item.word, item.language) }) {
+                                Icon(
+                                    Icons.AutoMirrored.Filled.VolumeUp,
+                                    contentDescription = "Écouter la prononciation",
+                                    tint = MaterialTheme.colorScheme.primary
                                 )
                             }
                         }
 
-                        IconButton(onClick = { ttsManager.speak(item.word, item.language) }) {
-                            Icon(
-                                Icons.AutoMirrored.Filled.VolumeUp,
-                                contentDescription = "Écouter",
-                                tint = MaterialTheme.colorScheme.primary
-                            )
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        // Boutons d'action rapide : Traduire directement
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    onSelectWordForTranslation(item.word, item.language, "Français")
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Translate, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "${item.language} ➔ FR",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            FilledTonalButton(
+                                onClick = {
+                                    onSelectWordForTranslation(item.french, "Français", item.language)
+                                },
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.Translate, contentDescription = null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = "FR ➔ ${item.language}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
                         }
                     }
                 }

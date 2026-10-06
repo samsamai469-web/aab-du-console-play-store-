@@ -342,7 +342,7 @@ object SecurityUtils {
         val filtered = truncated.filter { ch ->
             ch == '\n' || ch == '\r' || ch == '\t' || !ch.isISOControl()
         }
-        return escapeHtml(filtered)
+        return filtered.replace("<", "&lt;").replace(">", "&gt;")
     }
 
     fun escapeHtml(text: String): String {
