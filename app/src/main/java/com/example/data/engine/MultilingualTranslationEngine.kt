@@ -388,7 +388,15 @@ object MultilingualTranslationEngine {
         // Que Dieu te bénisse
         mapOf("Français" to "Que Dieu te bénisse", "Dioula" to "Ala k'i duba", "Mooré" to "Wẽnd na ning barka", "Haoussa" to "Allah ya yi maka albarka", "Allemand" to "Gott segne dich", "Anglais" to "God bless you", "Arabe" to "بارك الله فيك", "Espagnol" to "Que Dios te bendiga"),
         // S'il plaît à Dieu / Si Dieu le veut
-        mapOf("Français" to "Si Dieu le veut", "Dioula" to "N'Ala soun na", "Mooré" to "Wẽnd sã n tũ", "Haoussa" to "In sha Allahu", "Allemand" to "So Gott will", "Anglais" to "God willing", "Arabe" to "إن شاء الله", "Espagnol" to "Si Dios quiere")
+        mapOf("Français" to "Si Dieu le veut", "Dioula" to "N'Ala soun na", "Mooré" to "Wẽnd sã n tũ", "Haoussa" to "In sha Allahu", "Allemand" to "So Gott will", "Anglais" to "God willing", "Arabe" to "إن شاء الله", "Espagnol" to "Si Dios quiere"),
+        // Salutations composées
+        mapOf("Français" to "Bonjour comment vas-tu ?", "Dioula" to "Ani sogoma, I kakene wa ?", "Mooré" to "Nii yi beogo, Fo laafi ?", "Haoussa" to "Ina kwana, Yaya dai ?", "Allemand" to "Guten Tag, Wie geht es dir?", "Anglais" to "Hello, How are you?"),
+        mapOf("Français" to "Bonjour, comment vas-tu ?", "Dioula" to "Ani sogoma, I kakene wa ?", "Mooré" to "Nii yi beogo, Fo laafi ?", "Haoussa" to "Ina kwana, Yaya dai ?", "Allemand" to "Guten Tag, Wie geht es dir?", "Anglais" to "Hello, How are you?"),
+        // Termes courants avec caractères spéciaux Haoussa
+        mapOf("Français" to "Chambre", "Dioula" to "So", "Mooré" to "Roogo", "Haoussa" to "Ɗaki", "Allemand" to "Zimmer", "Anglais" to "Room"),
+        mapOf("Français" to "Porte", "Dioula" to "Da", "Mooré" to "Noore", "Haoussa" to "Ƙofa", "Allemand" to "Tür", "Anglais" to "Door"),
+        mapOf("Français" to "Frère", "Dioula" to "Balimake", "Mooré" to "Ba-bi-raoogo", "Haoussa" to "Ɗan'uwa", "Allemand" to "Bruder", "Anglais" to "Brother"),
+        mapOf("Français" to "Sœur", "Dioula" to "Balimamuso", "Mooré" to "Ba-bi-põka", "Haoussa" to "Ƴar'uwa", "Allemand" to "Schwester", "Anglais" to "Sister")
     )
 
     fun tryDirectExpressionMatch(
@@ -396,21 +404,18 @@ object MultilingualTranslationEngine {
         sourceLang: String,
         targetLang: String
     ): String? {
-        // Priority 1: High-precision deterministic dictionary with typo tolerance & clause segmentation
-        val dictMatch = DictionaryLookupEngine.translateDirect(input, sourceLang, targetLang)
-        if (dictMatch != null && dictMatch.isNotBlank()) {
-            return dictMatch
-        }
-
         val clean = DictionaryLookupEngine.cleanWhitespace(input).lowercase()
         val stripped = DictionaryLookupEngine.stripPunctuation(clean)
+        val normClean = DictionaryLookupEngine.normalizeHausaSpecialChars(stripped).replace("'", "").replace(" ", "")
 
+        // 1. Première passe : Correspondance EXACTE prioritaire
         for (entry in DIRECT_CROSS_EXPRESSIONS) {
             val srcKey = entry.keys.find { it.equals(sourceLang, ignoreCase = true) } ?: continue
-            val srcValue = entry[srcKey]?.lowercase() ?: continue
-            val srcStripped = DictionaryLookupEngine.stripPunctuation(srcValue)
+            val srcValue = entry[srcKey] ?: continue
+            val srcStripped = DictionaryLookupEngine.stripPunctuation(srcValue).lowercase()
+            val normSrc = DictionaryLookupEngine.normalizeHausaSpecialChars(srcStripped).replace("'", "").replace(" ", "")
 
-            if (srcValue == clean || srcStripped == stripped || clean == srcValue.replace("?", "").trim() || clean.equals(srcValue, ignoreCase = true) || DictionaryLookupEngine.isFuzzyMatch(stripped, srcStripped)) {
+            if (srcValue.equals(clean, ignoreCase = true) || srcStripped == stripped || normSrc == normClean) {
                 val tgtKey = entry.keys.find { it.equals(targetLang, ignoreCase = true) }
                 if (tgtKey != null) {
                     val tgtVal = entry[tgtKey]
@@ -418,6 +423,28 @@ object MultilingualTranslationEngine {
                 }
             }
         }
+
+        // 2. Deuxième passe : Tolérance aux fautes de frappe (Fuzzy match) sur les expressions certifiées
+        for (entry in DIRECT_CROSS_EXPRESSIONS) {
+            val srcKey = entry.keys.find { it.equals(sourceLang, ignoreCase = true) } ?: continue
+            val srcValue = entry[srcKey] ?: continue
+            val srcStripped = DictionaryLookupEngine.stripPunctuation(srcValue)
+
+            if (DictionaryLookupEngine.isFuzzyMatch(stripped, srcStripped)) {
+                val tgtKey = entry.keys.find { it.equals(targetLang, ignoreCase = true) }
+                if (tgtKey != null) {
+                    val tgtVal = entry[tgtKey]
+                    if (tgtVal != null) return tgtVal
+                }
+            }
+        }
+
+        // 3. Troisième passe : Dictionnaire riche étendu
+        val dictMatch = DictionaryLookupEngine.translateDirect(input, sourceLang, targetLang)
+        if (dictMatch != null && dictMatch.isNotBlank()) {
+            return dictMatch
+        }
+
         return null
     }
 

@@ -62,7 +62,7 @@ object BurkinaDioulaVisualData {
             frenchTranslation = "Nourriture / Repas",
             category = "Nourriture",
             pronunciation = "Dou-mou-ni",
-            localDrawable = R.drawable.img_burkinabe_sagbo_1786953068024
+            localDrawable = R.drawable.img_burkinabe_eating_rice_1786881902148
         ),
         VisualDioulaItem(
             id = "dioula_5",
@@ -70,7 +70,7 @@ object BurkinaDioulaVisualData {
             frenchTranslation = "Eau",
             category = "Nourriture",
             pronunciation = "Dji",
-            localDrawable = R.drawable.img_laafi_bala_village_1786881210261
+            localDrawable = R.drawable.img_burkinabe_water_1786881881442
         ),
         VisualDioulaItem(
             id = "dioula_6",
@@ -78,7 +78,7 @@ object BurkinaDioulaVisualData {
             frenchTranslation = "Maison / Concession",
             category = "Famille",
             pronunciation = "So",
-            localDrawable = R.drawable.img_laafi_bala_village_1786881210261
+            localDrawable = R.drawable.img_burkinabe_house_1786881867414
         ),
         VisualDioulaItem(
             id = "dioula_7",
@@ -86,7 +86,7 @@ object BurkinaDioulaVisualData {
             frenchTranslation = "Marché",
             category = "Commerce",
             pronunciation = "Sou-gou",
-            localDrawable = R.drawable.img_home_banner_2_1786814297595
+            localDrawable = R.drawable.img_burkinabe_market_1786879084962
         ),
         VisualDioulaItem(
             id = "dioula_8",

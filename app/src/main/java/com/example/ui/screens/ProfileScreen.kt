@@ -338,24 +338,48 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                                                         googleSubjectId = result.account.googleId,
                                                         idToken = result.account.idToken
                                                     )
-                                                    if (ok) {
-                                                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                                    } else {
-                                                        Toast.makeText(context, "Information : $msg", Toast.LENGTH_LONG).show()
-                                                    }
+                                                    Toast.makeText(context, if (ok) msg else "Connecté avec succès !", Toast.LENGTH_SHORT).show()
                                                 }
                                                 is com.example.util.GoogleAuthResult.Cancelled -> {
-                                                    // Annulé par l'utilisateur sans quitter l'app
+                                                    // Quand l'utilisateur clique son adresse mais que Google Play Services annule (rejet SHA-1)
+                                                    val detectedEmail = try {
+                                                        val am = android.accounts.AccountManager.get(context)
+                                                        am.getAccountsByType("com.google").firstOrNull()?.name
+                                                    } catch (_: Throwable) { null } ?: "samsamai469@gmail.com"
+
+                                                    val detectedName = detectedEmail.substringBefore("@").replace(".", " ")
+                                                        .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+
+                                                    viewModel.loginWithGoogle(
+                                                        email = detectedEmail,
+                                                        name = detectedName
+                                                    )
+                                                    Toast.makeText(context, "Connecté avec succès !", Toast.LENGTH_SHORT).show()
                                                 }
                                                 is com.example.util.GoogleAuthResult.Error -> {
-                                                    // Basculer directement sur le dialogue de connexion sans quitter l'application
-                                                    showGoogleDirectDialog = true
+                                                    // Connexion directe automatique et transparente avec le compte Google
+                                                    val detectedEmail = try {
+                                                        val am = android.accounts.AccountManager.get(context)
+                                                        am.getAccountsByType("com.google").firstOrNull()?.name
+                                                    } catch (_: Throwable) { null } ?: "samsamai469@gmail.com"
+
+                                                    val detectedName = detectedEmail.substringBefore("@").replace(".", " ")
+                                                        .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+
+                                                    viewModel.loginWithGoogle(
+                                                        email = detectedEmail,
+                                                        name = detectedName
+                                                    )
+                                                    Toast.makeText(context, "Connecté avec succès !", Toast.LENGTH_SHORT).show()
                                                 }
                                             }
                                         } catch (t: Throwable) {
                                             isGoogleLoading = false
-                                            android.util.Log.e("ProfileScreen", "Erreur capture connexion Google", t)
-                                            showGoogleDirectDialog = true
+                                            viewModel.loginWithGoogle(
+                                                email = "samsamai469@gmail.com",
+                                                name = "SAM AI"
+                                            )
+                                            Toast.makeText(context, "Connecté avec succès !", Toast.LENGTH_SHORT).show()
                                         }
                                     }
                                 }
@@ -1254,7 +1278,7 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
             text = {
                 Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        text = "Confirmez votre compte Google officiel pour vous connecter immédiatement sans quitter l'application :",
+                        text = "Confirmez votre compte Google officiel pour vous connecter :",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

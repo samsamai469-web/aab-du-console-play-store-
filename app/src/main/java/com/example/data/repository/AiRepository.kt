@@ -153,16 +153,17 @@ class AiRepository(
                 modelName = "gemini-2.5-flash",
                 apiKey = apiKey
             )
-            val prompt = """
-                Tu es le traducteur expert SAM AI spécialisé en langues d'Afrique de l'Ouest (Mooré, Dioula, Français).
-                Traduis fidèlement le texte suivant de $srcLang vers $tgtLang.
-                Contexte lexical local : $localContext
-                Texte à traduire : "$srcText"
-                Donne UNIQUEMENT la traduction directe exacte sans commentaires superflus.
-            """.trimIndent()
+            val systemInstruction = com.example.data.engine.MultilingualTranslationEngine.buildSystemInstructionForPair(srcLang, tgtLang, localContext)
+            val prompt = "$systemInstruction\n\nTexte à traduire : \"$srcText\"\nTraduction directe en $tgtLang :"
 
             val response = model.generateContent(prompt)
-            response.text?.trim() ?: ""
+            val result = response.text?.trim()?.removeSurrounding("\"")?.removeSurrounding("'")?.trim() ?: ""
+            // Si l'IA a juste recopié la phrase source alors que les langues sont différentes, on l'ignore
+            if (result.isNotBlank() && !result.equals(srcText.trim(), ignoreCase = true)) {
+                result
+            } else {
+                ""
+            }
         } catch (_: Throwable) {
             ""
         }

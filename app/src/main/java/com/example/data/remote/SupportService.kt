@@ -63,6 +63,35 @@ object SupportService {
         }
     }
 
+    fun formatWhatsAppMessage(
+        userProfile: UserProfile?,
+        submission: SupportSubmission,
+        formattedDate: String = "",
+        appVersion: String = "1.0"
+    ): String {
+        val builder = StringBuilder()
+        builder.append("📩 *NOUVEAU MESSAGE SUPPORT SAM AI*\n")
+        builder.append("----------------------------\n")
+        if (formattedDate.isNotBlank()) {
+            builder.append("📅 *Date:* $formattedDate\n")
+        }
+        builder.append("📌 *Type:* ${submission.type.uppercase()}\n")
+        builder.append("🏷️ *Catégorie:* ${submission.category}\n")
+        builder.append("📝 *Sujet:* ${submission.subject}\n")
+        builder.append("💬 *Message:* \n${submission.message}\n")
+        builder.append("----------------------------\n")
+        if (userProfile != null) {
+            builder.append("👤 *Utilisateur:* ${userProfile.name} (${userProfile.email})\n")
+        } else if (submission.name.isNotBlank()) {
+            builder.append("👤 *Nom:* ${submission.name}\n")
+        }
+        if (submission.phoneNumber.isNotBlank()) {
+            builder.append("📞 *Téléphone:* ${submission.phoneNumber}\n")
+        }
+        builder.append("📱 *Version App:* $appVersion\n")
+        return builder.toString()
+    }
+
     suspend fun submitSupportRequest(
         context: Context,
         userProfile: UserProfile?,

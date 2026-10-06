@@ -50,7 +50,7 @@ object BurkinaVisualData {
             pronunciation = "Saam-ba",
             category = "Famille",
             frenchMeaning = "Famille / Parents",
-            localDrawable = R.drawable.img_laafi_bala_village_1786881210261,
+            localDrawable = R.drawable.img_burkinabe_family_1786879044801,
             contextInfo = "Famille burkinabè unie et chaleureuse."
         ),
         VisualMooreItem(
@@ -79,7 +79,7 @@ object BurkinaVisualData {
             pronunciation = "Koum",
             category = "Aliments",
             frenchMeaning = "Eau (Source de vie)",
-            localDrawable = R.drawable.img_laafi_bala_village_1786881210261,
+            localDrawable = R.drawable.img_burkinabe_water_1786881881442,
             contextInfo = "Eau fraîche et pure, première boisson offerte à chaque invité au Faso."
         ),
         VisualMooreItem(
@@ -88,7 +88,7 @@ object BurkinaVisualData {
             pronunciation = "Rii",
             category = "Aliments",
             frenchMeaning = "Manger / Repas",
-            localDrawable = R.drawable.img_burkinabe_sagbo_1786953068024,
+            localDrawable = R.drawable.img_burkinabe_eating_rice_1786881902148,
             contextInfo = "Personne burkinabè savourant un bon repas chaud."
         ),
         VisualMooreItem(
@@ -106,7 +106,7 @@ object BurkinaVisualData {
             pronunciation = "Man-ga",
             category = "Aliments",
             frenchMeaning = "Mangue",
-            localDrawable = R.drawable.img_home_banner_1_1786814284466,
+            localDrawable = R.drawable.img_burkinabe_mangoes_1786881791264,
             contextInfo = "Mangues fraîches et juteuses, fierté fruitière du Burkina Faso."
         ),
         VisualMooreItem(
@@ -115,7 +115,7 @@ object BurkinaVisualData {
             pronunciation = "Gonn-sé",
             category = "Nature",
             frenchMeaning = "Dormir / Se reposer",
-            localDrawable = R.drawable.img_laafi_bala_village_1786881210261,
+            localDrawable = R.drawable.img_burkinabe_sleeping_peace_1786881948233,
             contextInfo = "Moment de repos paisible et réparateur."
         ),
 
@@ -126,7 +126,7 @@ object BurkinaVisualData {
             pronunciation = "Ya-ar",
             category = "Commerce",
             frenchMeaning = "Marché",
-            localDrawable = R.drawable.img_home_banner_2_1786814297595,
+            localDrawable = R.drawable.img_burkinabe_market_1786879084962,
             contextInfo = "Le marché burkinabè vibrant avec ses étals colorés et conviviaux."
         ),
         VisualMooreItem(
@@ -135,7 +135,7 @@ object BurkinaVisualData {
             pronunciation = "Yi-ri",
             category = "Maison",
             frenchMeaning = "Maison / Concession",
-            localDrawable = R.drawable.img_laafi_bala_village_1786881210261,
+            localDrawable = R.drawable.img_burkinabe_house_1786881867414,
             contextInfo = "Maison traditionnelle en terre et concession familiale au Burkina Faso."
         ),
         VisualMooreItem(
@@ -204,7 +204,7 @@ object BurkinaVisualData {
             pronunciation = "Wé-fo",
             category = "Animaux",
             frenchMeaning = "Cheval (Étalon du Faso)",
-            localDrawable = R.drawable.img_burkinabe_donkey_1786881836280,
+            localDrawable = R.drawable.img_burkinabe_horse_weefo_1786881763857,
             contextInfo = "L'Étalon noble, symbole de courage et de fierté nationale du Burkina Faso."
         ),
         VisualMooreItem(
@@ -213,7 +213,7 @@ object BurkinaVisualData {
             pronunciation = "Bou-a",
             category = "Animaux",
             frenchMeaning = "Chèvre",
-            localDrawable = R.drawable.img_burkinabe_donkey_1786881836280,
+            localDrawable = R.drawable.img_burkinabe_goat_1786881820618,
             contextInfo = "Chèvre paisible dans la cour d'un village burkinabè."
         ),
         VisualMooreItem(
@@ -233,7 +233,7 @@ object BurkinaVisualData {
             pronunciation = "Kou-do",
             category = "Nature",
             frenchMeaning = "Champ de sorgho / Mil",
-            localDrawable = R.drawable.img_burkinabe_farmer_1786879067110,
+            localDrawable = R.drawable.img_burkinabe_sorghum_field_1786881963412,
             contextInfo = "Champ de sorgho et mil doré au cœur des terroirs du Burkina Faso."
         ),
 
@@ -244,7 +244,7 @@ object BurkinaVisualData {
             pronunciation = "Nii yi beo-go",
             category = "Salutations",
             frenchMeaning = "Bonjour (Salutation du matin)",
-            localDrawable = R.drawable.img_burkinabe_greeting_hands_1786881917214,
+            localDrawable = R.drawable.bonjour_1,
             contextInfo = "Salutation conviviale et respectueuse du matin au Burkina Faso."
         ),
         VisualMooreItem(
@@ -253,7 +253,7 @@ object BurkinaVisualData {
             pronunciation = "Nii za-bre",
             category = "Salutations",
             frenchMeaning = "Bonsoir (Salutation du soir)",
-            localDrawable = R.drawable.bonsoir_2,
+            localDrawable = R.drawable.bonsoir_1,
             contextInfo = "Salutation chaleureuse en fin de journée au coucher du soleil."
         )
     )
