@@ -56,6 +56,8 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="com.anvil.samai" android:host="auth" />
                 <data android:scheme="com.anvil.samai" android:host="oauth" />
+                <data android:scheme="com.abdoul.samai" android:host="auth" />
+                <data android:scheme="com.abdoul.samai" android:host="oauth" />
             </intent-filter>
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

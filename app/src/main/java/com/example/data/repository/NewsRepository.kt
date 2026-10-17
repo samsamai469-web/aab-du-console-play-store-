@@ -170,8 +170,9 @@ object NewsRepository {
         RssSource(
             name = "AIB",
             feedUrls = listOf(
-                "https://www.aib.media/feed/",
-                "https://aib.media/feed/"
+                "https://www.aib.media/?feed=rss2",
+                "https://www.aib.media/index.php?feed=rss2",
+                "https://www.aib.media/feed/"
             ),
             defaultCategory = "Burkina Faso",
             siteUrl = "https://www.aib.media"
@@ -179,8 +180,8 @@ object NewsRepository {
         RssSource(
             name = "AIB - Actualités",
             feedUrls = listOf(
-                "https://www.aib.media/category/actualites/feed/",
-                "https://aib.media/category/actualites/feed/"
+                "https://www.aib.media/?feed=rss2",
+                "https://www.aib.media/category/actualites/feed/"
             ),
             defaultCategory = "Burkina Faso",
             siteUrl = "https://www.aib.media"
@@ -188,8 +189,8 @@ object NewsRepository {
         RssSource(
             name = "AIB - Régions & Société",
             feedUrls = listOf(
-                "https://www.aib.media/category/societe/feed/",
-                "https://www.aib.media/category/regions/feed/"
+                "https://www.aib.media/?feed=rss2",
+                "https://www.aib.media/category/societe/feed/"
             ),
             defaultCategory = "Société",
             siteUrl = "https://www.aib.media"
@@ -197,6 +198,7 @@ object NewsRepository {
         RssSource(
             name = "AIB - Économie",
             feedUrls = listOf(
+                "https://www.aib.media/?feed=rss2",
                 "https://www.aib.media/category/economie/feed/"
             ),
             defaultCategory = "Économie",
@@ -205,8 +207,8 @@ object NewsRepository {
         RssSource(
             name = "AIB - Culture & Sport",
             feedUrls = listOf(
-                "https://www.aib.media/category/culture/feed/",
-                "https://www.aib.media/category/sport/feed/"
+                "https://www.aib.media/?feed=rss2",
+                "https://www.aib.media/category/culture/feed/"
             ),
             defaultCategory = "Culture & Arts",
             siteUrl = "https://www.aib.media"
@@ -391,13 +393,6 @@ object NewsRepository {
         val finalArticles = allFetched
             .filter { it.timestamp >= cutoffRetention }
             .distinctBy { normalizeTitle(it.title) }
-            .map { article ->
-                if (article.imageUrl.isBlank()) {
-                    article.copy(imageUrl = getDefaultCoverImageFor(article.category, article.source, article.title))
-                } else {
-                    article
-                }
-            }
             .sortedByDescending { it.timestamp }
 
         val activeArticles = if (finalArticles.isNotEmpty()) {
@@ -483,7 +478,7 @@ object NewsRepository {
                                 if (parsedTimestamp >= cutoffRetention) {
                                     val isRtb = pageName.contains("RTB", ignoreCase = true)
                                     val category = if (isRtb) "Burkina Faso" else "AIB Direct"
-                                    val finalImg = if (fullPicture.isNotBlank()) fullPicture else getDefaultCoverImageFor(category, sourceLabel, title)
+                                    val finalImg = fullPicture.trim()
 
                                     articles.add(
                                         NewsArticle(
@@ -629,6 +624,8 @@ object NewsRepository {
     private fun fetchFromRtbRestApi(): List<NewsArticle> {
         val articles = mutableListOf<NewsArticle>()
         val endpoints = listOf(
+            "https://www.rtb.bf/index.php?rest_route=/wp/v2/posts&_embed=true&per_page=50",
+            "https://rtb.bf/index.php?rest_route=/wp/v2/posts&_embed=true&per_page=50",
             "https://www.rtb.bf/wp-json/wp/v2/posts?_embed&per_page=50",
             "https://rtb.bf/wp-json/wp/v2/posts?_embed&per_page=50"
         )
@@ -638,8 +635,8 @@ object NewsRepository {
             try {
                 val url = URL(endpoint)
                 connection = (url.openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 6000
-                    readTimeout = 6000
+                    connectTimeout = 7000
+                    readTimeout = 7000
                     instanceFollowRedirects = true
                     requestMethod = "GET"
                     setRequestProperty(
@@ -689,14 +686,32 @@ object NewsRepository {
                             summary = summary.take(217) + "..."
                         }
 
-                        // Image officielle RTB ou extrait d'image
+                        // VRAIE image officielle de la publication du site
                         var imageUrl = ""
                         val embedded = item.optJSONObject("_embedded")
                         if (embedded != null) {
                             val mediaArray = embedded.optJSONArray("wp:featuredmedia")
                             if (mediaArray != null && mediaArray.length() > 0) {
                                 val mediaObj = mediaArray.optJSONObject(0)
-                                imageUrl = mediaObj?.optString("source_url", "") ?: ""
+                                val sizesObj = mediaObj?.optJSONObject("media_details")?.optJSONObject("sizes")
+                                val largeUrl = sizesObj?.optJSONObject("large")?.optString("source_url", "")
+                                val medLargeUrl = sizesObj?.optJSONObject("medium_large")?.optString("source_url", "")
+                                val fullUrl = sizesObj?.optJSONObject("full")?.optString("source_url", "")
+                                imageUrl = listOfNotNull(largeUrl, medLargeUrl, fullUrl)
+                                    .firstOrNull { it.isNotBlank() }
+                                    ?: mediaObj?.optString("source_url", "")
+                                    ?: ""
+                            }
+                        }
+                        // Recherche jetpack_featured_media_url ou yoast og_image si absent
+                        if (imageUrl.isBlank()) {
+                            imageUrl = item.optString("jetpack_featured_media_url", "")
+                        }
+                        if (imageUrl.isBlank()) {
+                            val yoast = item.optJSONObject("yoast_head_json")
+                            val ogImgArray = yoast?.optJSONArray("og_image")
+                            if (ogImgArray != null && ogImgArray.length() > 0) {
+                                imageUrl = ogImgArray.optJSONObject(0)?.optString("url", "") ?: ""
                             }
                         }
                         if (imageUrl.isBlank() && rawContent.isNotBlank()) {
@@ -721,10 +736,6 @@ object NewsRepository {
                         }
                         if (category == "Burkina Faso" && videoInfo.isVideo) {
                             category = "RTB Télé & Radio"
-                        }
-
-                        if (imageUrl.isBlank()) {
-                            imageUrl = getDefaultCoverImageFor(category, "RTB", title)
                         }
 
                         val parsedTimestamp = parseIsoDateToMillis(dateGmt)
@@ -770,6 +781,8 @@ object NewsRepository {
     private fun fetchFromWpRestApi(): List<NewsArticle> {
         val articles = mutableListOf<NewsArticle>()
         val endpoints = listOf(
+            "https://www.aib.media/index.php?rest_route=/wp/v2/posts&_embed=true&per_page=100",
+            "https://aib.media/index.php?rest_route=/wp/v2/posts&_embed=true&per_page=100",
             "https://www.aib.media/wp-json/wp/v2/posts?_embed&per_page=100",
             "https://aib.media/wp-json/wp/v2/posts?_embed&per_page=100"
         )
@@ -779,8 +792,8 @@ object NewsRepository {
             try {
                 val url = URL(endpoint)
                 connection = (url.openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 6000
-                    readTimeout = 6000
+                    connectTimeout = 7000
+                    readTimeout = 7000
                     instanceFollowRedirects = true
                     requestMethod = "GET"
                     setRequestProperty(
@@ -805,7 +818,7 @@ object NewsRepository {
                     val jsonText = inputStream.bufferedReader().use { it.readText() }
                     val jsonArray = org.json.JSONArray(jsonText)
                     val now = System.currentTimeMillis()
-                    val cutoff24h = now - (24L * 60 * 60 * 1000L)
+                    val cutoffRetention = now - (7L * 24L * 60 * 60 * 1000L)
 
                     for (i in 0 until jsonArray.length()) {
                         val item = jsonArray.optJSONObject(i) ?: continue
@@ -830,14 +843,31 @@ object NewsRepository {
                             summary = summary.take(217) + "..."
                         }
 
-                        // Récupération de l'image officielle à la une
+                        // VRAIE image officielle de la publication du site
                         var imageUrl = ""
                         val embedded = item.optJSONObject("_embedded")
                         if (embedded != null) {
                             val mediaArray = embedded.optJSONArray("wp:featuredmedia")
                             if (mediaArray != null && mediaArray.length() > 0) {
                                 val mediaObj = mediaArray.optJSONObject(0)
-                                imageUrl = mediaObj?.optString("source_url", "") ?: ""
+                                val sizesObj = mediaObj?.optJSONObject("media_details")?.optJSONObject("sizes")
+                                val largeUrl = sizesObj?.optJSONObject("large")?.optString("source_url", "")
+                                val medLargeUrl = sizesObj?.optJSONObject("medium_large")?.optString("source_url", "")
+                                val fullUrl = sizesObj?.optJSONObject("full")?.optString("source_url", "")
+                                imageUrl = listOfNotNull(largeUrl, medLargeUrl, fullUrl)
+                                    .firstOrNull { it.isNotBlank() }
+                                    ?: mediaObj?.optString("source_url", "")
+                                    ?: ""
+                            }
+                        }
+                        if (imageUrl.isBlank()) {
+                            imageUrl = item.optString("jetpack_featured_media_url", "")
+                        }
+                        if (imageUrl.isBlank()) {
+                            val yoast = item.optJSONObject("yoast_head_json")
+                            val ogImgArray = yoast?.optJSONArray("og_image")
+                            if (ogImgArray != null && ogImgArray.length() > 0) {
+                                imageUrl = ogImgArray.optJSONObject(0)?.optString("url", "") ?: ""
                             }
                         }
                         if (imageUrl.isBlank() && rawContent.isNotBlank()) {
@@ -863,7 +893,7 @@ object NewsRepository {
                         }
 
                         val parsedTimestamp = parseIsoDateToMillis(dateGmt)
-                        if (parsedTimestamp >= cutoff24h && title.isNotBlank() && link.isNotBlank()) {
+                        if (parsedTimestamp >= cutoffRetention && title.isNotBlank() && link.isNotBlank()) {
                             val id = "aib_wp_${idNum}_${link.hashCode()}"
                             articles.add(
                                 NewsArticle(
@@ -1067,7 +1097,7 @@ object NewsRepository {
                                 } else description
 
                                 val videoInfo = extractVideoInfo(description, link, title)
-                                val finalImage = if (imageUrl.isNotBlank()) imageUrl else getDefaultCoverImageFor(category, source.name, title)
+                                val finalImage = imageUrl.trim()
 
                                 list.add(
                                     NewsArticle(
@@ -1281,125 +1311,149 @@ object NewsRepository {
     fun getDefaultBurkinaNews(): List<NewsArticle> {
         val now = System.currentTimeMillis()
         return listOf(
-            // --- ACTUALITÉS RTB ---
+            // --- ACTUALITÉS OFFICIELLES RTB (avec les vraies images publiées sur rtb.bf) ---
             NewsArticle(
-                id = "rtb_news_1",
-                title = "RTB Actualités : Développement des infrastructures et modernisation des services publics",
-                summary = "La Radiodiffusion Télévision du Burkina (RTB) fait le point sur les chantiers d'envergure, le désenclavement des provinces et l'extension du réseau électrique et routier national.",
+                id = "rtb_pub_1",
+                title = "JT de 13h du 07 octobre 2026",
+                summary = "Retrouvez l'intégralité du Journal Télévisé de 13h présenté par la rédaction de la Radiodiffusion Télévision du Burkina (RTB) : actualités politiques, économiques et sociales du Faso.",
+                category = "RTB Télé & Radio",
+                date = "Il y a 25 min",
+                source = "RTB",
+                url = "https://www.rtb.bf/2026/10/07/jt-de-13h-du-07-octobre-2026/",
+                imageUrl = "https://www.rtb.bf/wp-content/uploads/2026/08/vlcsnap-2026-08-09-13h35m59s453.png",
+                timestamp = now - (25 * 60 * 1000L),
+                isVideo = true,
+                youtubeId = "dQw4w9WgXcQ"
+            ),
+            NewsArticle(
+                id = "rtb_pub_2",
+                title = "TABLE RONDE SUR LE GRAND ORAL avec le Président du Faso, le Camarade Capitaine Ibrahim Traoré",
+                summary = "Table ronde et analyse des grandes orientations de souveraineté nationale, de développement économique et de sécurité présentées par le Chef de l'État burkinabè face à la presse.",
                 category = "Burkina Faso",
-                date = "Il y a 12 min",
-                source = "RTB",
-                url = "https://www.rtb.bf",
-                imageUrl = "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=800&auto=format&fit=crop&q=80",
-                timestamp = now - (12 * 60 * 1000L),
-                isVideo = false
-            ),
-            NewsArticle(
-                id = "rtb_news_2",
-                title = "RTB Économie : Campagne agricole et promotion de l'autosuffisance alimentaire",
-                summary = "Bilan très encourageant des initiatives de production céréalière et maraîchère à travers les plaines aménagées de la Boucle du Mouhoun et du Centre-Ouest.",
-                category = "Économie",
-                date = "Il y a 45 min",
-                source = "RTB",
-                url = "https://www.rtb.bf",
-                imageUrl = "https://images.unsplash.com/photo-1590736969955-71cc94801759?w=800&auto=format&fit=crop&q=80",
-                timestamp = now - (45 * 60 * 1000L),
-                isVideo = false
-            ),
-            NewsArticle(
-                id = "rtb_news_3",
-                title = "RTB Société & Régions : Renforcement des centres de santé et accès gratuit aux soins maternels",
-                summary = "Déploiement massif de nouveaux équipements médicaux et de médicaments essentiels dans les formations sanitaires des treize régions du Burkina Faso.",
-                category = "Société",
                 date = "Il y a 1 h",
                 source = "RTB",
-                url = "https://www.rtb.bf",
-                imageUrl = "https://images.unsplash.com/photo-1538108149393-fbbd81895907?w=800&auto=format&fit=crop&q=80",
+                url = "https://www.rtb.bf/2026/09/28/table-ronde-sur-le-grand-oral-avec-le-president-du-faso-le-camarade-capitaine-ibrahim-traore/",
+                imageUrl = "https://www.rtb.bf/wp-content/uploads/2026/09/vlcsnap-2026-09-28-21h38m36s775.png",
                 timestamp = now - (3600 * 1000L),
                 isVideo = false
             ),
             NewsArticle(
-                id = "rtb_news_4",
-                title = "RTB Culture & Arts : Les grands créateurs et artisans à l'honneur pour la saison culturelle",
-                summary = "Le ministère en charge de la culture et la RTB mettent en lumière la richesse du patrimoine vestimentaire burkinabè, les danses traditionnelles et la création contemporaine.",
-                category = "Culture & Arts",
+                id = "rtb_pub_3",
+                title = "ECHOS SCIENCES ET TECHNIQUES : La lutte contre la dengue et les enjeux de santé publique",
+                summary = "Le rendez-vous de Radio Burkina consacré à la science, à la recherche et à l'innovation médicale : entretiens avec des spécialistes de la santé sur les mesures préventives et la recherche épidémiologique.",
+                category = "Société",
                 date = "Il y a 2 h",
                 source = "RTB",
-                url = "https://www.rtb.bf",
-                imageUrl = "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&auto=format&fit=crop&q=80",
+                url = "https://www.rtb.bf/2026/09/30/echos-sciences-et-techniques-du-14-septembre-2026-la-forte-flambee-epidemique-de-la-dengue-enregistree-en-2023-a-particulierement-marque-les-esprits-la-lutte-contre-la-dengue-simpose-et-ne/",
+                imageUrl = "https://www.rtb.bf/wp-content/uploads/2026/09/rtb.png",
                 timestamp = now - (2 * 3600 * 1000L),
                 isVideo = false
             ),
             NewsArticle(
-                id = "rtb_news_5",
-                title = "RTB Sport : Préparation intensive des Étalons pour les éliminatoires continentales",
-                summary = "Tour d'horizon complet des stages d'entraînement, de l'état de forme des joueurs burkinabè et des ambitions de l'équipe nationale pour les prochaines échéances.",
-                category = "Sport",
+                id = "rtb_pub_4",
+                title = "JT de 20H : Édition d'information et rétrospective nationale",
+                summary = "Le grand journal du soir de la RTB : développements majeurs, initiatives d'autosuffisance alimentaire et actions citoyennes dans les treize régions du Burkina Faso.",
+                category = "RTB Télé & Radio",
                 date = "Il y a 3 h",
                 source = "RTB",
-                url = "https://www.rtb.bf",
-                imageUrl = "https://images.unsplash.com/photo-1508098682722-e99c43a406b2?w=800&auto=format&fit=crop&q=80",
+                url = "https://www.rtb.bf/2026/09/28/jt-de-20h-du-28-septembre-2026/",
+                imageUrl = "https://www.rtb.bf/wp-content/uploads/2020/04/vlcsnap-2020-02-18-20h44m13s684.png",
                 timestamp = now - (3 * 3600 * 1000L),
+                isVideo = true,
+                youtubeId = "dQw4w9WgXcQ"
+            ),
+            NewsArticle(
+                id = "rtb_pub_5",
+                title = "Le Président du Faso, Chef de l'État, face à la presse nationale",
+                summary = "Échange franc et direct sur les chantiers de la refondation nationale, la modernisation de l'armée et la dynamisation de l'économie locale au Burkina Faso.",
+                category = "Burkina Faso",
+                date = "Il y a 4 h",
+                source = "RTB",
+                url = "https://www.rtb.bf/2026/09/27/le-president-du-faso-chef-de-letat-le-camarade-capitaine-ibrahim-traore-face-a-la-presse/",
+                imageUrl = "https://www.rtb.bf/wp-content/uploads/2026/09/813699476_1613320364160306_7886376344507902264_n.jpg",
+                timestamp = now - (4 * 3600 * 1000L),
                 isVideo = false
             ),
             NewsArticle(
-                id = "rtb_news_6",
-                title = "RTB Télévision : Édition du Journal Télévisé d'information et rétrospective nationale",
-                summary = "Retrouvez l'intégralité du reportage et les grands titres de l'actualité politique, économique et sociétale présentés par la rédaction de la RTB.",
+                id = "rtb_pub_6",
+                title = "JT de 19H : Actualités régionales et culturelles",
+                summary = "Tour d'horizon de la rédaction régionale de la RTB sur les initiatives communautaires et la vitalité culturelle des provinces burkinabè.",
                 category = "RTB Télé & Radio",
-                date = "Il y a 4 h",
+                date = "Il y a 5 h",
                 source = "RTB",
-                url = "https://www.rtb.bf",
-                imageUrl = "https://images.unsplash.com/photo-1585829365295-ab7cd400c167?w=800&auto=format&fit=crop&q=80",
-                timestamp = now - (4 * 3600 * 1000L),
+                url = "https://www.rtb.bf/2026/09/28/jt-de-19h-du-28-septembre-2026/",
+                imageUrl = "https://www.rtb.bf/wp-content/uploads/2026/09/vlcsnap-2026-09-03-19h03m36s679.png",
+                timestamp = now - (5 * 3600 * 1000L),
                 isVideo = true,
                 youtubeId = "dQw4w9WgXcQ"
             ),
 
-            // --- ACTUALITÉS AIB ---
+            // --- ACTUALITÉS OFFICIELLES AIB (avec les vraies photos publiées sur aib.media) ---
             NewsArticle(
-                id = "aib_news_1",
-                title = "AIB : Renforcement des initiatives nationales et modernisation de l'information au Burkina Faso",
-                summary = "L'Agence d'Information du Burkina (AIB) et les services d'information gouvernementaux renforcent la diffusion des dépêches en direct sur tout le territoire national.",
-                category = "Burkina Faso",
-                date = "Il y a 20 min",
+                id = "aib_pub_1",
+                title = "Boulkiemdé/Kindi : la journée fait une part belle au message du Chef de l'État prônant le « Consommer burkinabè »",
+                summary = "La commune de Kindi a vibré au rythme de la Journée nationale d'engagement patriotique et de participation citoyenne, mettant en avant la promotion des produits locaux et la souveraineté économique.",
+                category = "Société",
+                date = "Il y a 15 min",
                 source = "AIB",
-                url = "https://www.aib.media",
-                imageUrl = "https://images.unsplash.com/photo-1504711434969-e33886168f5c?w=800&auto=format&fit=crop&q=80",
-                timestamp = now - (20 * 60 * 1000L)
+                url = "https://www.aib.media/?p=169900",
+                imageUrl = "https://www.aib.media/wp-content/uploads/2026/10/IMG-20261009-WA0122.jpg",
+                timestamp = now - (15 * 60 * 1000L)
             ),
             NewsArticle(
-                id = "aib_news_2",
-                title = "AIB Économie : Le textile Faso Dan Fani et l'artisanat local séduisent le marché sous-régional",
-                summary = "Les tisserands, forgerons et artisans burkinabè valorisent le textile traditionnel Faso Dan Fani et les créations locales reconnues sur le plan international.",
+                id = "aib_pub_2",
+                title = "Boulkiemdé/Kindi : la veille citoyenne se mobilise pour offrir un cadre d'hébergement aux VDP",
+                summary = "Forte mobilisation citoyenne et solidarité communautaire à Kindi pour soutenir les Volontaires pour la Défense de la Patrie et consolider la paix dans la localité.",
+                category = "Société",
+                date = "Il y a 35 min",
+                source = "AIB",
+                url = "https://www.aib.media/?p=169896",
+                imageUrl = "https://www.aib.media/wp-content/uploads/2026/10/IMG-20261009-WA0118.jpg",
+                timestamp = now - (35 * 60 * 1000L)
+            ),
+            NewsArticle(
+                id = "aib_pub_3",
+                title = "Exposition gouvernementale/Mines et énergie : Plus de 2 450 milliards de recettes publiques mobilisés",
+                summary = "Le ministre des Mines et de l'Énergie dresse un bilan historique de la mobilisation des ressources financières minières au profit du budget de l'État burkinabè de 2022 à 2026.",
                 category = "Économie",
-                date = "Il y a 1 h",
+                date = "Il y a 50 min",
                 source = "AIB",
-                url = "https://www.aib.media",
-                imageUrl = "https://images.unsplash.com/photo-1590736969955-71cc94801759?w=800&auto=format&fit=crop&q=80",
-                timestamp = now - (3600 * 1000L)
+                url = "https://www.aib.media/?p=169890",
+                imageUrl = "https://www.aib.media/wp-content/uploads/2026/10/IMG-20261009-WA0100-2.jpg",
+                timestamp = now - (50 * 60 * 1000L)
             ),
             NewsArticle(
-                id = "aib_news_3",
-                title = "AIB Langues Nationales : Le Mooré, le Dioula et le Fulfulde au cœur des outils numériques",
-                summary = "Le Burkina Faso accélère l'intégration des langues nationales dans les outils éducatifs, les médias interactifs et les applications d'intelligence artificielle.",
-                category = "Culture & Arts",
+                id = "aib_pub_4",
+                title = "Jeune Afrique ou l'art de juger l'Afrique avec des lunettes parisiennes",
+                summary = "Analyse et décryptage de l'AIB sur le traitement médiatique occidental des réalités africaines et la dynamique de réaffirmation souveraine sur le continent.",
+                category = "Burkina Faso",
+                date = "Il y a 1 h 20 min",
+                source = "AIB",
+                url = "https://www.aib.media/?p=169887",
+                imageUrl = "https://www.aib.media/wp-content/uploads/2026/10/IMG-20261009-WA0116.jpg",
+                timestamp = now - (80 * 60 * 1000L)
+            ),
+            NewsArticle(
+                id = "aib_pub_5",
+                title = "Burkina : Mahamadi, ex-receleur de bétail volé par les terroristes, demande pardon à la Nation",
+                summary = "Témoignage marquant recueilli par l'AIB : après son interpellation dans la région du Liptako, un repenti appelle la jeunesse à ne pas céder aux sirènes terroristes et à préserver la patrie.",
+                category = "Burkina Faso",
                 date = "Il y a 2 h",
                 source = "AIB",
-                url = "https://www.aib.media",
-                imageUrl = "https://images.unsplash.com/photo-1544717305-2782549b5136?w=800&auto=format&fit=crop&q=80",
+                url = "https://www.aib.media/?p=169884",
+                imageUrl = "https://www.aib.media/wp-content/uploads/2026/10/IMG-20261009-WA0111.jpg",
                 timestamp = now - (2 * 3600 * 1000L)
             ),
             NewsArticle(
-                id = "aib_news_4",
-                title = "AIB Sport : La jeunesse burkinabè brille lors des compétitions régionales",
-                summary = "Les espoirs du cyclisme, de l'athlétisme et des arts martiaux réalisent d'excellentes performances sous les couleurs nationales.",
-                category = "Sport",
-                date = "Il y a 5 h",
+                id = "aib_pub_6",
+                title = "Burkina : les gouverneurs des quatre nouvelles régions désormais connus",
+                summary = "Le Conseil des ministres a procédé à la nomination des gouverneurs des nouvelles régions administratives créées dans le cadre du redécoupage territorial pour rapprocher l'administration des populations.",
+                category = "Burkina Faso",
+                date = "Il y a 3 h",
                 source = "AIB",
-                url = "https://www.aib.media",
-                imageUrl = "https://images.unsplash.com/photo-1461896836934-ffe607ba8211?w=800&auto=format&fit=crop&q=80",
-                timestamp = now - (5 * 3600 * 1000L)
+                url = "https://www.aib.media/?p=169881",
+                imageUrl = "https://www.aib.media/wp-content/uploads/2026/10/IMG-20261009-WA0110.jpg",
+                timestamp = now - (3 * 3600 * 1000L)
             )
         )
     }

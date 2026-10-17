@@ -102,8 +102,9 @@ fun BurkinaPersonalitiesView(
         withContext(Dispatchers.IO) {
             val loader = context.imageLoader
             personalities.forEach { p ->
+                val imageModel = p.localDrawableResId ?: p.imageUrl
                 val request = ImageRequest.Builder(context)
-                    .data(p.imageUrl)
+                    .data(imageModel)
                     .memoryCachePolicy(CachePolicy.ENABLED)
                     .diskCachePolicy(CachePolicy.ENABLED)
                     .build()

@@ -126,9 +126,9 @@ fun LiveConversationScreen(
     var user1Seconds by remember { mutableIntStateOf(0) }
     var user1Status by remember { mutableStateOf("Prêt") }
 
-    // Utilisateur 2 (Aminata)
+    // Utilisateur 2 (Aminata - Mooré)
     var user2Name by remember { mutableStateOf("Aminata") }
-    var user2Lang by remember { mutableStateOf("Anglais") }
+    var user2Lang by remember { mutableStateOf("Mooré") }
     var user2Transcript by remember { mutableStateOf("") }
     var user2SentText by remember { mutableStateOf("") }
     var user2ReceivedText by remember { mutableStateOf("") }
@@ -443,16 +443,18 @@ fun LiveConversationScreen(
 
         user1SpeechManager.startListening(
             language = user1Lang,
-            continuousMode = true,
+            continuousMode = false,
             onResult = { result ->
                 if (result.isNotBlank()) {
                     user1Transcript = result
+                    isUser1Listening = false
+                    user1SpeechManager.stopListening()
+                    processUser1SpokenSpeech(result)
                 }
             },
             onError = { err ->
-                if (!isUser1Listening) {
-                    user1Status = "Prêt"
-                }
+                isUser1Listening = false
+                user1Status = "Prêt"
             }
         )
     }
@@ -471,16 +473,18 @@ fun LiveConversationScreen(
 
         user2SpeechManager.startListening(
             language = user2Lang,
-            continuousMode = true,
+            continuousMode = false,
             onResult = { result ->
                 if (result.isNotBlank()) {
                     user2Transcript = result
+                    isUser2Listening = false
+                    user2SpeechManager.stopListening()
+                    processUser2SpokenSpeech(result)
                 }
             },
             onError = { err ->
-                if (!isUser2Listening) {
-                    user2Status = "Prêt"
-                }
+                isUser2Listening = false
+                user2Status = "Prêt"
             }
         )
     }
@@ -580,8 +584,8 @@ fun LiveConversationScreen(
     // Envoi du message tapé dans la barre de saisie inférieure
     fun onSendTypedMessage() {
         val raw = typedMessage.trim()
-        val text = ConversationCleaner.cleanVoiceTranscript(raw)
-        if (!ConversationCleaner.isValidSpeech(text)) return
+        if (raw.isBlank()) return
+        val text = ConversationCleaner.cleanVoiceTranscript(raw).ifBlank { raw }
 
         typedMessage = ""
         keyboardController?.hide()

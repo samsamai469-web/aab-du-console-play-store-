@@ -17,7 +17,7 @@ import retrofit2.http.Path
 interface GeminiApiService {
     @POST("v1beta/models/{model}:generateContent")
     suspend fun generateContent(
-        @Path("model") model: String = "gemini-flash-lite-latest",
+        @Path("model") model: String = "gemini-3.5-flash",
         @Query("key") apiKey: String = BuildConfig.GEMINI_API_KEY,
         @Body request: GenerateContentRequest
     ): GenerateContentResponse

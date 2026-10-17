@@ -178,7 +178,17 @@ class TranslationRepository(
             }
         }
 
-        // 4. Base SQLite locale (Filtrage STRICT par paire linguistique pour éviter tout mélange)
+        // 4. Synthèse grammaticale locale certifiée (ZÉRO mélange de langues)
+        if (translated.isBlank()) {
+            val compositional = trySmartCompositional(cleanText, sourceLangInput, targetLangInput)
+            if (!compositional.isNullOrBlank() && !compositional.equals(cleanText, ignoreCase = true)) {
+                translated = compositional
+                isLocal = true
+                badge = "Composition Certifiée"
+            }
+        }
+
+        // 5. Base SQLite locale (Filtrage STRICT par paire linguistique pour éviter tout mélange)
         if (translated.isBlank()) {
             try {
                 val isFromFrench = sourceLangInput.contains("franç", ignoreCase = true) || sourceLangInput.contains("franc", ignoreCase = true)
@@ -198,29 +208,19 @@ class TranslationRepository(
             } catch (_: Throwable) {}
         }
 
-        // 5. Traduction IA Gemini / Google officielle
+        // 6. Traduction Google Translate automatique et IA Google Gemini officielle
         if (translated.isBlank()) {
             try {
                 val aiCandidate = aiFallback(cleanText, sourceLangInput, targetLangInput, "")
                 if (aiCandidate.isNotBlank() && !aiCandidate.equals(cleanText, ignoreCase = true)) {
                     translated = aiCandidate.trim()
                     isLocal = false
-                    badge = "Google Gemini"
+                    badge = "Google Traduction"
                 }
             } catch (_: Throwable) {}
         }
 
-        // 6. Synthèse grammaticale locale sécurisée (ZÉRO mélange de langues)
-        if (translated.isBlank() || translated.equals(cleanText, ignoreCase = true)) {
-            val compositional = trySmartCompositional(cleanText, sourceLangInput, targetLangInput)
-            if (!compositional.isNullOrBlank() && !compositional.equals(cleanText, ignoreCase = true)) {
-                translated = compositional
-                isLocal = true
-                badge = "Composition Certifiée"
-            }
-        }
-
-        // 7. Décomposition mot-à-mot locale sécurisée si non traduit
+        // 7. Assemblage lexical intégral (SEULEMENT si 100% des mots sont traduits, JAMAIS de mélange)
         if (translated.isBlank() || translated.equals(cleanText, ignoreCase = true)) {
             val wordByWord = tryWordByWordSafe(cleanText, sourceLangInput, targetLangInput)
             if (!wordByWord.isNullOrBlank() && !wordByWord.equals(cleanText, ignoreCase = true)) {
@@ -230,7 +230,7 @@ class TranslationRepository(
             }
         }
 
-        // Sécurité finale : si aucune traduction n'a été possible
+        // Sécurité finale : si aucune traduction n'a été possible, renvoyer le texte source propre
         if (translated.isBlank()) {
             translated = cleanText
         }
@@ -483,14 +483,14 @@ class TranslationRepository(
                     translatedCount++
                     word.replace(cleanWord, direct)
                 } else {
-                    word
+                    null // Mot manquant : refus catégorique de mélanger les langues
                 }
             }
         }
 
-        // Si au moins 40% des mots ont été traduits, assembler la phrase
-        return if (translatedCount >= 1 && (translatedCount.toFloat() / words.size.toFloat()) >= 0.35f) {
-            translatedWords.joinToString(" ")
+        // RÈGLE STRICTE ANTI-MÉLANGE : Seule une phrase où 100% des mots sont traduits est acceptée
+        return if (translatedCount == words.size && translatedWords.all { it != null }) {
+            translatedWords.filterNotNull().joinToString(" ")
         } else {
             null
         }

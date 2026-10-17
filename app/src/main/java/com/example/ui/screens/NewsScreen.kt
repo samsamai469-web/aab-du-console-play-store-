@@ -781,29 +781,50 @@ fun NewsCard(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Surface(
-                        shape = RoundedCornerShape(8.dp),
-                        color = if (isVideoItem) Color(0xFFD32F2F).copy(alpha = 0.12f) else sourceColor.copy(alpha = 0.12f)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        ) {
-                            if (isVideoItem) {
-                                Icon(
-                                    Icons.Default.Videocam,
-                                    contentDescription = null,
-                                    tint = Color(0xFFD32F2F),
-                                    modifier = Modifier.size(13.dp)
+                        // Badge de la source si l'article n'a pas d'image
+                        if (article.imageUrl.isBlank() && !isPlayingInline) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = sourceColor.copy(alpha = 0.95f)
+                            ) {
+                                Text(
+                                    text = article.source,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color.White,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
                                 )
-                                Spacer(modifier = Modifier.width(4.dp))
                             }
-                            Text(
-                                text = if (isVideoItem) "Vidéo / JT RTB" else article.category,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isVideoItem) Color(0xFFD32F2F) else sourceColor
-                            )
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = if (isVideoItem) Color(0xFFD32F2F).copy(alpha = 0.12f) else sourceColor.copy(alpha = 0.12f)
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                if (isVideoItem) {
+                                    Icon(
+                                        Icons.Default.Videocam,
+                                        contentDescription = null,
+                                        tint = Color(0xFFD32F2F),
+                                        modifier = Modifier.size(13.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                }
+                                Text(
+                                    text = if (isVideoItem) "Vidéo / JT RTB" else article.category,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isVideoItem) Color(0xFFD32F2F) else sourceColor
+                                )
+                            }
                         }
                     }
 

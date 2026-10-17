@@ -1746,19 +1746,8 @@ class SamAiViewModel(
                 scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, outputStream)
                 val base64Data = android.util.Base64.encodeToString(outputStream.toByteArray(), android.util.Base64.NO_WRAP)
 
-                val activeKey = getActiveGeminiApiKey().let {
-                    if (it.isBlank() || it == "MY_GEMINI_API_KEY") {
-                        try { BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim() } catch (_: Throwable) { "" }
-                    } else it
-                }.let { if (it == "MY_GEMINI_API_KEY") "" else it }
-
-                if (activeKey.isBlank()) {
-                    withContext(Dispatchers.Main) {
-                        _isImageTranslating.value = false
-                        _sourceText.value = ""
-                        _translatedText.value = "Veuillez renseigner votre clé API Gemini dans les Paramètres pour traduire des images."
-                    }
-                    return@launch
+                val activeKey = getActiveGeminiApiKey().ifBlank {
+                    try { BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim() } catch (_: Throwable) { "" }
                 }
 
                 val result = aiRepository.translateImage(
@@ -2566,23 +2555,8 @@ class SamAiViewModel(
                 userText.contains("dernières nouvelles", ignoreCase = true)
 
             val tokenLimit = 1500
-            val activeKey = getActiveGeminiApiKey().let {
-                if (it.isBlank() || it == "MY_GEMINI_API_KEY") {
-                    try { BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim() } catch (_: Throwable) { "" }
-                } else it
-            }.let { if (it == "MY_GEMINI_API_KEY") "" else it }
-
-            if (activeKey.isBlank()) {
-                val assistantMsg = SamAiChatMessage(
-                    sender = "sam_ai",
-                    text = "Veuillez renseigner votre clé API Gemini dans les Paramètres pour activer les réponses intelligentes en direct.",
-                    timestamp = System.currentTimeMillis(),
-                    isError = false,
-                    sources = emptyList()
-                )
-                _samAiChatMessages.value = _samAiChatMessages.value + assistantMsg
-                _isSamAiGeminiThinking.value = false
-                return@launch
+            val activeKey = getActiveGeminiApiKey().ifBlank {
+                try { BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim() } catch (_: Throwable) { "" }
             }
 
             var responseText = ""
@@ -2590,7 +2564,7 @@ class SamAiViewModel(
             var responseSources: List<com.example.data.local.WebSource> = emptyList()
 
             try {
-                // 1. Appel ultra-rapide et haute fidélité avec gemini-flash-lite-latest (modèle actif vérifié)
+                // 1. Appel ultra-rapide et haute fidélité avec gemini-3.5-flash
                 val result = aiRepository.executeGeminiRequest(
                     apiKey = activeKey,
                     messages = currentHistory,
@@ -2598,14 +2572,14 @@ class SamAiViewModel(
                     enableSearch = isSearchNeeded,
                     temperature = 0.2,
                     maxOutputTokens = tokenLimit,
-                    preferredModel = "gemini-flash-lite-latest"
+                    preferredModel = "gemini-3.5-flash"
                 )
                 if (result.success && result.text.isNotBlank()) {
                     responseText = result.text
                     responseSources = result.sources
                 } else {
                     // 2. Appel de secours direct avec modèles actifs vérifiés
-                    val candidateFallbackModels = listOf("gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-3.1-flash-lite-preview", "gemini-flash-latest")
+                    val candidateFallbackModels = listOf("gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-flash-latest")
                     for (fallbackModel in candidateFallbackModels) {
                         try {
                             val req = com.example.data.remote.GenerateContentRequest(
@@ -2627,7 +2601,7 @@ class SamAiViewModel(
                                 apiKey = activeKey,
                                 request = req
                             )
-                            val rawText = resp.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text.orEmpty()
+                            val rawText = resp.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text.orEmpty().trim()
                             if (rawText.isNotBlank()) {
                                 responseText = rawText
                                 break
@@ -2892,6 +2866,23 @@ class SamAiViewModel(
                 appendLine()
                 appendLine(matchedHeritage.description)
             }.trim()
+        }
+
+        // 4. Salutations et expressions courantes en Mooré et Dioula
+        if (qNorm.contains("bonjour") || qNorm.contains("salut") || qNorm.contains("comment ca va") || qNorm.contains("ca va")) {
+            return "Bonjour ! En Mooré, on salue le matin par « **Yibeogo kiema** » et pour souhaiter la bienvenue « **Ne y waoongo** ». En Dioula, on dit « **I ni sogoma** » (bonjour le matin) ou « **I ni ce** ». Comment puis-je vous aider aujourd'hui ?"
+        }
+        if (qNorm.contains("merci")) {
+            return "De rien ! En Mooré, « Merci » se dit « **Barka** » (ou « **Barka wusgo** » pour merci beaucoup). En Dioula, on dit « **I ni ce** » ou « **A barika** ». Que souhaitez-vous découvrir d'autre ?"
+        }
+        if (qNorm.contains("au revoir") || qNorm.contains("a bientot")) {
+            return "Au revoir ! En Mooré, on dit « **Wend na kõ-d beog** » (Que Dieu nous accorde le lendemain), et en Dioula « **K'an ben** » (À bientôt). Prenez bien soin de vous !"
+        }
+        if (qNorm.contains("capitale") && (qNorm.contains("burkina") || qNorm.contains("faso"))) {
+            return "🇧🇫 La capitale politique et administrative du Burkina Faso est **Ouagadougou**, et la capitale économique et culturelle est **Bobo-Dioulasso**."
+        }
+        if (qNorm.contains("burkina faso") || qNorm.contains("burkina") || qNorm.contains("faso")) {
+            return "🇧🇫 **Le Burkina Faso** (« Pays des Hommes Intègres ») :\n• **Capitale** : Ouagadougou\n• **Capitale économique** : Bobo-Dioulasso\n• **Langues nationales majeures** : Mooré, Dioula, Fulfuldé, Gulmancéma, Bwamu, etc.\n• **Hymne national** : Le Ditanyè (L'Hymne de la Victoire)\n• **Devise** : La Patrie ou la Mort, nous vaincrons !\n• **Monnaie** : Franc CFA (XOF)"
         }
 
         return ""

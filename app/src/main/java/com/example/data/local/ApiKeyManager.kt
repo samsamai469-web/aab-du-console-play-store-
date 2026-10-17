@@ -49,8 +49,7 @@ class ApiKeyManager(context: Context) {
     }
 
     fun isGeminiConfigured(): Boolean {
-        val key = getActiveGeminiApiKey()
-        return key.isNotBlank() && key != "MY_GEMINI_API_KEY"
+        return getActiveGeminiApiKey().isNotBlank()
     }
 
     fun getGeminiKeySource(): ApiKeySource {
@@ -137,5 +136,11 @@ class ApiKeyManager(context: Context) {
         private const val PREFS_NAME = "sam_ai_api_keys"
         private const val KEY_CUSTOM_GEMINI_API_KEY = "custom_gemini_api_key"
         private const val KEY_CUSTOM_GEMINI_LIVE_API_KEY = "custom_gemini_live_api_key"
+        val DEFAULT_GEMINI_API_KEY: String
+            get() = try {
+                BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+            } catch (_: Throwable) {
+                ""
+            }
     }
 }
