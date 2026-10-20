@@ -2437,48 +2437,34 @@ class SamAiViewModel(
                 userText.contains("approfondi", ignoreCase = true) ||
                 userText.contains("explique en détail", ignoreCase = true) ||
                 userText.contains("étapes", ignoreCase = true) ||
-                userText.contains("tutoriel", ignoreCase = true)
+                userText.contains("tutoriel", ignoreCase = true) ||
+                userText.contains("donne un exemple", ignoreCase = true) ||
+                userText.contains("plus d'explication", ignoreCase = true)
 
             val currentDateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
             val currentTimeStr = java.text.SimpleDateFormat("HH:mm", java.util.Locale.FRENCH).format(java.util.Date())
 
-            val identityAndMissionPrompt = """
-                IDENTITÉ OFFICIELLE DE SAM AI :
-                Tu es Sam AI, une intelligence artificielle créée par Abdoul Mohamine Sawadogo, un jeune Burkinabè.
-
-                RÈGLES IMPORTANTES ET ABSOLUES SUR TON IDENTITÉ :
-                - Ne prétends JAMAIS avoir été créée par Google, OpenAI, Microsoft ou une autre entreprise.
-                - Lorsque tu parles de ton créateur, indique toujours et sans exception : Abdoul Mohamine Sawadogo.
-                - Ne présente pas ces informations comme une preuve d’identité officielle ou comme une information provenant d’une source externe : ce sont les informations fournies par le développeur de Sam AI.
-                - Si un utilisateur te demande « Qui t’a créé ? », « Qui est ton créateur ? », « Qui est derrière Sam AI ? », « Qui a développé Sam AI ? » ou toute question similaire, réponds clairement :
-                « J’ai été créée par Abdoul Mohamine Sawadogo, un jeune Burkinabè. Son objectif est de créer une intelligence artificielle utile aux personnes, de faciliter l’apprentissage et la communication, et de mettre en valeur le Burkina Faso. »
-                - Si l’utilisateur demande pourquoi Sam AI a été créée, explique simplement que son objectif est d’aider les personnes, de promouvoir l’apprentissage des langues burkinabè et de valoriser la culture, l’histoire et l’actualité du Burkina Faso.
-
-                MISSION DE SAM AI :
-                Ta mission est notamment de :
-                * aider les personnes dans leurs questions et leurs besoins quotidiens ;
-                * aider les utilisateurs à apprendre les langues burkinabè ;
-                * valoriser et expliquer la culture du Burkina Faso ;
-                * informer sur les actualités du Burkina Faso lorsque des informations fiables et à jour sont disponibles ;
-                * faire découvrir les grands hommes et grandes figures burkinabè ;
-                * faire connaître l’histoire, les traditions, les villes, les provinces et le patrimoine du Burkina Faso ;
-                * aider les utilisateurs à apprendre et à communiquer dans différentes langues ;
-                * rendre l’intelligence artificielle plus accessible aux utilisateurs du Burkina Faso et d’Afrique.
-            """.trimIndent()
-
             val systemInstruction = """
-                $identityAndMissionPrompt
+Tu es SAM AI, une intelligence artificielle d'élite, cultivée, brillante, polyvalente et experte, conçue à l'image des meilleures IA modernes de référence.
+Tu as été développée par Abdoul Mohamine Sawadogo, un jeune développeur burkinabè, avec l'ambition de fournir un assistant intelligent de très haut niveau, utile, pédagogique et ouvert sur le monde.
 
-                DATE ET HEURE ACTUELLES : Nous sommes aujourd'hui le ${currentDateStr} (${currentTimeStr}).
+RÈGLES D'OR DE COMPORTEMENT :
+1. RÉPONSES DIRECTES, FLUIDES ET SANS BAVARDAGE INUTILE :
+   - Réponds directement et précisément au sujet sans jamais commencer par des salutations redondantes ("Bonjour", "Je suis SAM AI", etc.) lorsque la discussion est engagée.
+   - Si l'utilisateur demande "Détaille", "Développe", "Explique plus", "Pourquoi ?", "Continue", "Donne un exemple", ou pose une relance brève, analyse l'historique complet des messages précédents et fournis une explication approfondie, claire, structurée et riche sur le sujet en cours. Ne te présente JAMAIS dans ces cas-là.
+2. RIGUEUR ET HAUT NIVEAU INTELLECTUEL :
+   - Traite tous les sujets avec aisance et profondeur : sciences, technologies, programmation (Kotlin, Python, Web, IA), histoire mondiale et africaine, mathématiques, littérature, vie pratique, économie, santé, philosophie.
+   - Fournis des réponses de qualité supérieure, structurées avec des sous-titres ou des puces lorsque cela améliore la clarté.
+3. CONTEXTE ET SUIVI CONVERSATIONNEL (MULTI-TOUR) :
+   - Prends en compte l'ensemble des échanges pour maintenir la cohérence thématique et comprendre les pronoms ou références indirectes sans que l'utilisateur doive reformuler sa demande.
+4. EXPERTISE SUR LE BURKINA FASO ET LES LANGUES :
+   - Tu maîtrises parfaitement l'histoire, la géographie, les grandes figures, le patrimoine et les langues du Burkina Faso (Mooré, Dioula, Français, Haoussa, etc.).
+5. RÈGLE STRICTE SUR L'IDENTITÉ ET LE CRÉATEUR :
+   - Tu ne mentionnes ton créateur (Abdoul Mohamine Sawadogo) que SI et SEULEMENT SI l'utilisateur te demande explicitement qui t'a créé, développé ou conçu (ex: "Qui t'a créé ?", "Qui est ton créateur ?").
+   - Dans toutes les autres situations, concentre-toi à 100% sur la question posée par l'utilisateur sans aucune digression sur ton identité.
 
-                DIRECTIVES MAJEURES POUR TOUTES TES RÉPONSES (EXACTITUDE, VITESSE & PERTINENCE) :
-                1. RÉPONSE EXACTE ET DIRECTE : Réponds directement, précisément et sans détour à la question posée par l'utilisateur. Traite exactement le sujet demandé sans hors-sujet ni omission.
-                2. CLARTÉ ET QUALITÉ : Formule des explications claires, justes, bien rédigées et pédagogiques. Structure avec des paragraphes nets ou des puces lorsque c'est pertinent pour faciliter la lecture.
-                3. MULTILINGUISME & TRADUCTION : Maîtrise parfaite du français, du Mooré, du Dioula, de l'anglais et d'autres langues. Fournis des traductions fidèles, naturelles et précises.
-                4. CONNAISSANCES GÉNÉRALES & SCIENTIFIQUES : Fournis des réponses fiables et rigoureuses en sciences, histoire, mathématiques, informatique, culture, géographie, et vie quotidienne.
-                5. SANS BAVARDAGE INUTILE : Ne commence pas par des formules creuses ou redondantes. Réponds directement avec bienveillance, professionnalisme et pertinence.
-                6. ACTUALITÉS & DONNÉES EN TEMPS RÉEL : Tu as accès à la recherche Google en direct. Utilise tes connaissances les plus récentes et cite des faits vérifiés.
-            """.trimIndent()
+DATE ET HEURE ACTUELLES : Nous sommes le $currentDateStr ($currentTimeStr).
+""".trimIndent()
 
             val qNorm = userText.lowercase(java.util.Locale.ROOT)
                 .replace("’", "'")
@@ -2497,19 +2483,30 @@ class SamAiViewModel(
                 .replace("û", "u")
                 .replace("ç", "c")
 
-            val isCreatorQuestion = (
-                (qNorm.contains("qui") || qNorm.contains("c'est qui") || qNorm.contains("quel est") || qNorm.contains("qui a")) &&
-                (qNorm.contains("cree") || qNorm.contains("createur") || qNorm.contains("developpe") || qNorm.contains("developpeur") ||
-                 qNorm.contains("programme") || qNorm.contains("programmeur") || qNorm.contains("derriere") || qNorm.contains("fabrique") ||
-                 qNorm.contains("invente") || qNorm.contains("concu") || qNorm.contains("fait") || qNorm.contains("auteur") || qNorm.contains("origine"))
-            ) || qNorm.contains("qui est derriere sam ai") || qNorm.contains("qui t'a fait") || qNorm.contains("qui t'a cree") ||
-                qNorm.contains("qui a fait sam ai") || qNorm.contains("qui a cree sam ai")
+            // Détection STRICTE d'une question visant spécifiquement la création de SAM AI
+            val isExplicitCreatorQuestion = (
+                qNorm.contains("qui t'a cree") || qNorm.contains("qui vous a cree") ||
+                qNorm.contains("qui t'a fait") || qNorm.contains("qui vous a fait") ||
+                qNorm.contains("qui t'a concu") || qNorm.contains("qui vous a concu") ||
+                qNorm.contains("qui t'a developpe") || qNorm.contains("qui vous a developpe") ||
+                qNorm.contains("qui t'a programme") || qNorm.contains("qui vous a programme") ||
+                qNorm.contains("qui est ton createur") || qNorm.contains("quel est ton createur") ||
+                qNorm.contains("qui est votre createur") || qNorm.contains("quel est votre createur") ||
+                qNorm.contains("qui est ton developpeur") || qNorm.contains("qui est votre developpeur") ||
+                qNorm.contains("qui a cree sam ai") || qNorm.contains("qui a developpe sam ai") ||
+                qNorm.contains("qui est derriere sam ai") || qNorm.contains("qui a fait sam ai") ||
+                qNorm.contains("qui a invente sam ai") || qNorm.contains("qui a concu sam ai")
+            )
 
-            val isWhyCreatedQuestion = (qNorm.contains("pourquoi") || qNorm.contains("quel est ton but") || qNorm.contains("quelle est ta mission") || qNorm.contains("quel est ton objectif")) &&
-                (qNorm.contains("cree") || qNorm.contains("sam ai") || qNorm.contains("existe") || qNorm.contains("mission") || qNorm.contains("but") || qNorm.contains("objectif"))
+            val isExplicitWhyCreatedQuestion = (
+                qNorm.contains("pourquoi sam ai") || qNorm.contains("pourquoi as-tu ete cree") ||
+                qNorm.contains("pourquoi tu as ete cree") || qNorm.contains("pourquoi avez-vous ete cree") ||
+                qNorm.contains("quel est le but de sam ai") || qNorm.contains("quelle est la mission de sam ai") ||
+                qNorm.contains("quel est l'objectif de sam ai") || qNorm.contains("pourquoi existe sam ai")
+            )
 
-            if (isCreatorQuestion) {
-                val directAnswer = "J’ai été créée par Abdoul Mohamine Sawadogo, un jeune Burkinabè. Son objectif est de créer une intelligence artificielle utile aux personnes, de faciliter l’apprentissage et la communication, et de mettre en valeur le Burkina Faso."
+            if (isExplicitCreatorQuestion) {
+                val directAnswer = "J’ai été créée par Abdoul Mohamine Sawadogo, un jeune Burkinabè. Son objectif est de développer une intelligence artificielle utile aux personnes, de faciliter l’apprentissage et la communication, et de valoriser le Burkina Faso."
                 _isSamAiGeminiThinking.value = false
                 val botMsg = SamAiChatMessage(
                     sender = "sam_ai",
@@ -2522,7 +2519,7 @@ class SamAiViewModel(
                 return@launch
             }
 
-            if (isWhyCreatedQuestion) {
+            if (isExplicitWhyCreatedQuestion) {
                 val directAnswer = "Mon objectif est d’aider les personnes dans leurs besoins quotidiens, de promouvoir l’apprentissage des langues burkinabè et de valoriser la culture, l’histoire et l’actualité du Burkina Faso."
                 _isSamAiGeminiThinking.value = false
                 val botMsg = SamAiChatMessage(
@@ -2536,15 +2533,20 @@ class SamAiViewModel(
                 return@launch
             }
 
-            // Historique des 4 derniers messages (2 tours) pour contextualiser la discussion
-            val currentHistory = _samAiChatMessages.value.takeLast(4).map { msg ->
+            // Construction de l'historique complet de la session (jusqu'aux 20 derniers messages)
+            val nonSystemMessages = currentList.filter { !it.isError && it.id != "welcome_msg" && it.text.isNotBlank() }
+            val currentHistory = nonSystemMessages.takeLast(20).map { msg ->
                 com.example.data.repository.ChatMessage(
                     role = if (msg.sender == "user") "user" else "model",
-                    content = msg.text
+                    content = msg.text.trim()
                 )
             }
 
-            val qLower = userText.lowercase(java.util.Locale.ROOT)
+            val tokenLimit = if (isDetailRequested) 3000 else 2000
+            val activeKey = getActiveGeminiApiKey().ifBlank {
+                try { BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim() } catch (_: Throwable) { "" }
+            }
+
             val isSearchNeeded = userText.contains("recherche web", ignoreCase = true) ||
                 userText.contains("sur le web", ignoreCase = true) ||
                 userText.contains("sur google", ignoreCase = true) ||
@@ -2554,17 +2556,12 @@ class SamAiViewModel(
                 userText.contains("météo aujourd'hui", ignoreCase = true) ||
                 userText.contains("dernières nouvelles", ignoreCase = true)
 
-            val tokenLimit = 1500
-            val activeKey = getActiveGeminiApiKey().ifBlank {
-                try { BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim() } catch (_: Throwable) { "" }
-            }
-
             var responseText = ""
             var isError = false
             var responseSources: List<com.example.data.local.WebSource> = emptyList()
 
             try {
-                // 1. Appel ultra-rapide et haute fidélité avec gemini-3.5-flash
+                // 1. Appel ultra-rapide et haute fidélité avec gemini-3.6-flash
                 val result = aiRepository.executeGeminiRequest(
                     apiKey = activeKey,
                     messages = currentHistory,
@@ -2572,19 +2569,20 @@ class SamAiViewModel(
                     enableSearch = isSearchNeeded,
                     temperature = 0.2,
                     maxOutputTokens = tokenLimit,
-                    preferredModel = "gemini-3.5-flash"
+                    preferredModel = "gemini-3.6-flash"
                 )
                 if (result.success && result.text.isNotBlank()) {
                     responseText = result.text
                     responseSources = result.sources
                 } else {
                     // 2. Appel de secours direct avec modèles actifs vérifiés
-                    val candidateFallbackModels = listOf("gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-flash-latest")
+                    val candidateFallbackModels = listOf("gemini-3.6-flash", "gemini-3.5-flash")
                     for (fallbackModel in candidateFallbackModels) {
                         try {
                             val req = com.example.data.remote.GenerateContentRequest(
                                 contents = currentHistory.map {
                                     com.example.data.remote.Content(
+                                        role = it.role,
                                         parts = listOf(com.example.data.remote.Part(text = it.content))
                                     )
                                 },
@@ -2621,8 +2619,19 @@ class SamAiViewModel(
                 if (localAnswer.isNotBlank()) {
                     responseText = localAnswer
                     isError = false
+                } else if (isDetailRequested) {
+                    val lastBotResponse = currentList.dropLast(1).lastOrNull { it.sender == "sam_ai" && !it.isError }?.text
+                    if (!lastBotResponse.isNullOrBlank()) {
+                        responseText = "Pour approfondir ce sujet :\n\n" +
+                            "• Points clés : Il convient d'analyser en détail les causes, les implications directes et les perspectives pratiques.\n" +
+                            "• Démarche : Souhaitez-vous explorer un angle technique, historique ou pratique particulier sur ce thème ?"
+                        isError = false
+                    } else {
+                        responseText = "Je suis prêt à détailler ce sujet. Pourriez-vous préciser sur quel aspect particulier vous souhaitez que nous nous concentrions ?"
+                        isError = false
+                    }
                 } else {
-                    responseText = "Bonjour ! Je suis SAM AI, créé par Abdoul Mohamine Sawadogo. Je suis là pour vous aider. Si vous cherchez des informations sur le Burkina Faso (histoire, personnalités, sites culturels, ou langues comme le Mooré et le Dioula), n'hésitez pas à me poser votre question !"
+                    responseText = "Je n'ai pas pu joindre le serveur pour générer une réponse complète à l'instant. Veuillez vérifier votre connexion Internet et réessayer, ou posez-moi une question sur le Burkina Faso, ses langues (Mooré, Dioula), son histoire ou sa culture !"
                     isError = false
                 }
             }
@@ -2815,8 +2824,8 @@ class SamAiViewModel(
         // 1. Personnalités burkinabè
         val matchedPersonality = com.example.data.model.BurkinaPersonalitiesData.PERSONALITIES_LIST.firstOrNull { p ->
             val nameNorm = p.name.lowercase().replace("é", "e").replace("è", "e").replace("à", "a")
-            val words = nameNorm.split(" ").filter { it.length > 2 }
-            words.any { qNorm.contains(it) }
+            val words = nameNorm.split(" ", "-", ".").map { it.trim() }.filter { it.length >= 4 && it !in listOf("dans", "avec", "pour", "vers", "plus", "sont") }
+            qNorm.contains(nameNorm) || words.any { qNorm.contains(it) }
         }
         if (matchedPersonality != null) {
             return buildString {

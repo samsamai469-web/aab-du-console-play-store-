@@ -73,9 +73,13 @@ class AiRepository(
             )
         )
 
-        val apiKey = apiKeyManager.getActiveGeminiApiKey()
+        val apiKey = apiKeyManager.getActiveGeminiApiKey().ifBlank {
+            try {
+                com.example.BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+            } catch (_: Throwable) { "" }
+        }
         if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-            val fallback = "Bonjour ! Je suis SAM AI. Comment puis-je vous aider aujourd'hui ?"
+            val fallback = "Je suis à votre écoute pour vous répondre avec précision sur tous vos sujets et sur les langues du Burkina Faso."
             chatDao.insertMessage(
                 MessageEntity(
                     conversationId = conversationId,
@@ -89,11 +93,11 @@ class AiRepository(
         }
         try {
             val model = GenerativeModel(
-                modelName = "gemini-3.5-flash",
+                modelName = "gemini-3.6-flash",
                 apiKey = apiKey
             )
 
-            val systemInstruction = "Tu es SAM AI, l'assistant intelligent expert en langues (Mooré, Dioula, Français, Haoussa) et culture du Burkina Faso. Réponds de façon concise, précise, respectueuse et pédagogique."
+            val systemInstruction = "Tu es SAM AI, l'assistant intelligent d'élite, cultivé et polyvalent. Réponds directement, intelligemment et sans bavardage superflu. Ne te présente JAMAIS (pas de 'Bonjour', 'Je suis SAM AI') dans une discussion déjà engagée. Si l'utilisateur demande de détailler ou pose une question complémentaire, approfondis directement et de manière riche et structurée."
             val prompt = "$systemInstruction\n\nQuestion de l'utilisateur : $text"
 
             var fullResponse = ""
@@ -147,18 +151,10 @@ class AiRepository(
         val cleanSrc = srcText.trim()
         if (cleanSrc.isBlank()) return@withContext ""
 
-        // 1. Google Translate officiel automatique (Ultra-rapide, sans hallucination)
-        try {
-            val googleResult = GoogleTranslationService.translate(cleanSrc, srcLang, tgtLang)
-            if (!googleResult.isNullOrBlank() && !googleResult.equals(cleanSrc, ignoreCase = true)) {
-                return@withContext googleResult.trim()
-            }
-        } catch (_: Throwable) {}
-
-        // 2. Moteur IA Google Gemini avec systemInstruction stricte
-        val apiKey = apiKeyManager.getActiveGeminiApiKey()
-        if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-            return@withContext ""
+        val effectiveKey = apiKeyManager.getActiveGeminiApiKey().ifBlank {
+            try {
+                com.example.BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+            } catch (_: Throwable) { "" }
         }
 
         val systemInstructionText = """
@@ -168,38 +164,91 @@ Tu dois traduire STRICTEMENT le texte donné du $srcLang vers le $tgtLang.
 RÈGLES D'OR ABSOLUES :
 1. Rends UNIQUEMENT et EXCLUSIVEMENT la traduction exacte en $tgtLang.
 2. N'inclus JAMAIS aucun mot en $srcLang, aucune explication, aucune note, aucun astérisque (*), aucun guillemet.
-3. Ne dis JAMAIS "Voici la traduction", "En Mooré", "Décomposition", etc.
-4. AUCUN mélange de langues toléré.
+3. Ne dis JAMAIS "Voici la traduction", "En Mooré", "En Dioula", "Décomposition", etc.
+4. Rends une phrase fluide, naturelle et directement utilisable.
 ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else ""}
         """.trimIndent()
 
-        val candidateModels = listOf("gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-flash-latest")
+        // 1. Moteur IA principal via Retrofit REST (Direct, ultra-rapide et fiable)
+        if (effectiveKey.isNotBlank() && effectiveKey != "MY_GEMINI_API_KEY") {
+            val candidateModels = listOf("gemini-3.6-flash", "gemini-3.5-flash")
+            for (candidateModel in candidateModels) {
+                try {
+                    val req = com.example.data.remote.GenerateContentRequest(
+                        contents = listOf(
+                            com.example.data.remote.Content(
+                                role = "user",
+                                parts = listOf(com.example.data.remote.Part(text = "Texte à traduire du $srcLang vers le $tgtLang :\n$cleanSrc"))
+                            )
+                        ),
+                        systemInstruction = com.example.data.remote.Content(
+                            parts = listOf(com.example.data.remote.Part(text = systemInstructionText))
+                        ),
+                        generationConfig = com.example.data.remote.GenerationConfig(
+                            temperature = 0.1f,
+                            maxOutputTokens = 1000
+                        )
+                    )
+                    val resp = com.example.data.remote.RetrofitClient.geminiService.generateContent(
+                        model = candidateModel,
+                        apiKey = effectiveKey,
+                        request = req
+                    )
+                    val rawResult = resp.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text.orEmpty().trim()
+                    val cleanResult = extractCleanTranslation(rawResult, tgtLang)
 
-        for (candidateModel in candidateModels) {
-            try {
-                val model = GenerativeModel(
-                    modelName = candidateModel,
-                    apiKey = apiKey,
-                    systemInstruction = content { text(systemInstructionText) }
-                )
-                val prompt = "Texte à traduire : \"$cleanSrc\""
-                val response = model.generateContent(prompt)
-                val rawResult = response.text ?: ""
-                val cleanResult = extractCleanTranslation(rawResult, tgtLang)
-
-                if (cleanResult.isNotBlank() && !cleanResult.equals(cleanSrc, ignoreCase = true) && !isExplanatoryOrMixed(cleanResult, tgtLang)) {
-                    return@withContext cleanResult
+                    if (cleanResult.isNotBlank() && !cleanResult.equals(cleanSrc, ignoreCase = true) && !isExplanatoryOrMixed(cleanResult, tgtLang)) {
+                        return@withContext cleanResult
+                    }
+                } catch (e: Throwable) {
+                    android.util.Log.w("AiRepository", "Retrofit translation with $candidateModel failed: ${e.message}")
                 }
-            } catch (_: Throwable) {
-                // Essayer le modèle suivant en cas d'indisponibilité temporaire
+            }
+
+            // 2. Moteur IA de secours via GenerativeModel SDK
+            for (candidateModel in candidateModels) {
+                try {
+                    val model = GenerativeModel(
+                        modelName = candidateModel,
+                        apiKey = effectiveKey,
+                        systemInstruction = content { text(systemInstructionText) }
+                    )
+                    val prompt = "Texte à traduire du $srcLang vers le $tgtLang : \"$cleanSrc\""
+                    val response = model.generateContent(prompt)
+                    val rawResult = response.text ?: ""
+                    val cleanResult = extractCleanTranslation(rawResult, tgtLang)
+
+                    if (cleanResult.isNotBlank() && !cleanResult.equals(cleanSrc, ignoreCase = true) && !isExplanatoryOrMixed(cleanResult, tgtLang)) {
+                        return@withContext cleanResult
+                    }
+                } catch (_: Throwable) {
+                    // Modèle suivant si indisponible
+                }
             }
         }
+
+        // 3. Google Translate officiel de repli pour langues supportées
+        try {
+            val googleResult = GoogleTranslationService.translate(cleanSrc, srcLang, tgtLang)
+            if (!googleResult.isNullOrBlank() && !googleResult.equals(cleanSrc, ignoreCase = true)) {
+                return@withContext googleResult.trim()
+            }
+        } catch (_: Throwable) {}
+
         ""
     }
 
     private fun extractCleanTranslation(raw: String, targetLang: String): String {
         var text = raw.trim()
-        text = text.removeSurrounding("```", "```").trim()
+        text = text.removeSurrounding("```json", "```").removeSurrounding("```", "```").trim()
+
+        if (text.contains("se traduit par :", ignoreCase = true)) {
+            val candidate = text.substringAfter("se traduit par :").trim()
+            if (candidate.isNotBlank()) text = candidate
+        } else if (text.contains("se traduit par", ignoreCase = true)) {
+            val candidate = text.substringAfter("se traduit par").trim()
+            if (candidate.isNotBlank()) text = candidate
+        }
 
         val lines = text.lines().map { it.trim() }.filter { it.isNotBlank() }
         if (lines.size > 1) {
@@ -218,17 +267,17 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         }
 
         text = text.replace("*", "").replace("`", "")
-        text = text.replace(Regex("""^(Traduction|Translation|En Mooré|En Dioula|En Haoussa)\s*:\s*""", RegexOption.IGNORE_CASE), "")
+        text = text.replace(Regex("""^(Traduction|Translation|En Mooré|En Dioula|En Haoussa|En Français|En Anglais|Traduction en [^:]+)\s*:\s*""", RegexOption.IGNORE_CASE), "")
         text = text.removeSurrounding("\"").removeSurrounding("«", "»").trim()
         return text
     }
 
     private fun isExplanatoryOrMixed(text: String, targetLang: String): Boolean {
         val lower = text.lowercase()
-        if (lower.contains("se traduit par") || lower.contains("voici la traduction") || lower.contains("décomposition")) {
+        if (lower.contains("voici la traduction") || lower.contains("décomposition")) {
             return true
         }
-        if (targetLang.contains("moor", ignoreCase = true) && (lower.startsWith("en mooré") || lower.contains("signifie en français"))) {
+        if (targetLang.contains("moor", ignoreCase = true) && lower.contains("signifie en français")) {
             return true
         }
         return false
@@ -245,7 +294,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         }
         try {
             val model = GenerativeModel(
-                modelName = "gemini-3.5-flash",
+                modelName = "gemini-3.6-flash",
                 apiKey = apiKey
             )
             val inputContent = content {
@@ -278,7 +327,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             val bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
 
             val model = GenerativeModel(
-                modelName = "gemini-3.5-flash",
+                modelName = "gemini-3.6-flash",
                 apiKey = key
             )
             val inputContent = content {
@@ -312,7 +361,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         }
         try {
             val model = GenerativeModel(
-                modelName = "gemini-3.5-flash",
+                modelName = "gemini-3.6-flash",
                 apiKey = apiKey
             )
             val fullPrompt = if (systemPrompt.isNotBlank()) "$systemPrompt\n\n$prompt" else prompt
@@ -337,52 +386,63 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             return@withContext GeminiRequestResult(success = false, text = "")
         }
 
-        // 1. Appel direct via Retrofit avec gemini-3.5-flash
-        try {
-            val req = com.example.data.remote.GenerateContentRequest(
-                contents = messages.map {
-                    com.example.data.remote.Content(
-                        parts = listOf(com.example.data.remote.Part(text = it.content))
+        val modelsToTry = if (preferredModel.isNotBlank()) {
+            listOf(preferredModel, "gemini-3.6-flash", "gemini-3.5-flash").distinct()
+        } else {
+            listOf("gemini-3.6-flash", "gemini-3.5-flash")
+        }
+
+        // 1. Appel direct via Retrofit
+        for (targetModel in modelsToTry) {
+            try {
+                val req = com.example.data.remote.GenerateContentRequest(
+                    contents = messages.map {
+                        com.example.data.remote.Content(
+                            role = it.role,
+                            parts = listOf(com.example.data.remote.Part(text = it.content))
+                        )
+                    },
+                    systemInstruction = if (systemInstruction.isNotBlank()) {
+                        com.example.data.remote.Content(
+                            parts = listOf(com.example.data.remote.Part(text = systemInstruction))
+                        )
+                    } else null,
+                    generationConfig = com.example.data.remote.GenerationConfig(
+                        temperature = temperature.toFloat(),
+                        maxOutputTokens = maxOutputTokens
                     )
-                },
-                systemInstruction = if (systemInstruction.isNotBlank()) {
-                    com.example.data.remote.Content(
-                        parts = listOf(com.example.data.remote.Part(text = systemInstruction))
-                    )
-                } else null,
-                generationConfig = com.example.data.remote.GenerationConfig(
-                    temperature = temperature.toFloat(),
-                    maxOutputTokens = maxOutputTokens
                 )
-            )
-            val resp = com.example.data.remote.RetrofitClient.geminiService.generateContent(
-                model = "gemini-3.5-flash",
-                apiKey = effectiveKey,
-                request = req
-            )
-            val text = resp.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim() ?: ""
-            if (text.isNotBlank()) {
-                return@withContext GeminiRequestResult(success = true, text = text)
+                val resp = com.example.data.remote.RetrofitClient.geminiService.generateContent(
+                    model = targetModel,
+                    apiKey = effectiveKey,
+                    request = req
+                )
+                val text = resp.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim() ?: ""
+                if (text.isNotBlank()) {
+                    return@withContext GeminiRequestResult(success = true, text = text)
+                }
+            } catch (e: Throwable) {
+                android.util.Log.w("AiRepository", "Retrofit Gemini ($targetModel) call failed: ${e.message}")
             }
-        } catch (e: Throwable) {
-            android.util.Log.w("AiRepository", "Retrofit Gemini call failed: ${e.message}")
         }
 
         // 2. Appel de repli via GenerativeModel SDK
-        try {
-            val model = GenerativeModel(
-                modelName = "gemini-3.5-flash",
-                apiKey = effectiveKey
-            )
-            val historyPrompt = messages.joinToString("\n") { "${it.role}: ${it.content}" }
-            val fullPrompt = if (systemInstruction.isNotBlank()) "$systemInstruction\n\n$historyPrompt" else historyPrompt
-            val response = model.generateContent(fullPrompt)
-            val text = response.text?.trim() ?: ""
-            if (text.isNotBlank()) {
-                return@withContext GeminiRequestResult(success = true, text = text)
+        for (targetModel in listOf("gemini-3.6-flash", "gemini-3.5-flash")) {
+            try {
+                val model = GenerativeModel(
+                    modelName = targetModel,
+                    apiKey = effectiveKey
+                )
+                val historyPrompt = messages.joinToString("\n") { "${it.role}: ${it.content}" }
+                val fullPrompt = if (systemInstruction.isNotBlank()) "$systemInstruction\n\n$historyPrompt" else historyPrompt
+                val response = model.generateContent(fullPrompt)
+                val text = response.text?.trim() ?: ""
+                if (text.isNotBlank()) {
+                    return@withContext GeminiRequestResult(success = true, text = text)
+                }
+            } catch (e: Throwable) {
+                android.util.Log.e("AiRepository", "GenerativeModel Gemini ($targetModel) failed: ${e.message}")
             }
-        } catch (e: Throwable) {
-            android.util.Log.e("AiRepository", "GenerativeModel Gemini failed: ${e.message}")
         }
 
         GeminiRequestResult(success = false, text = "")

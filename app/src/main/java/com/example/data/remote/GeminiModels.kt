@@ -13,7 +13,8 @@ data class GenerateContentRequest(
 
 @Serializable
 data class Content(
-    val parts: List<Part>
+    val parts: List<Part>,
+    val role: String? = null
 )
 
 @Serializable
