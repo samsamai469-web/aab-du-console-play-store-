@@ -132,13 +132,51 @@ class ApiKeyManager(context: Context) {
         }
     }
 
+    fun getActiveTavilyApiKey(): String {
+        val customKey = prefs.getString(KEY_CUSTOM_TAVILY_API_KEY, null)?.trim()
+        if (!customKey.isNullOrBlank() && !customKey.startsWith("tvly-your-tavily")) {
+            return customKey
+        }
+        val buildConfigKey = try {
+            BuildConfig.TAVILY_API_KEY
+        } catch (_: Throwable) {
+            ""
+        }
+        val clean = buildConfigKey.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+        return if (clean.isNotBlank() && !clean.startsWith("tvly-your-tavily")) clean else ""
+    }
+
+    fun isTavilyConfigured(): Boolean {
+        return getActiveTavilyApiKey().isNotBlank()
+    }
+
+    fun saveTavilyApiKey(key: String) {
+        val clean = key.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+        if (clean.isBlank() || clean.startsWith("tvly-your-tavily")) {
+            clearTavilyApiKey()
+        } else {
+            prefs.edit().putString(KEY_CUSTOM_TAVILY_API_KEY, clean).apply()
+        }
+    }
+
+    fun clearTavilyApiKey() {
+        prefs.edit().remove(KEY_CUSTOM_TAVILY_API_KEY).apply()
+    }
+
     companion object {
         private const val PREFS_NAME = "sam_ai_api_keys"
         private const val KEY_CUSTOM_GEMINI_API_KEY = "custom_gemini_api_key"
         private const val KEY_CUSTOM_GEMINI_LIVE_API_KEY = "custom_gemini_live_api_key"
+        private const val KEY_CUSTOM_TAVILY_API_KEY = "custom_tavily_api_key"
         val DEFAULT_GEMINI_API_KEY: String
             get() = try {
                 BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+            } catch (_: Throwable) {
+                ""
+            }
+        val DEFAULT_TAVILY_API_KEY: String
+            get() = try {
+                BuildConfig.TAVILY_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
             } catch (_: Throwable) {
                 ""
             }

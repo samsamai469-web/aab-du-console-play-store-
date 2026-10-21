@@ -91,6 +91,8 @@ class SamAiViewModel(
     val audienceManager: AnonymousAudienceManager? = null
 ) : ViewModel() {
 
+    private val tavilySearchService = com.example.data.remote.TavilySearchService()
+
     fun auditLog(actionId: String, severity: String, details: String) {
         viewModelScope.launch {
             auditDao?.insertLog(
@@ -2347,6 +2349,17 @@ class SamAiViewModel(
     fun clearGeminiApiKey() = apiKeyManager.clearGeminiApiKey()
     suspend fun testGeminiApiKey(candidateKey: String): Pair<Boolean, String> = apiKeyManager.testApiKey(candidateKey)
 
+    fun getActiveTavilyApiKey(): String = apiKeyManager.getActiveTavilyApiKey()
+    fun isTavilyConfigured(): Boolean = apiKeyManager.isTavilyConfigured()
+    fun saveTavilyApiKey(key: String) {
+        apiKeyManager.saveTavilyApiKey(key)
+        auditLog("API_KEY_TAVILY_SAVED", "INFO", "Clé API Tavily mise à jour.")
+    }
+    fun clearTavilyApiKey() {
+        apiKeyManager.clearTavilyApiKey()
+        auditLog("API_KEY_TAVILY_CLEARED", "INFO", "Clé API Tavily supprimée.")
+    }
+
     // =========================================================================
     // SAM AI ASSISTANT UNIVERSEL & INTELLIGENT (AVEC PERSISTANCE FIREBASE HEBDOMADAIRE)
     // =========================================================================
@@ -2448,6 +2461,18 @@ class SamAiViewModel(
 Tu es SAM AI, une intelligence artificielle d'élite, cultivée, brillante, polyvalente et experte, conçue à l'image des meilleures IA modernes de référence.
 Tu as été développée par Abdoul Mohamine Sawadogo, un jeune développeur burkinabè, avec l'ambition de fournir un assistant intelligent de très haut niveau, utile, pédagogique et ouvert sur le monde.
 
+DATE DU JOUR IMPÉRATIVE :
+Aujourd'hui nous sommes exactement le $currentDateStr ($currentTimeStr).
+Tu dois te baser sur cette date actuelle pour toute réponse temporelle, actualité ou événement.
+
+GROUNDING GOOGLE SEARCH & OBLIGATION DE RECHERCHE EN DIRECT :
+1. Tu disposes de l'outil de recherche web en direct Google Search (googleSearch).
+2. Pour TOUTE question portant sur un score sportif, un résultat de match, un classement, la météo, un cours de monnaie, une actualité politique, économique ou un fait récent, tu as l'OBLIGATION ABSOLUE d'effectuer une recherche web avec l'outil googleSearch. Ne réponds JAMAIS de mémoire ou par extrapolation pour ces informations récentes.
+3. RÈGLE STRICTE SUR LES MATCHS NON PRÉCISÉS :
+   Si l'utilisateur demande le score ou le résultat d'une équipe ou d'un club sans préciser la date ou la compétition (par exemple : « Quel est le score du Real Madrid ? », « Résultat du match du Barça », « Dernier score du PSG »), recherche et donne TOUJOURS et OBLIGATOIREMENT le résultat du match le PLUS RÉCENT joué par cette équipe à ce jour ($currentDateStr).
+   Précise clairement : la date du match, la compétition, l'adversaire, le score final exact et les buteurs s'ils sont connus.
+4. Tu as un accès complet à Internet en temps réel grâce à l'outil googleSearch. Ne dis JAMAIS que tu n'as pas accès à Internet ou que tes données s'arrêtent à une date passée.
+
 RÈGLES D'OR DE COMPORTEMENT :
 1. RÉPONSES DIRECTES, FLUIDES ET SANS BAVARDAGE INUTILE :
    - Réponds directement et précisément au sujet sans jamais commencer par des salutations redondantes ("Bonjour", "Je suis SAM AI", etc.) lorsque la discussion est engagée.
@@ -2462,8 +2487,6 @@ RÈGLES D'OR DE COMPORTEMENT :
 5. RÈGLE STRICTE SUR L'IDENTITÉ ET LE CRÉATEUR :
    - Tu ne mentionnes ton créateur (Abdoul Mohamine Sawadogo) que SI et SEULEMENT SI l'utilisateur te demande explicitement qui t'a créé, développé ou conçu (ex: "Qui t'a créé ?", "Qui est ton créateur ?").
    - Dans toutes les autres situations, concentre-toi à 100% sur la question posée par l'utilisateur sans aucune digression sur ton identité.
-
-DATE ET HEURE ACTUELLES : Nous sommes le $currentDateStr ($currentTimeStr).
 """.trimIndent()
 
             val qNorm = userText.lowercase(java.util.Locale.ROOT)
@@ -2547,25 +2570,81 @@ DATE ET HEURE ACTUELLES : Nous sommes le $currentDateStr ($currentTimeStr).
                 try { BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim() } catch (_: Throwable) { "" }
             }
 
-            val isSearchNeeded = userText.contains("recherche web", ignoreCase = true) ||
-                userText.contains("sur le web", ignoreCase = true) ||
-                userText.contains("sur google", ignoreCase = true) ||
-                userText.contains("actualité en direct", ignoreCase = true) ||
-                userText.contains("actu en direct", ignoreCase = true) ||
-                userText.contains("infos en direct", ignoreCase = true) ||
-                userText.contains("météo aujourd'hui", ignoreCase = true) ||
-                userText.contains("dernières nouvelles", ignoreCase = true)
+            val isSearchNeeded = true // 100% en ligne avec recherche web active
 
             var responseText = ""
             var isError = false
             var responseSources: List<com.example.data.local.WebSource> = emptyList()
 
+            // 0. Recherche Web systématique en direct via Tavily Search API
+            val tavilyKey = getActiveTavilyApiKey().ifBlank {
+                try { BuildConfig.TAVILY_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim() } catch (_: Throwable) { "" }
+            }
+            val tavilySources = mutableListOf<com.example.data.local.WebSource>()
+            var tavilySearchContext = ""
+
+            if (tavilyKey.isNotBlank() && !tavilyKey.startsWith("tvly-your-tavily")) {
+                try {
+                    val isNews = userText.contains("actu", ignoreCase = true) ||
+                        userText.contains("nouvelle", ignoreCase = true) ||
+                        userText.contains("recent", ignoreCase = true) ||
+                        userText.contains("aujourd'hui", ignoreCase = true) ||
+                        userText.contains("hier", ignoreCase = true) ||
+                        userText.contains("match", ignoreCase = true) ||
+                        userText.contains("score", ignoreCase = true) ||
+                        userText.contains("sport", ignoreCase = true) ||
+                        userText.contains("president", ignoreCase = true) ||
+                        userText.contains("gouvernement", ignoreCase = true) ||
+                        userText.contains("meteo", ignoreCase = true)
+
+                    val tavilyResp = tavilySearchService.search(
+                        query = userText,
+                        apiKey = tavilyKey,
+                        isNews = isNews
+                    )
+                    if (tavilyResp != null && tavilyResp.results.isNotEmpty()) {
+                        tavilySources.addAll(tavilyResp.results.map { item ->
+                            val domain = try {
+                                java.net.URI(item.url).host?.removePrefix("www.").orEmpty()
+                            } catch (_: Throwable) { "" }
+                            com.example.data.local.WebSource(
+                                title = item.title.ifBlank { domain.ifBlank { "Source Web" } },
+                                url = item.url,
+                                domain = domain
+                            )
+                        })
+
+                        tavilySearchContext = buildString {
+                            appendLine("\n--- RÉSULTATS DE RECHERCHE EN DIRECT DU WEB (TAVILY) ---")
+                            if (!tavilyResp.answer.isNullOrBlank()) {
+                                appendLine("Synthèse directe Tavily : ${tavilyResp.answer}")
+                            }
+                            tavilyResp.results.forEachIndexed { idx, res ->
+                                appendLine("[Source ${idx + 1}] Titre : ${res.title}")
+                                appendLine("URL : ${res.url}")
+                                appendLine("Extrait : ${res.content}")
+                            }
+                            appendLine("--- FIN DES RÉSULTATS TAVILY ---")
+                            appendLine("Consignes impératives : Utilise les résultats ci-dessus du Web en direct pour répondre précisément à l'utilisateur. Ne dis jamais que tu n'as pas accès à Internet.")
+                        }
+                    }
+                } catch (tavilyEx: Throwable) {
+                    Log.w("SamAiViewModel", "Tavily search failed: ${tavilyEx.message}")
+                }
+            }
+
+            val finalSystemInstruction = if (tavilySearchContext.isNotBlank()) {
+                systemInstruction + "\n" + tavilySearchContext
+            } else {
+                systemInstruction
+            }
+
             try {
-                // 1. Appel ultra-rapide et haute fidélité avec gemini-3.6-flash
+                // 1. Appel ultra-rapide et haute fidélité avec gemini-3.6-flash en ligne
                 val result = aiRepository.executeGeminiRequest(
                     apiKey = activeKey,
                     messages = currentHistory,
-                    systemInstruction = systemInstruction,
+                    systemInstruction = finalSystemInstruction,
                     enableSearch = isSearchNeeded,
                     temperature = 0.2,
                     maxOutputTokens = tokenLimit,
@@ -2573,10 +2652,14 @@ DATE ET HEURE ACTUELLES : Nous sommes le $currentDateStr ($currentTimeStr).
                 )
                 if (result.success && result.text.isNotBlank()) {
                     responseText = result.text
-                    responseSources = result.sources
+                    val mergedSources = (result.sources + tavilySources).distinctBy { it.url }
+                    responseSources = mergedSources
                 } else {
-                    // 2. Appel de secours direct avec modèles actifs vérifiés
-                    val candidateFallbackModels = listOf("gemini-3.6-flash", "gemini-3.5-flash")
+                    // 2. Appel de secours direct avec modèles actifs et Grounding Google Search
+                    val googleSearchTool = kotlinx.serialization.json.buildJsonObject {
+                        put("googleSearch", kotlinx.serialization.json.buildJsonObject {})
+                    }
+                    val candidateFallbackModels = listOf("gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest")
                     for (fallbackModel in candidateFallbackModels) {
                         try {
                             val req = com.example.data.remote.GenerateContentRequest(
@@ -2587,21 +2670,43 @@ DATE ET HEURE ACTUELLES : Nous sommes le $currentDateStr ($currentTimeStr).
                                     )
                                 },
                                 systemInstruction = com.example.data.remote.Content(
-                                    parts = listOf(com.example.data.remote.Part(text = systemInstruction))
+                                    parts = listOf(com.example.data.remote.Part(text = finalSystemInstruction))
                                 ),
                                 generationConfig = com.example.data.remote.GenerationConfig(
                                     temperature = 0.3f,
                                     maxOutputTokens = tokenLimit
-                                )
+                                ),
+                                tools = listOf(googleSearchTool)
                             )
                             val resp = com.example.data.remote.RetrofitClient.geminiService.generateContent(
                                 model = fallbackModel,
                                 apiKey = activeKey,
                                 request = req
                             )
-                            val rawText = resp.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text.orEmpty().trim()
+                            val candidate = resp.candidates.firstOrNull()
+                            val rawText = candidate?.content?.parts?.firstOrNull()?.text.orEmpty().trim()
+                            val fallbackGroundingSources = mutableListOf<com.example.data.local.WebSource>()
+                            candidate?.groundingMetadata?.groundingChunks?.forEach { chunk ->
+                                val uri = chunk.web?.uri.orEmpty().trim()
+                                val title = chunk.web?.title.orEmpty().trim()
+                                if (uri.isNotBlank()) {
+                                    val domain = try {
+                                        java.net.URI(uri).host?.removePrefix("www.").orEmpty()
+                                    } catch (_: Throwable) { "" }
+                                    fallbackGroundingSources.add(
+                                        com.example.data.local.WebSource(
+                                            title = title.ifBlank { domain.ifBlank { "Google Search" } },
+                                            url = uri,
+                                            domain = domain
+                                        )
+                                    )
+                                }
+                            }
+
                             if (rawText.isNotBlank()) {
                                 responseText = rawText
+                                val mergedSources = (fallbackGroundingSources + tavilySources).distinctBy { it.url }
+                                responseSources = mergedSources
                                 break
                             }
                         } catch (ex: Exception) {
@@ -2613,27 +2718,10 @@ DATE ET HEURE ACTUELLES : Nous sommes le $currentDateStr ($currentTimeStr).
                 Log.e("SamAiViewModel", "Erreur SAM AI Chat", e)
             }
 
-            // 3. Secours intelligent local si le service en ligne n'a pas répondu
+            // 3. Traitement strict en cas d'absence de réseau : 100% en ligne, aucune interception locale
             if (responseText.isBlank()) {
-                val localAnswer = findLocalKnowledgeAnswer(userText)
-                if (localAnswer.isNotBlank()) {
-                    responseText = localAnswer
-                    isError = false
-                } else if (isDetailRequested) {
-                    val lastBotResponse = currentList.dropLast(1).lastOrNull { it.sender == "sam_ai" && !it.isError }?.text
-                    if (!lastBotResponse.isNullOrBlank()) {
-                        responseText = "Pour approfondir ce sujet :\n\n" +
-                            "• Points clés : Il convient d'analyser en détail les causes, les implications directes et les perspectives pratiques.\n" +
-                            "• Démarche : Souhaitez-vous explorer un angle technique, historique ou pratique particulier sur ce thème ?"
-                        isError = false
-                    } else {
-                        responseText = "Je suis prêt à détailler ce sujet. Pourriez-vous préciser sur quel aspect particulier vous souhaitez que nous nous concentrions ?"
-                        isError = false
-                    }
-                } else {
-                    responseText = "Je n'ai pas pu joindre le serveur pour générer une réponse complète à l'instant. Veuillez vérifier votre connexion Internet et réessayer, ou posez-moi une question sur le Burkina Faso, ses langues (Mooré, Dioula), son histoire ou sa culture !"
-                    isError = false
-                }
+                responseText = "Connexion Internet requise. Veuillez vérifier votre réseau pour utiliser SAM AI et effectuer des recherches en direct."
+                isError = true
             }
 
             _isSamAiGeminiThinking.value = false

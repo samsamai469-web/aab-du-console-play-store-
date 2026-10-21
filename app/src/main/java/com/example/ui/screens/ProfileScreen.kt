@@ -86,6 +86,7 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
     var showGoogleDirectDialog by remember { mutableStateOf(false) }
     var showEmailAuthDialog by remember { mutableStateOf(false) }
     var showLogoutDialog by remember { mutableStateOf(false) }
+    var showAiConfigDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -633,6 +634,53 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Spacer(modifier = Modifier.height(8.dp))
+
+                    // 0. Configuration IA & Recherche Web (Tavily & Gemini)
+                    ListItem(
+                        modifier = Modifier
+                            .clickable { showAiConfigDialog = true }
+                            .testTag("item_profile_ai_config"),
+                        leadingContent = {
+                            Surface(
+                                shape = CircleShape,
+                                color = MaterialTheme.colorScheme.primaryContainer,
+                                modifier = Modifier.size(38.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.TravelExplore,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        },
+                        headlineContent = {
+                            Text(
+                                text = "Recherche Web & IA (Tavily / Gemini)",
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                        },
+                        supportingContent = {
+                            Text(
+                                text = if (viewModel.isTavilyConfigured()) "Recherche Web Tavily active • 100% en ligne" else "Recherche Web Google active • 100% en ligne",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        trailingContent = {
+                            Icon(
+                                Icons.Default.KeyboardArrowRight,
+                                contentDescription = "Ouvrir",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        },
+                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                    )
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
                     // 1. Langue de l'application (Ouvre la page dédiée)
                     ListItem(
@@ -1244,6 +1292,123 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                             }
                         ) {
                             Text("Enregistrer les Clés", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- 0.12 DIALOGUE DE CONFIGURATION IA & RECHERCHE WEB (TAVILY / GEMINI) ---
+    if (showAiConfigDialog) {
+        var inputTavilyKey by remember { mutableStateOf(viewModel.getActiveTavilyApiKey()) }
+        var inputGeminiKey by remember { mutableStateOf(viewModel.getActiveGeminiApiKey()) }
+        var savedAiMessage by remember { mutableStateOf<String?>(null) }
+
+        Dialog(onDismissRequest = { showAiConfigDialog = false }) {
+            Surface(
+                shape = RoundedCornerShape(20.dp),
+                color = MaterialTheme.colorScheme.surface,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                tonalElevation = 6.dp
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.TravelExplore,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text(
+                            text = "Configuration IA & Recherche Web",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Text(
+                        text = "SAM AI fonctionne en ligne avec Google Gemini et effectue systématiquement ses recherches sur le Web en direct via Tavily Search API.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    OutlinedTextField(
+                        value = inputTavilyKey,
+                        onValueChange = { inputTavilyKey = it },
+                        label = { Text("Clé API Tavily (app.tavily.com)") },
+                        placeholder = { Text("tvly-xxxxxxxxxxxx") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    OutlinedTextField(
+                        value = inputGeminiKey,
+                        onValueChange = { inputGeminiKey = it },
+                        label = { Text("Clé API Gemini (aistudio.google.com)") },
+                        placeholder = { Text("AIzaSy...") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    )
+
+                    if (!savedAiMessage.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Surface(
+                            shape = RoundedCornerShape(8.dp),
+                            color = MaterialTheme.colorScheme.primaryContainer,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = savedAiMessage ?: "",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.padding(10.dp),
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        TextButton(onClick = { showAiConfigDialog = false }) {
+                            Text("Fermer")
+                        }
+
+                        Button(
+                            onClick = {
+                                viewModel.saveTavilyApiKey(inputTavilyKey.trim())
+                                if (inputGeminiKey.trim().isNotBlank()) {
+                                    viewModel.saveGeminiApiKey(inputGeminiKey.trim())
+                                }
+                                savedAiMessage = "Paramètres IA enregistrés avec succès !"
+                                Toast.makeText(context, "Configuration IA & Tavily mise à jour !", Toast.LENGTH_SHORT).show()
+                            }
+                        ) {
+                            Text("Enregistrer", fontWeight = FontWeight.Bold)
                         }
                     }
                 }

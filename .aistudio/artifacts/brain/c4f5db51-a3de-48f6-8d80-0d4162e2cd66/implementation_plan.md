@@ -1,101 +1,101 @@
-# Résolution et Fiabilisation du Moteur de Traduction Multilingue
+# Intégration de la Recherche Web Tavily avec Google Gemini pour SAM AI
 
-Ce plan vise à corriger définitivement le dysfonctionnement de la traduction sur l'écran principal où la phrase tapée revenait à l'identique sans être traduite. Il met en place une architecture robuste : traduction mot-à-mot certifiée par le dictionnaire local pour les mots et noms isolés, et traduction directe haute fidélité par l'IA Gemini (`gemini-3.5-flash` via Retrofit REST) pour toutes les phrases et combinaisons de langues.
+Ce plan d'architecture détaille l'intégration native du moteur de recherche en direct **Tavily Search API** couplé à **Google Gemini** (`gemini-3.6-flash` / `gemini-3.5-flash`), conformément au script Python fourni par l'utilisateur et adapté à l'environnement Android.
+
+---
 
 ### User Review & Critical Decisions
 
 > [!IMPORTANT]
 > Les trois décisions suivantes ont été validées lors de notre échange de clarification :
 
-- **Couverture linguistique validée** : Toutes les combinaisons de langues prises en charge (Français ⇄ Mooré, Français ⇄ Dioula, Français ⇄ Haoussa, Français ⇄ Anglais, et inter-langues).
-- **Écran cible confirmé** : L'onglet principal **Traduction** (avec retombées positives sur la caméra/photo et l'audio).
-- **Stratégie hybride intelligente confirmée** :
-  1. *Pour les mots et petits noms* : Recherche instantanée et mot-à-mot dans le dictionnaire certifié hors-ligne (1900+ entrées).
-  2. *Pour les phrases* : Traduction fluide, naturelle et directe par l'IA Gemini (`gemini-3.5-flash`), sans jamais renvoyer la phrase d'origine non traduite.
+- **Configuration de la clé API Tavily** : Prise en charge via les variables d'environnement et `BuildConfig.TAVILY_API_KEY` (avec injection automatique via `.env.example` et le panneau Secrets d'AI Studio, et possibilité de personnalisation).
+- **Déclenchement de la recherche** : Exécution systématique de la recherche web Tavily sur toutes les questions posées à SAM AI pour garantir une pertinence maximale et des données en temps réel.
+- **Affichage des sources web** : Présentation sous forme de badges de sources cliquables sous la réponse, affichant le titre ou domaine avec ouverture du lien web au clic.
 
 ---
 
 ### 1. Overview & Core Concept
 
 - **What It Does** :
-  Permet aux utilisateurs de saisir n'importe quelle phrase ou mot dans l'onglet Traduction et d'obtenir immédiatement la traduction exacte dans la langue cible sans échec, sans blocage et sans retour de la phrase source.
+  - Lorsqu'un utilisateur pose une question à SAM AI, l'application interroge d'abord l'API Tavily (`POST https://api.tavily.com/search`) pour récupérer les 5 résultats web les plus pertinents et récents (titres, URLs, extraits de contenu et synthèse).
+  - Ces résultats sont injectés en contexte enrichi dans la requête Gemini (`gemini-3.6-flash` / `gemini-3.5-flash`).
+  - Gemini rédige une réponse fluide, structurée et précise en citant les faits récents.
+  - Les sources web réelles sont attachées au message et présentées sous forme de badges cliquables interactifs.
 - **Target Audience / Persona** :
-  Toute personne souhaitant communiquer, apprendre ou traduire entre les langues du Burkina Faso (Mooré, Dioula, Haoussa) et les langues internationales (Français, Anglais).
+  - Tout utilisateur souhaitant obtenir des réponses d'actualité, des données en direct (Burkina Faso, Afrique, monde, météo, économie, résultats sportifs) et vérifier les sources d'information.
 - **Key Value** :
-  Suppression du bug où la phrase d'entrée revenait telle quelle ; traduction garantie, fluide et exacte.
+  - SAM AI ne souffre plus d'aucune coupure de connaissances temporelle ; il combine la puissance de raisonnement de Gemini avec la fraîcheur du web en direct via Tavily.
 
 ---
 
 ### 2. User Experience & Visual Design
 
 - **Key User Flows** :
-  1. *Saisie d'un mot ou petit nom (ex: « Maison », « Eau », « Marché »)* :
-     - Résolution immédiate par le dictionnaire local certifié (`Yiri`, `Koom`, `Raaga` en Mooré / `So`, `Ji`, `Sugu` en Dioula).
-     - Badge : « Dictionnaire Certifié » ou « Corpus Local ».
-  2. *Saisie d'une phrase complète (ex: « Bonjour mon ami, comment vas-tu ? »)* :
-     - Appel direct au moteur IA Gemini (`gemini-3.5-flash`).
-     - Rendu direct et naturel de la phrase traduite (ex: « *Ne yibeoogo m zoa, f laafi be ?* » en Mooré ou « *I ni sogoma ne teri, i ka kɛnɛ wa ?* » en Dioula).
-     - Badge : « Traduction IA Gemini ».
-  3. *Gestion des cas hors-ligne / réseau faible* :
-     - Si le réseau est temporairement indisponible, tentative de recomposition lexicale intelligente mot-à-mot.
-     - Si une phrase ne peut être traduite, affichage d'un message explicatif clair plutôt que de dupliquer silencieusement le texte d'origine.
+  1. *Saisie d'une question dans le chat SAM AI* :
+     - L'utilisateur tape par exemple : *« Quelle est la dernière actualité au Burkina Faso ? »* ou *« Qui a gagné le dernier match ? »*.
+     - Indicateur de progression : *« Recherche web en cours avec Tavily... »*.
+  2. *Affichage de la réponse et des sources* :
+     - La réponse de SAM AI s'affiche avec clarté.
+     - Juste en dessous de la bulle de message, une section *« Sources Web en temps réel : »* présente les badges interactifs :
+       - Icône web 🌐
+       - Titre de l'article ou domaine (ex: *lefaso.net*, *sidwaya.info*, *rfi.fr*)
+       - Au clic sur le badge, ouverture instantanée de l'article dans le navigateur.
+  3. *Gestion de la clé ou de l'absence de réseau* :
+     - Si la clé Tavily n'est pas configurée ou indisponible, repli transparent sur la recherche web native ou les connaissances Gemini sans faire échouer la discussion.
+     - Si aucune connexion Internet n'est détectée, notification claire : *« Connexion Internet requise pour la recherche en direct »*.
 - **Visual Identity & Theme** :
-  - Respect de l'interface Material 3 existante.
-  - Indicateur de chargement propre avec bouton d'action et feedback sonore (TTS).
+  - Respect strict des directives Material 3.
+  - Badges de sources avec coins arrondis, bordure discrète et retour haptique/ripple au toucher.
 
 ---
 
 ### 3. Key Product Decisions & Trade-Offs
 
-- **Décision 1 : Intégration de Retrofit REST pour `translateDirectly`**
-  - *Approche choisie* : Utiliser `RetrofitClient.geminiService` avec le modèle `gemini-3.5-flash` au lieu de dépendre du service non officiel `GoogleTranslationService` (qui rejette `mos` et `dyu` avec une erreur HTTP 400).
-  - *Bénéfice* : Fonctionnement immédiat et éprouvé sur toutes les langues sans dépendance externe fragile.
-- **Décision 2 : Priorisation intelligente selon la longueur et le type de texte**
-  - *Approche choisie* : Si le texte comporte 1 à 2 mots simples, interroger en priorité le dictionnaire certifié local. Dès qu'il s'agit d'une phrase (≥ 3 mots ou ponctuation), faire appel directement à l'IA Gemini tout en conservant le dictionnaire en repli.
-  - *Bénéfice* : Vitesse instantanée sur le vocabulaire et fluidité parfaite sur les phrases.
-- **Décision 3 : Élimination du fallback silencieux `translated = cleanText`**
-  - *Approche choisie* : Interdire le renvoi de la phrase source brute lorsque les langues source et cible sont différentes. En cas de panne totale de réseau, fournir un message pédagogique clair ou une traduction mot-à-mot avec alertes.
-  - *Bénéfice* : Fin de l'incompréhension pour l'utilisateur.
+- **Décision 1 : Client Retrofit / OkHttp dédié pour Tavily Search**
+  - *Approche choisie* : Création d'un service léger `TavilySearchService` utilisant OkHttp et `kotlinx.serialization` pour appeler `https://api.tavily.com/search`.
+  - *Bénéfice* : Aucun SDK lourd Python nécessaire ; intégration 100% native Kotlin asynchrone avec coroutines sans surcoût d'APK.
+- **Décision 2 : Injection de contexte en deux temps (Recherche -> Synthèse Gemini)**
+  - *Approche choisie* : Exécuter la recherche Tavily en amont de l'appel Gemini, puis injecter les extraits dans le prompt système et associer les `WebSource` au message final.
+  - *Bénéfice* : Réponse déterministe, zéro hallucination sur les URLs, et contrôle parfait des badges de sources dans l'interface Compose.
+- **Décision 3 : Secret Management sécurisé (`TAVILY_API_KEY`)**
+  - *Approche choisie* : Déclaration de `TAVILY_API_KEY` dans `.env.example`, accès via `BuildConfig.TAVILY_API_KEY` et intégration dans `ApiKeyManager`.
+  - *Bénéfice* : Sécurité garantie, respect strict de la politique de secrets d'AI Studio, et flexibilité pour l'utilisateur.
 
 ---
 
 ### 4. Technical Architecture & Data Strategy
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                     TranslationScreen (UI)                       │
-│    (Saisie texte, sélection langue source -> langue cible)       │
-└─────────────────────────────────┬────────────────────────────────┘
-                                  │
-                                  ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                      SamAiViewModel                              │
-│    - translate(source, target, text)                             │
-└─────────────────────────────────┬────────────────────────────────┘
-                                  │
-                                  ▼
-┌──────────────────────────────────────────────────────────────────┐
-│                  TranslationRepository                           │
-│  1. Si mot/nom court (1-2 mots) -> Dictionnaire local certifié   │
-│  2. Si phrase -> Moteur IA Gemini (AiRepository.translateDirect) │
-│  3. Recomposition lexicale / Fallback sécurisé                   │
-└──────────────────┬──────────────────────────────┬────────────────┘
-                   │                              │
-                   ▼                              ▼
-┌──────────────────────────────────┐ ┌─────────────────────────────┐
-│          AiRepository            │ │   DictionaryLookupEngine    │
-│  - RetrofitClient.geminiService  │ │  (1900+ entrées Mooré,      │
-│  - gemini-3.5-flash              │ │   Dioula, Haoussa hors-     │
-│  - Prompt haute fidélité         │ │   ligne certifiées)         │
-└──────────────────────────────────┘ └─────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                    SamAiGeminiAssistantModal (UI)                    │
+│     - Champ de saisie utilisateur                                    │
+│     - Bulles de messages avec Badges de Sources Web cliquables       │
+└──────────────────────────────────┬───────────────────────────────────┘
+                                   │
+                                   ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│                            SamAiViewModel                            │
+│     - askSamAiGemini(userText)                                       │
+│     - Orchestre la recherche Tavily et l'appel Gemini                │
+└──────────────────┬───────────────────────────────┬───────────────────┘
+                   │                               │
+                   ▼                               ▼
+┌──────────────────────────────────┐ ┌─────────────────────────────────┐
+│       TavilySearchService        │ │          AiRepository           │
+│  - POST https://api.tavily.com   │ │  - RetrofitClient Gemini REST   │
+│  - Extraction titres, URLs,      │ │  - gemini-3.6-flash / 3.5-flash │
+│    extraits de contenu récents   │ │  - Injection contexte web       │
+└──────────────────────────────────┘ └─────────────────────────────────┘
 ```
 
-- **Fichiers modifiés lors de l'exécution** :
-  1. `app/src/main/java/com/example/data/repository/AiRepository.kt` :
-     - Implémenter l'appel `RetrofitClient.geminiService` avec `gemini-3.5-flash` dans `translateDirectly`.
-     - Nettoyer le formatage du prompt de traduction pour garantir une sortie directe sans fioritures.
-  2. `app/src/main/java/com/example/data/repository/TranslationRepository.kt` :
-     - Ajuster l'ordre des résolutions : dictionnaire pour les mots isolés, IA directe pour les phrases.
-     - Remplacer le renvoi silencieux de la phrase source par une restitution utile.
-  3. `app/src/main/java/com/example/ui/SamAiViewModel.kt` :
-     - Synchroniser le flux d'affichage et la gestion des états de traduction.
+- **Composants et Fichiers à modifier / créer** :
+  1. `.env.example` :
+     - Ajouter `TAVILY_API_KEY=tvly-your-tavily-api-key-here`.
+  2. `app/src/main/java/com/example/data/remote/TavilySearchService.kt` :
+     - Définir les modèles de données sérialisables (`TavilySearchRequest`, `TavilySearchResponse`, `TavilySearchResultItem`).
+     - Créer le client HTTP appelant `https://api.tavily.com/search`.
+  3. `app/src/main/java/com/example/data/local/ApiKeyManager.kt` :
+     - Gérer la récupération de `TAVILY_API_KEY` via `BuildConfig.TAVILY_API_KEY` et SharedPreferences.
+  4. `app/src/main/java/com/example/ui/SamAiViewModel.kt` :
+     - Déclencher la recherche Tavily avant la génération Gemini, mapper les résultats vers `List<WebSource>`, et injecter le contexte d'actualité.

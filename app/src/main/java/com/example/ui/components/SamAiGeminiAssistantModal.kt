@@ -784,38 +784,44 @@ fun ChatBubbleItem(
                             )
                         }
                         val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
-                        Row(
+                        LazyRow(
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .padding(bottom = 4.dp),
+                                .padding(bottom = 6.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            message.sources.take(3).forEach { source ->
+                            items(message.sources) { source ->
                                 Surface(
                                     onClick = {
                                         try {
                                             uriHandler.openUri(source.url)
                                         } catch (_: Exception) {}
                                     },
-                                    shape = RoundedCornerShape(6.dp),
-                                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.8f),
-                                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant)
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                                    border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
                                 ) {
                                     Row(
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp),
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Icon(
                                             Icons.Default.Language,
                                             contentDescription = null,
-                                            modifier = Modifier.size(11.dp),
+                                            modifier = Modifier.size(12.dp),
                                             tint = MaterialTheme.colorScheme.primary
                                         )
-                                        Spacer(modifier = Modifier.width(3.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        val displayLabel = if (source.title.isNotBlank()) {
+                                            source.title.take(30)
+                                        } else {
+                                            source.domain.ifBlank { "Lien web" }
+                                        }
                                         Text(
-                                            text = source.domain.ifBlank { source.title.take(15) },
+                                            text = displayLabel,
                                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontWeight = FontWeight.Medium,
+                                            color = MaterialTheme.colorScheme.onSurface,
                                             maxLines = 1
                                         )
                                     }

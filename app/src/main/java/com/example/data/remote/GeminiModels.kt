@@ -70,7 +70,31 @@ data class Candidate(
     val content: Content,
     val finishReason: String? = null,
     val index: Int? = null,
-    val safetyRatings: List<SafetyRating>? = null
+    val safetyRatings: List<SafetyRating>? = null,
+    val groundingMetadata: GroundingMetadata? = null
+)
+
+@Serializable
+data class GroundingMetadata(
+    val webSearchQueries: List<String>? = null,
+    val searchEntryPoint: SearchEntryPoint? = null,
+    val groundingChunks: List<GroundingChunk>? = null
+)
+
+@Serializable
+data class GroundingChunk(
+    val web: WebChunk? = null
+)
+
+@Serializable
+data class WebChunk(
+    val uri: String? = null,
+    val title: String? = null
+)
+
+@Serializable
+data class SearchEntryPoint(
+    val renderedContent: String? = null
 )
 
 @Serializable

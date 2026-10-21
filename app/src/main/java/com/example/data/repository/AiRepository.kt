@@ -387,42 +387,78 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         }
 
         val modelsToTry = if (preferredModel.isNotBlank()) {
-            listOf(preferredModel, "gemini-3.6-flash", "gemini-3.5-flash").distinct()
+            listOf(preferredModel, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest").distinct()
         } else {
-            listOf("gemini-3.6-flash", "gemini-3.5-flash")
+            listOf("gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest")
         }
 
-        // 1. Appel direct via Retrofit
+        val googleSearchTool = kotlinx.serialization.json.buildJsonObject {
+            put("googleSearch", kotlinx.serialization.json.buildJsonObject {})
+        }
+
+        // Active Grounding with Google Search (googleSearch) dans chaque appel à l'API Gemini
+        val toolsToAttempt = listOf(
+            listOf(googleSearchTool),
+            null // Repli d'urgence si indisponibilité du quota d'outils
+        )
+
+        // 1. Appel direct via Retrofit avec Grounding Google Search
         for (targetModel in modelsToTry) {
-            try {
-                val req = com.example.data.remote.GenerateContentRequest(
-                    contents = messages.map {
-                        com.example.data.remote.Content(
-                            role = it.role,
-                            parts = listOf(com.example.data.remote.Part(text = it.content))
-                        )
-                    },
-                    systemInstruction = if (systemInstruction.isNotBlank()) {
-                        com.example.data.remote.Content(
-                            parts = listOf(com.example.data.remote.Part(text = systemInstruction))
-                        )
-                    } else null,
-                    generationConfig = com.example.data.remote.GenerationConfig(
-                        temperature = temperature.toFloat(),
-                        maxOutputTokens = maxOutputTokens
+            for (toolsPayload in toolsToAttempt) {
+                try {
+                    val req = com.example.data.remote.GenerateContentRequest(
+                        contents = messages.map {
+                            com.example.data.remote.Content(
+                                role = it.role,
+                                parts = listOf(com.example.data.remote.Part(text = it.content))
+                            )
+                        },
+                        systemInstruction = if (systemInstruction.isNotBlank()) {
+                            com.example.data.remote.Content(
+                                parts = listOf(com.example.data.remote.Part(text = systemInstruction))
+                            )
+                        } else null,
+                        generationConfig = com.example.data.remote.GenerationConfig(
+                            temperature = temperature.toFloat(),
+                            maxOutputTokens = maxOutputTokens
+                        ),
+                        tools = toolsPayload
                     )
-                )
-                val resp = com.example.data.remote.RetrofitClient.geminiService.generateContent(
-                    model = targetModel,
-                    apiKey = effectiveKey,
-                    request = req
-                )
-                val text = resp.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text?.trim() ?: ""
-                if (text.isNotBlank()) {
-                    return@withContext GeminiRequestResult(success = true, text = text)
+                    val resp = com.example.data.remote.RetrofitClient.geminiService.generateContent(
+                        model = targetModel,
+                        apiKey = effectiveKey,
+                        request = req
+                    )
+                    val candidate = resp.candidates.firstOrNull()
+                    val text = candidate?.content?.parts?.firstOrNull()?.text?.trim() ?: ""
+                    val sources = mutableListOf<WebSource>()
+                    candidate?.groundingMetadata?.groundingChunks?.forEach { chunk ->
+                        val uri = chunk.web?.uri.orEmpty().trim()
+                        val title = chunk.web?.title.orEmpty().trim()
+                        if (uri.isNotBlank()) {
+                            val domain = try {
+                                java.net.URI(uri).host?.removePrefix("www.").orEmpty()
+                            } catch (_: Throwable) { "" }
+                            sources.add(
+                                WebSource(
+                                    title = title.ifBlank { domain.ifBlank { "Google Search" } },
+                                    url = uri,
+                                    domain = domain
+                                )
+                            )
+                        }
+                    }
+
+                    if (text.isNotBlank()) {
+                        return@withContext GeminiRequestResult(
+                            success = true,
+                            text = text,
+                            sources = sources
+                        )
+                    }
+                } catch (e: Throwable) {
+                    android.util.Log.w("AiRepository", "Retrofit Gemini ($targetModel) call failed: ${e.message}")
                 }
-            } catch (e: Throwable) {
-                android.util.Log.w("AiRepository", "Retrofit Gemini ($targetModel) call failed: ${e.message}")
             }
         }
 

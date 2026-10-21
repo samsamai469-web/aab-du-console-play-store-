@@ -1,6 +1,6 @@
 {
-  "summary":  "Plan d'implémentation pour réparer et fiabiliser la traduction multilingue : intégration directe du moteur IA Gemini REST (gemini-3.5-flash) pour les phrases complètes toutes langues confondues (Mooré, Dioula, Haoussa, Français, etc.), conservation du dictionnaire certifié mot-à-mot pour les termes isolés, et élimination du renvoi de la phrase source en cas d'échec.",
-  "updatedAt":  "2026-10-20T22:52:31.132184004Z",
+  "summary":  "Plan d'intégration du moteur de recherche web Tavily avec l'assistant Gemini pour SAM AI. Permet à SAM AI de rechercher systématiquement des informations fraîches et vérifiées sur le web en direct (actualités, météo, scores, faits récents) et d'afficher les badges de sources cliquables avec titre et lien URL.",
+  "updatedAt":  "2026-10-21T00:48:38.316348660Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

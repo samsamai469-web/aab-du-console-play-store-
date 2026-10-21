@@ -148,139 +148,27 @@ class TranslationRepository(
 
         var translated = ""
         var isLocal = false
-        var badge = "Corpus Local"
+        var badge = "En Ligne (Google / Gemini)"
 
-        val words = cleanText.split(Regex("\\s+")).filter { it.isNotBlank() }
-        val hasClausePunctuation = cleanText.any { it in listOf('.', '?', '!', ',', ';', ':') }
-        val isShortText = words.size <= 2 && !hasClausePunctuation
+        // 1. Traduction 100% en ligne (Google Traduction & Gemini Cloud IA)
+        try {
+            val onlineResult = aiFallback(cleanText, sourceLangInput, targetLangInput, "")
+            if (onlineResult.isNotBlank() && !onlineResult.equals(cleanText, ignoreCase = true)) {
+                translated = onlineResult.trim()
+            }
+        } catch (_: Throwable) {}
 
-        if (isShortText) {
-            // Mots et petits noms : Dictionnaire local certifié en priorité
-            // 1. Cache
-            val cached = MultilingualTranslationEngine.getFromCache(cleanText, sourceLangInput, targetLangInput)
-            if (!cached.isNullOrBlank() && !cached.equals(cleanText, ignoreCase = true)) {
-                translated = cached
-                isLocal = true
-                badge = "Mémoire Validée"
-            }
-            // 2. Expressions certifiées
-            if (translated.isBlank()) {
-                val directExp = MultilingualTranslationEngine.tryDirectExpressionMatch(cleanText, sourceLangInput, targetLangInput)
-                if (!directExp.isNullOrBlank() && !directExp.equals(cleanText, ignoreCase = true)) {
-                    translated = directExp
-                    isLocal = true
-                    badge = "Corpus Officiel"
-                }
-            }
-            // 3. Moteur de dictionnaire certifié
-            if (translated.isBlank()) {
-                val dictMatch = DictionaryLookupEngine.translateDirect(cleanText, sourceLangInput, targetLangInput)
-                if (!dictMatch.isNullOrBlank() && !dictMatch.equals(cleanText, ignoreCase = true)) {
-                    translated = dictMatch
-                    isLocal = true
-                    badge = "Dictionnaire Certifié"
-                }
-            }
-            // 4. Base SQLite locale
-            if (translated.isBlank()) {
-                try {
-                    val isFromFrench = sourceLangInput.contains("franç", ignoreCase = true) || sourceLangInput.contains("franc", ignoreCase = true)
-                    val localMatch = if (isFromFrench) {
-                        linguisticDao?.findByFrenchAndLang(cleanText, targetLangInput)
-                    } else {
-                        linguisticDao?.findByWordAndLang(cleanText, sourceLangInput)
-                    }
-                    if (localMatch != null) {
-                        val candidate = if (isFromFrench) localMatch.word else localMatch.translation
-                        if (candidate.isNotBlank() && !candidate.equals(cleanText, ignoreCase = true)) {
-                            translated = candidate
-                            isLocal = true
-                            badge = "Corpus Local"
-                        }
-                    }
-                } catch (_: Throwable) {}
-            }
-            // 5. Appel IA direct si le mot n'est pas dans le dictionnaire hors-ligne
-            if (translated.isBlank()) {
-                try {
-                    val aiCandidate = aiFallback(cleanText, sourceLangInput, targetLangInput, "")
-                    if (aiCandidate.isNotBlank() && !aiCandidate.equals(cleanText, ignoreCase = true)) {
-                        translated = aiCandidate.trim()
-                        isLocal = false
-                        badge = "Traduction IA"
-                    }
-                } catch (_: Throwable) {}
-            }
-        } else {
-            // Phrases complètes (≥ 3 mots ou ponctuation) : Traduction IA directe haute fidélité
-            // 1. Cache
-            val cached = MultilingualTranslationEngine.getFromCache(cleanText, sourceLangInput, targetLangInput)
-            if (!cached.isNullOrBlank() && !cached.equals(cleanText, ignoreCase = true)) {
-                translated = cached
-                isLocal = true
-                badge = "Mémoire Validée"
-            }
-            // 2. Expressions et salutations certifiées directes
-            if (translated.isBlank()) {
-                val directExp = MultilingualTranslationEngine.tryDirectExpressionMatch(cleanText, sourceLangInput, targetLangInput)
-                if (!directExp.isNullOrBlank() && !directExp.equals(cleanText, ignoreCase = true)) {
-                    translated = directExp
-                    isLocal = true
-                    badge = "Corpus Officiel"
-                }
-            }
-            // 3. Modèles compositionnels certifiés du Faso
-            if (translated.isBlank()) {
-                val compositional = trySmartCompositional(cleanText, sourceLangInput, targetLangInput)
-                if (!compositional.isNullOrBlank() && !compositional.equals(cleanText, ignoreCase = true)) {
-                    translated = compositional
-                    isLocal = true
-                    badge = "Composition Certifiée"
-                }
-            }
-            // 4. Moteur IA Gemini haute précision pour phrase complète fluide
-            if (translated.isBlank()) {
-                try {
-                    val aiCandidate = aiFallback(cleanText, sourceLangInput, targetLangInput, "")
-                    if (aiCandidate.isNotBlank() && !aiCandidate.equals(cleanText, ignoreCase = true)) {
-                        translated = aiCandidate.trim()
-                        isLocal = false
-                        badge = "Traduction IA"
-                    }
-                } catch (_: Throwable) {}
-            }
-            // 5. Repli hors-ligne : dictionnaire et assemblage mot-à-mot
-            if (translated.isBlank()) {
-                val dictMatch = DictionaryLookupEngine.translateDirect(cleanText, sourceLangInput, targetLangInput)
-                if (!dictMatch.isNullOrBlank() && !dictMatch.equals(cleanText, ignoreCase = true)) {
-                    translated = dictMatch
-                    isLocal = true
-                    badge = "Dictionnaire Certifié"
-                }
-            }
-            if (translated.isBlank()) {
-                val wordByWord = tryWordByWordSafe(cleanText, sourceLangInput, targetLangInput)
-                if (!wordByWord.isNullOrBlank() && !wordByWord.equals(cleanText, ignoreCase = true)) {
-                    translated = wordByWord
-                    isLocal = true
-                    badge = "Traduction Lexicale"
-                }
-            }
-        }
-
-        // Sécurité absolue : NE JAMAIS renvoyer la phrase source comme résultat de traduction
+        // 2. Gestion stricte si le réseau est indisponible (aucune substitution locale silencieuse)
         val areLangsDifferent = !sourceLangInput.trim().equals(targetLangInput.trim(), ignoreCase = true)
         if (areLangsDifferent && (translated.isBlank() || translated.equals(cleanText, ignoreCase = true))) {
-            translated = "Traduction indisponible hors-ligne pour cette phrase. Veuillez vous connecter pour la traduction IA."
+            translated = "Connexion Internet requise pour la traduction en ligne. Veuillez vérifier votre réseau."
             badge = "Connexion Requise"
             isLocal = false
-        } else if (translated.isBlank()) {
+        } else if (translated.isNotBlank() && !translated.equals(cleanText, ignoreCase = true)) {
+            isLocal = false
+            MultilingualTranslationEngine.putInCache(cleanText, sourceLangInput, targetLangInput, translated, false)
+        } else {
             translated = cleanText
-        }
-
-        // Sauvegarder dans le cache pour accélération future
-        if (translated.isNotBlank() && !translated.equals(cleanText, ignoreCase = true)) {
-            MultilingualTranslationEngine.putInCache(cleanText, sourceLangInput, targetLangInput, translated, isLocal)
         }
 
         val output = TranslationOutput(
