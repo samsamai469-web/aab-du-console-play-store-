@@ -14,6 +14,7 @@
         <domain includeSubdomains="true">groq.com</domain>
         <domain includeSubdomains="true">openrouter.ai</domain>
         <domain includeSubdomains="true">resend.com</domain>
+        <domain includeSubdomains="true">tavily.com</domain>
         <trust-anchors>
             <certificates src="system" />
         </trust-anchors>

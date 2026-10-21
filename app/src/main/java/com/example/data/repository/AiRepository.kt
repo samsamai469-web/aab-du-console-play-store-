@@ -15,10 +15,12 @@ import com.example.util.SecurityUtils
 import com.google.ai.client.generativeai.GenerativeModel
 import com.google.ai.client.generativeai.type.content
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import com.example.util.GeminiErrorHandler
 
 data class ChatMessage(
     val role: String,
@@ -28,7 +30,9 @@ data class ChatMessage(
 data class GeminiRequestResult(
     val success: Boolean = true,
     val text: String = "",
-    val sources: List<WebSource> = emptyList()
+    val sources: List<WebSource> = emptyList(),
+    val isSearchError: Boolean = false,
+    val errorMessage: String? = null
 )
 
 data class ImageTranslationResult(
@@ -93,7 +97,7 @@ class AiRepository(
         }
         try {
             val model = GenerativeModel(
-                modelName = "gemini-3.6-flash",
+                modelName = "gemini-3.5-flash",
                 apiKey = apiKey
             )
 
@@ -118,7 +122,7 @@ class AiRepository(
                 )
             }
         } catch (e: Throwable) {
-            val err = "Erreur IA : ${e.localizedMessage ?: "Vérifiez votre connexion internet."}"
+            val err = com.example.util.GeminiErrorHandler.parse(e).userFriendlyMessage
             chatDao.insertMessage(
                 MessageEntity(
                     conversationId = conversationId,
@@ -171,7 +175,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
 
         // 1. Moteur IA principal via Retrofit REST (Direct, ultra-rapide et fiable)
         if (effectiveKey.isNotBlank() && effectiveKey != "MY_GEMINI_API_KEY") {
-            val candidateModels = listOf("gemini-3.6-flash", "gemini-3.5-flash")
+            val candidateModels = listOf("gemini-3.5-flash", "gemini-flash-latest")
             for (candidateModel in candidateModels) {
                 try {
                     val req = com.example.data.remote.GenerateContentRequest(
@@ -294,7 +298,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         }
         try {
             val model = GenerativeModel(
-                modelName = "gemini-3.6-flash",
+                modelName = "gemini-3.5-flash",
                 apiKey = apiKey
             )
             val inputContent = content {
@@ -327,7 +331,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             val bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
 
             val model = GenerativeModel(
-                modelName = "gemini-3.6-flash",
+                modelName = "gemini-3.5-flash",
                 apiKey = key
             )
             val inputContent = content {
@@ -361,14 +365,14 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         }
         try {
             val model = GenerativeModel(
-                modelName = "gemini-3.6-flash",
+                modelName = "gemini-3.5-flash",
                 apiKey = apiKey
             )
             val fullPrompt = if (systemPrompt.isNotBlank()) "$systemPrompt\n\n$prompt" else prompt
             val response = model.generateContent(fullPrompt)
             response.text?.trim() ?: ""
         } catch (e: Throwable) {
-            "Erreur IA : ${e.localizedMessage ?: "Service indisponible"}"
+            com.example.util.GeminiErrorHandler.parse(e).userFriendlyMessage
         }
     }
 
@@ -383,28 +387,112 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
     ): GeminiRequestResult = withContext(Dispatchers.IO) {
         val effectiveKey = apiKey.ifBlank { apiKeyManager.getActiveGeminiApiKey() }
         if (effectiveKey.isBlank() || effectiveKey == "MY_GEMINI_API_KEY") {
-            return@withContext GeminiRequestResult(success = false, text = "")
+            return@withContext GeminiRequestResult(
+                success = false,
+                text = "",
+                errorMessage = "Clé API Gemini absente ou non configurée."
+            )
         }
 
-        val modelsToTry = if (preferredModel.isNotBlank()) {
-            listOf(preferredModel, "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest").distinct()
+        // Modèles officiels supportés et vérifiés
+        val baseModels = listOf("gemini-3.5-flash", "gemini-flash-latest", "gemini-3.1-flash-lite-preview", "gemini-3.1-pro-preview")
+        val cleanPreferred = preferredModel.trim()
+        val modelsToTry = if (cleanPreferred.isNotBlank() && cleanPreferred != "gemini-3.6-flash") {
+            (listOf(cleanPreferred) + baseModels).distinct()
         } else {
-            listOf("gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-latest")
+            baseModels
         }
 
-        val googleSearchTool = kotlinx.serialization.json.buildJsonObject {
-            put("googleSearch", kotlinx.serialization.json.buildJsonObject {})
+        var googleSearchAttempted = false
+        var googleSearchFailed = false
+        var lastParsedError: com.example.util.ParsedGeminiError? = null
+
+        // 1. Si la recherche Google Search intégrée est demandée, tenter l'appel avec le Grounding
+        if (enableSearch) {
+            googleSearchAttempted = true
+            val googleSearchTool = kotlinx.serialization.json.buildJsonObject {
+                put("googleSearch", kotlinx.serialization.json.buildJsonObject {})
+            }
+
+            for (targetModel in modelsToTry) {
+                // Tentatives limitées avec délai progressif pour les erreurs temporaires (503 / 429)
+                val maxAttempts = 2
+                for (attempt in 1..maxAttempts) {
+                    try {
+                        val req = com.example.data.remote.GenerateContentRequest(
+                            contents = messages.map {
+                                com.example.data.remote.Content(
+                                    role = it.role,
+                                    parts = listOf(com.example.data.remote.Part(text = it.content))
+                                )
+                            },
+                            systemInstruction = if (systemInstruction.isNotBlank()) {
+                                com.example.data.remote.Content(
+                                    parts = listOf(com.example.data.remote.Part(text = systemInstruction))
+                                )
+                            } else null,
+                            generationConfig = com.example.data.remote.GenerationConfig(
+                                temperature = temperature.toFloat(),
+                                maxOutputTokens = maxOutputTokens
+                            ),
+                            tools = listOf(googleSearchTool)
+                        )
+                        val resp = com.example.data.remote.RetrofitClient.geminiService.generateContent(
+                            model = targetModel,
+                            apiKey = effectiveKey,
+                            request = req
+                        )
+                        val candidate = resp.candidates.firstOrNull()
+                        val text = candidate?.content?.parts?.firstOrNull()?.text?.trim() ?: ""
+                        val sources = mutableListOf<WebSource>()
+                        candidate?.groundingMetadata?.groundingChunks?.forEach { chunk ->
+                            val uri = chunk.web?.uri.orEmpty().trim()
+                            val title = chunk.web?.title.orEmpty().trim()
+                            if (uri.isNotBlank()) {
+                                val domain = try {
+                                    java.net.URI(uri).host?.removePrefix("www.").orEmpty()
+                                } catch (_: Throwable) { "" }
+                                sources.add(
+                                    WebSource(
+                                        title = title.ifBlank { domain.ifBlank { "Google Search" } },
+                                        url = uri,
+                                        domain = domain
+                                    )
+                                )
+                            }
+                        }
+
+                        if (text.isNotBlank()) {
+                            return@withContext GeminiRequestResult(
+                                success = true,
+                                text = text,
+                                sources = sources,
+                                isSearchError = false
+                            )
+                        }
+                    } catch (e: Throwable) {
+                        val parsed = GeminiErrorHandler.parse(e)
+                        lastParsedError = parsed
+                        android.util.Log.w("AiRepository", "Google Search attempt $attempt on $targetModel failed: ${parsed.rawMessage}")
+
+                        if (attempt < maxAttempts && (parsed.isTemporaryOverload || parsed.isRateLimited)) {
+                            val waitSec = (parsed.retryAfterSeconds ?: 1L).coerceIn(1L, 3L)
+                            delay(waitSec * 1000L)
+                        } else {
+                            // Basculement vers le modèle suivant
+                            break
+                        }
+                    }
+                }
+            }
+            googleSearchFailed = true
         }
 
-        // Active Grounding with Google Search (googleSearch) dans chaque appel à l'API Gemini
-        val toolsToAttempt = listOf(
-            listOf(googleSearchTool),
-            null // Repli d'urgence si indisponibilité du quota d'outils
-        )
-
-        // 1. Appel direct via Retrofit avec Grounding Google Search
+        // 2. Appel direct SANS outil (direct text generation)
+        // Utilisé si enableSearch == false OU comme solution de secours si Google Search a échoué
         for (targetModel in modelsToTry) {
-            for (toolsPayload in toolsToAttempt) {
+            val maxAttempts = 2
+            for (attempt in 1..maxAttempts) {
                 try {
                     val req = com.example.data.remote.GenerateContentRequest(
                         contents = messages.map {
@@ -422,7 +510,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                             temperature = temperature.toFloat(),
                             maxOutputTokens = maxOutputTokens
                         ),
-                        tools = toolsPayload
+                        tools = null
                     )
                     val resp = com.example.data.remote.RetrofitClient.geminiService.generateContent(
                         model = targetModel,
@@ -431,56 +519,38 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                     )
                     val candidate = resp.candidates.firstOrNull()
                     val text = candidate?.content?.parts?.firstOrNull()?.text?.trim() ?: ""
-                    val sources = mutableListOf<WebSource>()
-                    candidate?.groundingMetadata?.groundingChunks?.forEach { chunk ->
-                        val uri = chunk.web?.uri.orEmpty().trim()
-                        val title = chunk.web?.title.orEmpty().trim()
-                        if (uri.isNotBlank()) {
-                            val domain = try {
-                                java.net.URI(uri).host?.removePrefix("www.").orEmpty()
-                            } catch (_: Throwable) { "" }
-                            sources.add(
-                                WebSource(
-                                    title = title.ifBlank { domain.ifBlank { "Google Search" } },
-                                    url = uri,
-                                    domain = domain
-                                )
-                            )
-                        }
-                    }
-
                     if (text.isNotBlank()) {
                         return@withContext GeminiRequestResult(
                             success = true,
                             text = text,
-                            sources = sources
+                            sources = emptyList(),
+                            isSearchError = googleSearchAttempted && googleSearchFailed
                         )
                     }
                 } catch (e: Throwable) {
-                    android.util.Log.w("AiRepository", "Retrofit Gemini ($targetModel) call failed: ${e.message}")
+                    val parsed = GeminiErrorHandler.parse(e)
+                    lastParsedError = parsed
+                    android.util.Log.w("AiRepository", "Direct Gemini attempt $attempt on $targetModel failed: ${parsed.rawMessage}")
+
+                    if (attempt < maxAttempts && (parsed.isTemporaryOverload || parsed.isRateLimited)) {
+                        val waitSec = (parsed.retryAfterSeconds ?: 1L).coerceIn(1L, 3L)
+                        delay(waitSec * 1000L)
+                    } else {
+                        // Basculement vers le modèle suivant
+                        break
+                    }
                 }
             }
         }
 
-        // 2. Appel de repli via GenerativeModel SDK
-        for (targetModel in listOf("gemini-3.6-flash", "gemini-3.5-flash")) {
-            try {
-                val model = GenerativeModel(
-                    modelName = targetModel,
-                    apiKey = effectiveKey
-                )
-                val historyPrompt = messages.joinToString("\n") { "${it.role}: ${it.content}" }
-                val fullPrompt = if (systemInstruction.isNotBlank()) "$systemInstruction\n\n$historyPrompt" else historyPrompt
-                val response = model.generateContent(fullPrompt)
-                val text = response.text?.trim() ?: ""
-                if (text.isNotBlank()) {
-                    return@withContext GeminiRequestResult(success = true, text = text)
-                }
-            } catch (e: Throwable) {
-                android.util.Log.e("AiRepository", "GenerativeModel Gemini ($targetModel) failed: ${e.message}")
-            }
-        }
+        val finalErrorMessage = lastParsedError?.userFriendlyMessage
+            ?: "Service d'intelligence artificielle momentanément indisponible. Veuillez vérifier votre réseau."
 
-        GeminiRequestResult(success = false, text = "")
+        GeminiRequestResult(
+            success = false,
+            text = "",
+            isSearchError = googleSearchAttempted && googleSearchFailed,
+            errorMessage = finalErrorMessage
+        )
     }
 }

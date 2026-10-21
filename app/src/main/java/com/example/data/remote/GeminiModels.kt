@@ -109,3 +109,16 @@ data class UsageMetadata(
     val candidatesTokenCount: Int,
     val totalTokenCount: Int
 )
+
+@Serializable
+data class GeminiErrorResponse(
+    val error: GeminiErrorDetails? = null
+)
+
+@Serializable
+data class GeminiErrorDetails(
+    val code: Int? = null,
+    val message: String? = null,
+    val status: String? = null,
+    val details: List<kotlinx.serialization.json.JsonElement>? = null
+)

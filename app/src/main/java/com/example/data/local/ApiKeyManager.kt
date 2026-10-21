@@ -8,8 +8,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
 
 enum class ApiKeySource {
@@ -161,6 +163,31 @@ class ApiKeyManager(context: Context) {
 
     fun clearTavilyApiKey() {
         prefs.edit().remove(KEY_CUSTOM_TAVILY_API_KEY).apply()
+    }
+
+    suspend fun testTavilyApiKey(key: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val cleanKey = key.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+        if (cleanKey.isBlank() || cleanKey.startsWith("tvly-your-tavily")) {
+            return@withContext Pair(false, "Veuillez saisir une clé API Tavily valide.")
+        }
+        try {
+            val body = "{\"query\":\"test\",\"max_results\":1}"
+            val requestBody = body.toRequestBody("application/json; charset=utf-8".toMediaType())
+            val request = Request.Builder()
+                .url("https://api.tavily.com/search")
+                .post(requestBody)
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Authorization", "Bearer $cleanKey")
+                .build()
+            val response = httpClient.newCall(request).execute()
+            if (response.isSuccessful) {
+                Pair(true, "Clé Tavily valide et fonctionnelle")
+            } else {
+                Pair(false, "Clé Tavily invalide (Code ${response.code}) : ${response.message}")
+            }
+        } catch (e: Throwable) {
+            Pair(false, "Erreur de connexion Tavily : ${e.localizedMessage ?: "Vérifiez votre réseau"}")
+        }
     }
 
     companion object {
