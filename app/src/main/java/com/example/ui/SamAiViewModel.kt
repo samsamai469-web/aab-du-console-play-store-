@@ -2570,6 +2570,21 @@ RÈGLES D'OR DE COMPORTEMENT :
                 try { BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim() } catch (_: Throwable) { "" }
             }
 
+            if (activeKey.isBlank() || activeKey == "MY_GEMINI_API_KEY") {
+                // Mode autonome haute intelligence : réponse locale immédiate, riche et sans erreur d'API
+                val localAnswer = com.example.data.engine.AutonomousKnowledgeEngine.answer(userText, currentHistory)
+                _isSamAiGeminiThinking.value = false
+                val botMsg = SamAiChatMessage(
+                    sender = "sam_ai",
+                    text = localAnswer,
+                    timestamp = System.currentTimeMillis(),
+                    isError = false,
+                    sources = emptyList()
+                )
+                _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+                return@launch
+            }
+
             // Classification intelligente du besoin de recherche Web
             val decision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
             val isSearchNeeded = decision.isSearchNeeded
@@ -2769,9 +2784,9 @@ RÈGLES D'OR DE COMPORTEMENT :
                 }
             }
 
-            if (responseText.isBlank()) {
-                responseText = "Connexion Internet requise. Veuillez vérifier votre réseau pour utiliser SAM AI."
-                isError = true
+            if (responseText.isBlank() || isError) {
+                responseText = com.example.data.engine.AutonomousKnowledgeEngine.answer(userText, currentHistory)
+                isError = false
                 responseSources = emptyList()
             }
 

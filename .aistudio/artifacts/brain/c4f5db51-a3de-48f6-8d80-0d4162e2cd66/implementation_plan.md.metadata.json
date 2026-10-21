@@ -1,6 +1,6 @@
 {
-  "summary":  "Plan d'intégration du moteur de recherche web Tavily avec l'assistant Gemini pour SAM AI. Permet à SAM AI de rechercher systématiquement des informations fraîches et vérifiées sur le web en direct (actualités, météo, scores, faits récents) et d'afficher les badges de sources cliquables avec titre et lien URL.",
-  "updatedAt":  "2026-10-21T00:48:38.316348660Z",
+  "summary":  "Plan de correction de l'assistant SAM AI : élimination totale des messages d'erreur invitant à configurer une clé API, suppression du menu de saisie de clés dans le profil, et mise en place d'un moteur de réponse autonome de secours pour garantir que l'assistant réponde toujours sans accroc.",
+  "updatedAt":  "2026-10-21T22:17:43.096039997Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

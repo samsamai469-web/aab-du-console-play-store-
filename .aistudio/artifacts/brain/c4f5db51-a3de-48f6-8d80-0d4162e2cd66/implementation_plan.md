@@ -1,101 +1,93 @@
-# Intégration de la Recherche Web Tavily avec Google Gemini pour SAM AI
+# Résolution de l'Assistant SAM AI et Suppression des Références aux Clés API
 
-Ce plan d'architecture détaille l'intégration native du moteur de recherche en direct **Tavily Search API** couplé à **Google Gemini** (`gemini-3.6-flash` / `gemini-3.5-flash`), conformément au script Python fourni par l'utilisateur et adapté à l'environnement Android.
+Ce plan détaille la correction complète de l'assistant SAM AI pour répondre de manière fluide et intelligente à toutes les questions posées par les utilisateurs, sans jamais afficher de message d'erreur technique ni inviter à configurer une clé API, tout en supprimant les options de clés d'API de l'écran Profil.
 
 ---
 
 ### User Review & Critical Decisions
 
 > [!IMPORTANT]
-> Les trois décisions suivantes ont été validées lors de notre échange de clarification :
-
-- **Configuration de la clé API Tavily** : Prise en charge via les variables d'environnement et `BuildConfig.TAVILY_API_KEY` (avec injection automatique via `.env.example` et le panneau Secrets d'AI Studio, et possibilité de personnalisation).
-- **Déclenchement de la recherche** : Exécution systématique de la recherche web Tavily sur toutes les questions posées à SAM AI pour garantir une pertinence maximale et des données en temps réel.
-- **Affichage des sources web** : Présentation sous forme de badges de sources cliquables sous la réponse, affichant le titre ou domaine avec ouverture du lien web au clic.
+> Les directives strictes suivantes fournies par l'utilisateur sont au cœur de cette mise à jour :
+> - **Zéro message sur la clé API** : Aucun utilisateur ne doit jamais voir de message lui demandant de configurer ou vérifier une clé API Gemini dans les paramètres.
+> - **Suppression du Profil** : Retrait définitif du menu et de la boîte de dialogue de saisie manuelle de clés API dans l'écran Profil.
+> - **Assistant toujours fonctionnel** : SAM AI doit répondre avec précision grâce à son moteur hybride (Gemini en ligne lorsque la clé d'environnement est active, et bascule transparente immédiate sur sa riche base de connaissances burkinabè et conversationnelle en local en cas d'absence de clé ou de panne réseau).
 
 ---
 
 ### 1. Overview & Core Concept
 
-- **What It Does** :
-  - Lorsqu'un utilisateur pose une question à SAM AI, l'application interroge d'abord l'API Tavily (`POST https://api.tavily.com/search`) pour récupérer les 5 résultats web les plus pertinents et récents (titres, URLs, extraits de contenu et synthèse).
-  - Ces résultats sont injectés en contexte enrichi dans la requête Gemini (`gemini-3.6-flash` / `gemini-3.5-flash`).
-  - Gemini rédige une réponse fluide, structurée et précise en citant les faits récents.
-  - Les sources web réelles sont attachées au message et présentées sous forme de badges cliquables interactifs.
-- **Target Audience / Persona** :
-  - Tout utilisateur souhaitant obtenir des réponses d'actualité, des données en direct (Burkina Faso, Afrique, monde, météo, économie, résultats sportifs) et vérifier les sources d'information.
-- **Key Value** :
-  - SAM AI ne souffre plus d'aucune coupure de connaissances temporelle ; il combine la puissance de raisonnement de Gemini avec la fraîcheur du web en direct via Tavily.
+- **Problème résolu** :
+  - Lorsqu'un utilisateur pose une question dans le chat SAM AI sans que la clé API Gemini soit initialisée côté serveur, l'application renvoyait une erreur textuelle désagréable : *« Clé API Gemini absente ou non configurée »* ou *« Veuillez vérifier votre clé API dans les Paramètres de l'application »*.
+  - De plus, l'écran Profil proposait un bouton technique invitant les utilisateurs finaux à coller des clés API complexes (Gemini et Tavily).
+- **Solution apportée** :
+  - **Masquage et neutralisation technique totale** : Retrait de toute consigne relative aux clés API destinées au grand public.
+  - **Nettoyage de l'écran Profil** : Retrait du bloc « Configuration IA & Recherche Web » dans les préférences de `ProfileScreen.kt`.
+  - **Moteur de réponse résilient** : Si Gemini n'est pas configuré ou rencontre une erreur (quota, réseau, absence de clé), SAM AI active instantanément un générateur de réponses conversationnelles riche basé sur la mémoire locale du Faso (histoire, langues Mooré et Dioula, culture, créateur Abdoul Mohamine Sawadogo, savoirs généraux), garantissant une expérience fluide sans le moindre message d'erreur.
 
 ---
 
 ### 2. User Experience & Visual Design
 
-- **Key User Flows** :
-  1. *Saisie d'une question dans le chat SAM AI* :
-     - L'utilisateur tape par exemple : *« Quelle est la dernière actualité au Burkina Faso ? »* ou *« Qui a gagné le dernier match ? »*.
-     - Indicateur de progression : *« Recherche web en cours avec Tavily... »*.
-  2. *Affichage de la réponse et des sources* :
-     - La réponse de SAM AI s'affiche avec clarté.
-     - Juste en dessous de la bulle de message, une section *« Sources Web en temps réel : »* présente les badges interactifs :
-       - Icône web 🌐
-       - Titre de l'article ou domaine (ex: *lefaso.net*, *sidwaya.info*, *rfi.fr*)
-       - Au clic sur le badge, ouverture instantanée de l'article dans le navigateur.
-  3. *Gestion de la clé ou de l'absence de réseau* :
-     - Si la clé Tavily n'est pas configurée ou indisponible, repli transparent sur la recherche web native ou les connaissances Gemini sans faire échouer la discussion.
-     - Si aucune connexion Internet n'est détectée, notification claire : *« Connexion Internet requise pour la recherche en direct »*.
-- **Visual Identity & Theme** :
-  - Respect strict des directives Material 3.
-  - Badges de sources avec coins arrondis, bordure discrète et retour haptique/ripple au toucher.
+- **Dans le chat SAM AI (`SamAiGeminiAssistantModal`)** :
+  - L'utilisateur saisit sa question ou choisit une suggestion.
+  - SAM AI réfléchit et affiche directement une réponse complète, structurée et chaleureuse.
+  - Finie toute bulle d'erreur rouge ou mention de paramètres d'API. L'assistant paraît toujours opérationnel et intelligent.
+- **Dans l'écran Profil (`ProfileScreen`)** :
+  - L'interface des préférences est harmonieuse et accessible : choix du Thème (Sombre / Clair), Style de palette (Moderne / Classique), Langue de l'app (Français / Anglais), Rappels et notifications, À propos et Support.
+  - Zéro formulaire technique de clés d'API pour les utilisateurs normaux.
 
 ---
 
 ### 3. Key Product Decisions & Trade-Offs
 
-- **Décision 1 : Client Retrofit / OkHttp dédié pour Tavily Search**
-  - *Approche choisie* : Création d'un service léger `TavilySearchService` utilisant OkHttp et `kotlinx.serialization` pour appeler `https://api.tavily.com/search`.
-  - *Bénéfice* : Aucun SDK lourd Python nécessaire ; intégration 100% native Kotlin asynchrone avec coroutines sans surcoût d'APK.
-- **Décision 2 : Injection de contexte en deux temps (Recherche -> Synthèse Gemini)**
-  - *Approche choisie* : Exécuter la recherche Tavily en amont de l'appel Gemini, puis injecter les extraits dans le prompt système et associer les `WebSource` au message final.
-  - *Bénéfice* : Réponse déterministe, zéro hallucination sur les URLs, et contrôle parfait des badges de sources dans l'interface Compose.
-- **Décision 3 : Secret Management sécurisé (`TAVILY_API_KEY`)**
-  - *Approche choisie* : Déclaration de `TAVILY_API_KEY` dans `.env.example`, accès via `BuildConfig.TAVILY_API_KEY` et intégration dans `ApiKeyManager`.
-  - *Bénéfice* : Sécurité garantie, respect strict de la politique de secrets d'AI Studio, et flexibilité pour l'utilisateur.
+- **Décision 1 : Fallback conversationnel natif au lieu d'une erreur bloquante**
+  - *Choix* : Si l'API cloud n'est pas joignable ou sans clé valide, intercepter l'erreur au niveau de `SamAiViewModel` et `AiRepository` pour générer une réponse contextuelle immédiate à partir du lexique, des dictionnaires (Mooré, Dioula, Haoussa), de la base de données historique et du moteur de dialogue burkinabè.
+  - *Pourquoi* : L'utilisateur bénéficie d'une réponse utile et immédiate sans frustration.
+- **Décision 2 : Suppression du dialogue de clés API dans Profil**
+  - *Choix* : Supprimer `item_profile_ai_config` et `showAiConfigDialog` de la vue utilisateur standard.
+  - *Pourquoi* : Conforme à la demande explicite de l'utilisateur (« aucun ne doit jamais voir ça, faut l'enlever dans le profil »).
+- **Décision 3 : Réécriture des messages d'erreur de `GeminiErrorHandler`**
+  - *Choix* : Remplacer toute mention de clé d'API par une formulation d'assistance naturelle et bienveillante ou déclencher la réponse autonome.
 
 ---
 
 ### 4. Technical Architecture & Data Strategy
 
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                    SamAiGeminiAssistantModal (UI)                    │
-│     - Champ de saisie utilisateur                                    │
-│     - Bulles de messages avec Badges de Sources Web cliquables       │
-└──────────────────────────────────┬───────────────────────────────────┘
-                                   │
-                                   ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                            SamAiViewModel                            │
-│     - askSamAiGemini(userText)                                       │
-│     - Orchestre la recherche Tavily et l'appel Gemini                │
-└──────────────────┬───────────────────────────────┬───────────────────┘
-                   │                               │
-                   ▼                               ▼
-┌──────────────────────────────────┐ ┌─────────────────────────────────┐
-│       TavilySearchService        │ │          AiRepository           │
-│  - POST https://api.tavily.com   │ │  - RetrofitClient Gemini REST   │
-│  - Extraction titres, URLs,      │ │  - gemini-3.6-flash / 3.5-flash │
-│    extraits de contenu récents   │ │  - Injection contexte web       │
-└──────────────────────────────────┘ └─────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                      Utilisateur (Chat SAM AI)                         │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                            SamAiViewModel                              │
+│                   askSamAiGemini(userQuestion)                         │
+└───────────────────┬────────────────────────────────┬───────────────────┘
+                    │                                │
+    (Clé active présente et valide)   (Absence de clé ou Erreur réseau/API)
+                    ▼                                ▼
+┌───────────────────────────────────────┐ ┌──────────────────────────────┐
+│        Google Gemini API Cloud        │ │  Moteur Local Intelligent    │
+│    (gemini-3.5-flash via Retrofit)    │ │   - Dictionnaires & Langues  │
+│                                       │ │   - Patrimoine & Histoire    │
+│                                       │ │   - Connaissances du Faso    │
+└───────────────────┬───────────────────┘ └──────────────┬───────────────┘
+                    │                                    │
+                    └─────────────────┬──────────────────┘
+                                      │
+                                      ▼
+             ┌─────────────────────────────────────────────────┐
+             │       Réponse fluide, riche et sans erreur      │
+             │       affichée directement dans la bulle        │
+             └─────────────────────────────────────────────────┘
 ```
 
-- **Composants et Fichiers à modifier / créer** :
-  1. `.env.example` :
-     - Ajouter `TAVILY_API_KEY=tvly-your-tavily-api-key-here`.
-  2. `app/src/main/java/com/example/data/remote/TavilySearchService.kt` :
-     - Définir les modèles de données sérialisables (`TavilySearchRequest`, `TavilySearchResponse`, `TavilySearchResultItem`).
-     - Créer le client HTTP appelant `https://api.tavily.com/search`.
-  3. `app/src/main/java/com/example/data/local/ApiKeyManager.kt` :
-     - Gérer la récupération de `TAVILY_API_KEY` via `BuildConfig.TAVILY_API_KEY` et SharedPreferences.
+- **Fichiers ciblés pour l'exécution** :
+  1. `app/src/main/java/com/example/ui/screens/ProfileScreen.kt` :
+     - Retirer l'élément de liste de configuration IA (`item_profile_ai_config`) et le dialogue `showAiConfigDialog`.
+  2. `app/src/main/java/com/example/util/GeminiErrorHandler.kt` :
+     - Éliminer toute mention invitant à vérifier la clé API dans les paramètres.
+  3. `app/src/main/java/com/example/data/repository/AiRepository.kt` :
+     - Ne plus bloquer ni retourner d'erreur brute « Clé API absente ».
   4. `app/src/main/java/com/example/ui/SamAiViewModel.kt` :
-     - Déclencher la recherche Tavily avant la génération Gemini, mapper les résultats vers `List<WebSource>`, et injecter le contexte d'actualité.
+     - En cas d'erreur de communication ou d'absence de clé, déclencher automatiquement le moteur de réponse intelligent local pour fournir une réponse de haute qualité sans afficher de message d'erreur.

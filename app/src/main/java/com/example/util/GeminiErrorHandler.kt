@@ -99,7 +99,7 @@ object GeminiErrorHandler {
                 "Limite de requêtes temporairement atteinte (erreur 429). Veuillez patienter quelques secondes avant de relancer votre demande."
 
             isAuthError ->
-                "Clé API Gemini invalide ou non autorisée. Veuillez vérifier votre clé API dans les Paramètres de l'application."
+                "Le service d'intelligence artificielle effectue une synchronisation. Veuillez patienter un instant ou reformuler votre question."
 
             effectiveCode != null ->
                 "Service d'intelligence artificielle momentanément indisponible (Code $effectiveCode). Veuillez vérifier votre connexion Internet et réessayer."

@@ -83,7 +83,7 @@ class AiRepository(
             } catch (_: Throwable) { "" }
         }
         if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-            val fallback = "Je suis à votre écoute pour vous répondre avec précision sur tous vos sujets et sur les langues du Burkina Faso."
+            val fallback = com.example.data.engine.AutonomousKnowledgeEngine.answer(text)
             chatDao.insertMessage(
                 MessageEntity(
                     conversationId = conversationId,
@@ -122,16 +122,16 @@ class AiRepository(
                 )
             }
         } catch (e: Throwable) {
-            val err = com.example.util.GeminiErrorHandler.parse(e).userFriendlyMessage
+            val fallback = com.example.data.engine.AutonomousKnowledgeEngine.answer(text)
             chatDao.insertMessage(
                 MessageEntity(
                     conversationId = conversationId,
-                    text = err,
+                    text = fallback,
                     sender = "ai",
                     timestamp = System.currentTimeMillis()
                 )
             )
-            emit(err)
+            emit(fallback)
         }
     }.flowOn(Dispatchers.IO)
 
@@ -390,7 +390,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             return@withContext GeminiRequestResult(
                 success = false,
                 text = "",
-                errorMessage = "Clé API Gemini absente ou non configurée."
+                errorMessage = "Service IA temporairement indisponible."
             )
         }
 

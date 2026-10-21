@@ -158,12 +158,29 @@ class TranslationRepository(
             }
         } catch (_: Throwable) {}
 
-        // 2. Gestion stricte si le réseau est indisponible (aucune substitution locale silencieuse)
+        // 2. Repli automatique et transparent sur le moteur linguistique embarqué (100% autonome et exportable)
         val areLangsDifferent = !sourceLangInput.trim().equals(targetLangInput.trim(), ignoreCase = true)
         if (areLangsDifferent && (translated.isBlank() || translated.equals(cleanText, ignoreCase = true))) {
-            translated = "Connexion Internet requise pour la traduction en ligne. Veuillez vérifier votre réseau."
-            badge = "Connexion Requise"
-            isLocal = false
+            val compositional = trySmartCompositional(cleanText, sourceLangInput, targetLangInput)
+            val dictionaryDirect = if (compositional.isNullOrBlank()) {
+                DictionaryLookupEngine.translateDirect(cleanText, sourceLangInput, targetLangInput)
+            } else null
+            val wordByWord = if (compositional.isNullOrBlank() && dictionaryDirect.isNullOrBlank()) {
+                tryWordByWordSafe(cleanText, sourceLangInput, targetLangInput)
+            } else null
+
+            val localResult = compositional ?: dictionaryDirect ?: wordByWord
+
+            if (!localResult.isNullOrBlank() && !localResult.equals(cleanText, ignoreCase = true)) {
+                translated = localResult.trim()
+                badge = "Traduction Intégrée"
+                isLocal = true
+                MultilingualTranslationEngine.putInCache(cleanText, sourceLangInput, targetLangInput, translated, true)
+            } else {
+                translated = cleanText
+                badge = "Source"
+                isLocal = false
+            }
         } else if (translated.isNotBlank() && !translated.equals(cleanText, ignoreCase = true)) {
             isLocal = false
             MultilingualTranslationEngine.putInCache(cleanText, sourceLangInput, targetLangInput, translated, false)
