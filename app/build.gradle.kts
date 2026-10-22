@@ -110,6 +110,7 @@ dependencies {
   implementation(libs.firebase.auth)
   implementation(libs.firebase.firestore)
   implementation("com.google.firebase:firebase-storage")
+  implementation("com.google.firebase:firebase-functions")
 
   // Core & Security
   implementation(libs.androidx.core.ktx)

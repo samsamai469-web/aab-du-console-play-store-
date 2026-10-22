@@ -98,22 +98,61 @@ object AutonomousKnowledgeEngine {
             "detaille", "developpe", "explique plus", "plus d'explication",
             "pourquoi ?", "pourquoi", "donne un exemple", "continue",
             "et ensuite ?", "et apres ?", "approfondis", "dis m'en plus", "peux-tu detailler ?"
-        ) || qNorm.startsWith("detaille ") || qNorm.startsWith("developpe ") || qNorm.startsWith("explique plus ")
+        ) || qNorm.contains("detaill") || qNorm.contains("approfondi") || qNorm.contains("developp") ||
+             qNorm.contains("reponse precedente") || qNorm.contains("precedente") ||
+             qNorm.startsWith("detaille ") || qNorm.startsWith("developpe ") || qNorm.startsWith("explique plus ") ||
+             qNorm.startsWith("peux-tu detailler") || qNorm.startsWith("peux tu detailler")
     }
 
     private fun expandTopic(previousContext: String, query: String): String {
-        return buildString {
-            appendLine("Voici un approfondissement structuré et détaillé sur ce sujet :")
-            appendLine()
-            appendLine("📌 **Analyse approfondie :**")
-            appendLine("Pour aller plus loin, il convient d'aborder les aspects fondamentaux, les mécanismes clés et les implications pratiques de ce thème.")
-            appendLine()
-            appendLine("🔍 **Points essentiels à retenir :**")
-            appendLine("• **Contexte & Origines :** Comprendre les racines historiques, techniques ou culturelles permet de mieux appréhender les enjeux actuels.")
-            appendLine("• **Mise en œuvre concrète :** Dans la pratique, la réussite repose sur la rigueur, l'adaptation au contexte local et la méthode.")
-            appendLine("• **Perspectives :** Ce sujet ouvre des opportunités significatives pour l'apprentissage, le développement personnel et l'innovation.")
-            appendLine()
-            appendLine("💡 *Si vous souhaitez un exemple précis ou aborder un angle particulier, indiquez-le moi et je vous répondrai avec plaisir !*")
+        val prevNorm = normalize(previousContext)
+        return when {
+            prevNorm.contains("sankara") -> {
+                buildString {
+                    appendLine("📌 **Approfondissement sur Thomas Sankara et la Révolution burkinabè :**")
+                    appendLine()
+                    appendLine("1. **La philosophie de la rupture :** Sankara prônait l'émancipation totale du peuple burkinabè face aux carcans de la dépendance et de l'assistanat international. Selon sa célèbre formule, *« Celui qui te nourrit contrôle ta pensée »*.")
+                    appendLine("2. **La bataille de l'eau et de la terre :** En seulement 4 ans, le Burkina Faso a creusé des centaines de retenues d'eau, aménagé la vallée du Sourou et redistribué les terres arables aux groupements villageois, atteignant l'autosuffisance en céréales.")
+                    appendLine("3. **La libération de la femme :** Pionnier absolu du féminisme politique en Afrique, il a combattu l'excision, le lévirat, imposé la scolarisation obligatoire des jeunes filles et intégré des femmes aux postes ministériels clés.")
+                    appendLine("4. **L'écologie politique précurseur :** L'opération « Trois Luttes » (contre le déboisement, les feux de brousse et la divagation des animaux) a vu la plantation citoyenne de plus de 10 millions d'arbres à travers tout le pays.")
+                    appendLine()
+                    appendLine("💬 *« Tuez Sankara, des milliers de Sankara naîtront. »*")
+                }
+            }
+            prevNorm.contains("ibrahim traore") || prevNorm.contains("traore") -> {
+                buildString {
+                    appendLine("📌 **Approfondissement sur la Transition du Capitaine Ibrahim Traoré :**")
+                    appendLine()
+                    appendLine("1. **Reconquête territoriale :** Mobilisation nationale inédite avec la montée en puissance des Forces de Défense et de Sécurité (FDS) et de dizaines de milliers de Volontaires pour la Défense de la Patrie (VDP), appuyés par des vecteurs aériens modernes.")
+                    appendLine("2. **Souveraineté économique :** Création d'usines locales de transformation de coton, de raffinerie d'or nationale, et lancement de l'Initiative Présidentielle pour l'autosuffisance alimentaire.")
+                    appendLine("3. **Alliance des États du Sahel (AES) :** Intégration géostratégique poussée entre le Burkina Faso, le Mali et le Niger, pour une sécurité commune, une monnaie souveraine et des projets d'infrastructures partagés.")
+                }
+            }
+            prevNorm.contains("moore") || prevNorm.contains("dioula") || prevNorm.contains("haoussa") -> {
+                buildString {
+                    appendLine("📌 **Détails linguistiques et culturels complémentaires :**")
+                    appendLine()
+                    appendLine("• **Richesse proverbiale :** Les langues nationales burkinabè reposent sur une tradition orale dense où chaque formule porte une leçon morale et communautaire.")
+                    appendLine("• **Intégration quotidienne :** Dans les marchés et les rassemblements, la maîtrise des salutations respectueuses (âge, heure du jour, activité) ouvre toutes les portes et établit la fraternité.")
+                    appendLine("• **Conseil pratique :** N'hésitez pas à combiner le lexique appris avec les règles de politesse coutumière.")
+                }
+            }
+            else -> {
+                val snippet = previousContext.lines().firstOrNull { it.isNotBlank() && !it.startsWith("Merci") }?.take(100).orEmpty()
+                buildString {
+                    appendLine("Voici un approfondissement complet et direct sur ce sujet :")
+                    appendLine()
+                    if (snippet.isNotBlank()) {
+                        appendLine("Concernant **$snippet** :")
+                        appendLine()
+                    }
+                    appendLine("1. **Contexte fondamental :** Ce sujet s'inscrit dans une logique où la compréhension des principes de base est indispensable pour en maîtriser les applications concrètes.")
+                    appendLine("2. **Mécanismes et fonctionnement :** Dans la pratique, il convient de distinguer les facteurs déterminants, les interactions clés et les méthodes de mise en œuvre éprouvées.")
+                    appendLine("3. **Perspectives et solutions concrètes :** Une approche rigoureuse et adaptée au terrain permet d'obtenir des résultats mesurables et durables.")
+                    appendLine()
+                    appendLine("Indiquez-moi si vous souhaitez un exemple chiffré, une illustration pratique ou l'analyse d'un aspect particulier !")
+                }
+            }
         }
     }
 
@@ -560,17 +599,15 @@ object AutonomousKnowledgeEngine {
 
     private fun generateGeneralKnowledgeAnswer(question: String): String {
         return buildString {
-            appendLine("Merci pour votre question : « **$question** ».")
+            appendLine("Sur le sujet **$question** :")
             appendLine()
-            appendLine("En tant qu'assistant intelligent **SAM AI**, voici les éléments clés à retenir :")
-            appendLine()
-            appendLine("1. **Analyse du sujet :** Ce sujet touche à des notions fondamentales qui méritent une approche méthodique et claire.")
+            appendLine("1. **Analyse & Contexte :** Pour bien appréhender cette thématique, il convient de considérer ses aspects fondamentaux ainsi que ses retombées pratiques.")
             appendLine("2. **Principes clés :**")
-            appendLine("   • La compréhension des bases théoriques et pratiques.")
-            appendLine("   • L'importance du contexte et de la précision dans l'application.")
-            appendLine("   • Les bonnes pratiques reconnues par les experts du domaine.")
+            appendLine("   • La maîtrise des notions théoriques et des bases méthodologiques.")
+            appendLine("   • L'importance du contexte spécifique et de la rigueur d'application.")
+            appendLine("   • Les recommandations éprouvées par les spécialistes du domaine.")
             appendLine()
-            appendLine("3. **Recommandation :** Si vous souhaitez explorer un aspect spécifique ou approfondir une étape particulière, précisez simplement votre besoin et je vous détaillerai la solution.")
+            appendLine("3. **Poursuite de l'échange :** Si vous souhaitez des éclaircissements sur un point précis ou une illustration concrète, n'hésitez pas à me le demander !")
         }
     }
 }

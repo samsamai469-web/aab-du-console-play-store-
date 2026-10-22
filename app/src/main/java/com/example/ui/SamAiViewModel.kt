@@ -92,6 +92,7 @@ class SamAiViewModel(
 ) : ViewModel() {
 
     private val tavilySearchService = com.example.data.remote.TavilySearchService()
+    private val openAiBackendService = com.example.data.remote.OpenAiBackendService(tavilySearchService)
 
     fun auditLog(actionId: String, severity: String, details: String) {
         viewModelScope.launch {
@@ -2565,224 +2566,17 @@ RÈGLES D'OR DE COMPORTEMENT :
                 )
             }
 
-            val tokenLimit = if (isDetailRequested) 3000 else 2000
-            val activeKey = getActiveGeminiApiKey().ifBlank {
-                try { BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim() } catch (_: Throwable) { "" }
-            }
+            // Envoi de la requête à l'API officielle OpenAI (via Firebase Cloud Functions ou passerelle haute disponibilité)
+            val openAiResult = openAiBackendService.sendChatMessage(
+                messages = currentHistory,
+                userQuestion = userText,
+                enableWebSearch = true,
+                preferredModel = "gpt-4o-mini"
+            )
 
-            if (activeKey.isBlank() || activeKey == "MY_GEMINI_API_KEY") {
-                // Mode autonome haute intelligence : réponse locale immédiate, riche et sans erreur d'API
-                val localAnswer = com.example.data.engine.AutonomousKnowledgeEngine.answer(userText, currentHistory)
-                _isSamAiGeminiThinking.value = false
-                val botMsg = SamAiChatMessage(
-                    sender = "sam_ai",
-                    text = localAnswer,
-                    timestamp = System.currentTimeMillis(),
-                    isError = false,
-                    sources = emptyList()
-                )
-                _samAiChatMessages.value = _samAiChatMessages.value + botMsg
-                return@launch
-            }
-
-            // Classification intelligente du besoin de recherche Web
-            val decision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
-            val isSearchNeeded = decision.isSearchNeeded
-            val isStrictTemporal = decision.isStrictTemporal
-            val isNewsTopic = decision.isNewsTopic
-            val cleanSearchQuery = decision.cleanSearchQuery
-
-            var responseText = ""
-            var isError = false
-            var responseSources: List<com.example.data.local.WebSource> = emptyList()
-
-            if (!isSearchNeeded) {
-                // ==========================================
-                // CAS 1 : Question simple sans besoin Web
-                // Réponse directe, fluide et rapide de Gemini
-                // ==========================================
-                try {
-                    val result = aiRepository.executeGeminiRequest(
-                        apiKey = activeKey,
-                        messages = currentHistory,
-                        systemInstruction = systemInstruction,
-                        enableSearch = false,
-                        temperature = 0.5,
-                        maxOutputTokens = tokenLimit,
-                        preferredModel = "gemini-3.5-flash"
-                    )
-                    if (result.success && result.text.isNotBlank()) {
-                        responseText = result.text
-                        isError = false
-                        responseSources = emptyList()
-                    } else {
-                        responseText = result.errorMessage ?: "Service IA momentanément indisponible. Veuillez vérifier votre clé API Gemini ou votre réseau."
-                        isError = true
-                        responseSources = emptyList()
-                    }
-                } catch (e: Exception) {
-                    Log.e("SamAiViewModel", "Erreur Gemini direct", e)
-                    responseText = com.example.util.GeminiErrorHandler.parse(e).userFriendlyMessage
-                    isError = true
-                    responseSources = emptyList()
-                }
-            } else {
-                // ==========================================
-                // CAS 2-5 : Question nécessitant une recherche Web
-                // ==========================================
-                val tavilyKey = getActiveTavilyApiKey().ifBlank {
-                    try { BuildConfig.TAVILY_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim() } catch (_: Throwable) { "" }
-                }
-                val tavilySources = mutableListOf<com.example.data.local.WebSource>()
-                var tavilySearchContext = ""
-                var tavilyAttempted = false
-                var tavilySucceeded = false
-                var tavilyErrorDetail: String? = null
-
-                // ÉTAPE A : Moteur Tavily Search API
-                if (tavilyKey.isNotBlank() && !tavilyKey.startsWith("tvly-your-tavily")) {
-                    tavilyAttempted = true
-                    try {
-                        val tavilyResp = tavilySearchService.search(
-                            query = cleanSearchQuery,
-                            apiKey = tavilyKey,
-                            isNews = isNewsTopic
-                        )
-                        if (tavilyResp != null && tavilyResp.results.isNotEmpty()) {
-                            // Extraire les sources valides (non vides)
-                            tavilyResp.results.filter { it.url.isNotBlank() }.forEach { item ->
-                                val domain = try {
-                                    java.net.URI(item.url).host?.removePrefix("www.").orEmpty()
-                                } catch (_: Throwable) { "" }
-                                tavilySources.add(
-                                    com.example.data.local.WebSource(
-                                        title = item.title.ifBlank { domain.ifBlank { "Source Web" } },
-                                        url = item.url,
-                                        domain = domain
-                                    )
-                                )
-                            }
-
-                            if (tavilySources.isNotEmpty()) {
-                                tavilySucceeded = true
-                                tavilySearchContext = buildString {
-                                    appendLine("=== RÉSULTATS VÉRIFIÉS DU WEB EN DIRECT (TAVILY SEARCH) ===")
-                                    if (!tavilyResp.answer.isNullOrBlank()) {
-                                        appendLine("SYNTHÈSE DU WEB : ${tavilyResp.answer}")
-                                    }
-                                    appendLine("EXTRAITS ET ARTICLES PERTINENTS :")
-                                    tavilyResp.results.filter { it.url.isNotBlank() }.forEachIndexed { idx, res ->
-                                        appendLine("[Source ${idx + 1}] Titre : ${res.title}")
-                                        appendLine("URL : ${res.url}")
-                                        appendLine("Extrait : ${res.content}")
-                                    }
-                                    appendLine("=== FIN DES DONNÉES DU WEB ===")
-                                    appendLine("CONSIGNE STRICTE : Fonde ta réponse avec précision et clarté sur ces faits vérifiés. Distingue les faits confirmés des incertitudes. Ne réponds jamais de mémoire si l'information est disponible ci-dessus.")
-                                }
-                            }
-                        } else {
-                            tavilyErrorDetail = tavilySearchService.lastError
-                        }
-                    } catch (tavilyEx: Throwable) {
-                        tavilyErrorDetail = tavilyEx.message
-                        Log.w("SamAiViewModel", "Tavily search exception: ${tavilyEx.message}")
-                    }
-                }
-
-                if (tavilySucceeded) {
-                    // Tavily a renvoyé des résultats exploitables :
-                    // On transmet ces faits réels à Gemini SANS outil Google Search supplémentaire
-                    // (évite la redondance et les pannes de Grounding Google)
-                    try {
-                        val promptWithWeb = tavilySearchContext + "\n\n" + systemInstruction
-                        val result = aiRepository.executeGeminiRequest(
-                            apiKey = activeKey,
-                            messages = currentHistory,
-                            systemInstruction = promptWithWeb,
-                            enableSearch = false,
-                            temperature = 0.2,
-                            maxOutputTokens = tokenLimit,
-                            preferredModel = "gemini-3.5-flash"
-                        )
-                        if (result.success && result.text.isNotBlank()) {
-                            responseText = result.text
-                            responseSources = tavilySources
-                            isError = false
-                        } else {
-                            // Échec de génération Gemini
-                            responseText = result.errorMessage ?: "Erreur lors de la formulation de la réponse avec les sources web."
-                            isError = true
-                            responseSources = emptyList()
-                        }
-                    } catch (e: Exception) {
-                        Log.e("SamAiViewModel", "Erreur Gemini après Tavily", e)
-                        responseText = com.example.util.GeminiErrorHandler.parse(e).userFriendlyMessage
-                        isError = true
-                        responseSources = emptyList()
-                    }
-                } else {
-                    // ÉTAPE B : Tavily indisponible ou non configuré -> Tenter Google Search Grounding intégré à Gemini
-                    try {
-                        val result = aiRepository.executeGeminiRequest(
-                            apiKey = activeKey,
-                            messages = currentHistory,
-                            systemInstruction = systemInstruction,
-                            enableSearch = true, // Grounding Google Search
-                            temperature = 0.2,
-                            maxOutputTokens = tokenLimit,
-                            preferredModel = "gemini-3.5-flash"
-                        )
-
-                        if (result.success && result.text.isNotBlank()) {
-                            if (!result.isSearchError && result.sources.isNotEmpty()) {
-                                // Google Search Grounding a réussi avec des sources
-                                responseText = result.text
-                                responseSources = result.sources
-                                isError = false
-                            } else if (result.isSearchError) {
-                                // La recherche web Google a échoué mais Gemini a généré une réponse standard sans outils
-                                if (isStrictTemporal) {
-                                    // CAS 5 : Question d'actualité récente / scores stricts
-                                    val errNotice = tavilyErrorDetail?.let { " ($it)" }.orEmpty()
-                                    responseText = "Recherche web en direct indisponible$errNotice. Pour cette question portant sur un événement récent ou en cours, une vérification en temps réel est requise mais n'a pas pu aboutir. Veuillez vérifier votre connexion ou vos clés API et réessayer."
-                                    isError = true
-                                    responseSources = emptyList()
-                                } else {
-                                    // CAS 3 : Question factuelle générale -> Gemini répond avec ses connaissances
-                                    responseText = "(Note : vérification web en direct momentanément indisponible — réponse basée sur les connaissances générales de SAM AI)\n\n" + result.text
-                                    isError = false
-                                    responseSources = emptyList()
-                                }
-                            } else {
-                                responseText = result.text
-                                responseSources = result.sources
-                                isError = false
-                            }
-                        } else {
-                            // CAS 6 : Échec complet de la recherche et de Gemini
-                            if (isStrictTemporal) {
-                                val errNotice = tavilyErrorDetail?.let { " ($it)" }.orEmpty()
-                                responseText = "Recherche web en direct indisponible$errNotice. Impossible d'obtenir les données en direct actuellement. Veuillez vérifier votre réseau."
-                            } else {
-                                responseText = result.errorMessage ?: "Service IA momentanément indisponible. Veuillez vérifier votre réseau ou réessayer."
-                            }
-                            isError = true
-                            responseSources = emptyList()
-                        }
-                    } catch (e: Exception) {
-                        Log.e("SamAiViewModel", "Erreur Google Search Grounding", e)
-                        val parsed = com.example.util.GeminiErrorHandler.parse(e)
-                        if (isStrictTemporal) {
-                            val errNotice = tavilyErrorDetail?.let { " ($it)" }.orEmpty()
-                            responseText = "Recherche web en direct indisponible$errNotice. Impossible d'obtenir les données en direct actuellement. Veuillez vérifier votre réseau."
-                        } else {
-                            responseText = parsed.userFriendlyMessage
-                        }
-                        isError = true
-                        responseSources = emptyList()
-                    }
-                }
-            }
+            var responseText = openAiResult.text
+            var isError = !openAiResult.success
+            var responseSources = openAiResult.sources
 
             if (responseText.isBlank() || isError) {
                 responseText = com.example.data.engine.AutonomousKnowledgeEngine.answer(userText, currentHistory)
@@ -2800,6 +2594,13 @@ RÈGLES D'OR DE COMPORTEMENT :
             )
             _samAiChatMessages.value = _samAiChatMessages.value + botMsg
         }
+    }
+
+    /**
+     * Alias explicite pour appeler l'assistant propulsé par OpenAI
+     */
+    fun askSamAiOpenAi(userQuestion: String) {
+        askSamAiGemini(userQuestion)
     }
 
     fun getGreeting(): String {
