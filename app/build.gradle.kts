@@ -27,6 +27,10 @@ android {
     versionName = "1.0.5"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    // Clé OpenAI lue depuis la variable d'environnement (secret GitHub)
+    val samOpenAiKey = (System.getenv("OPENAI_API_KEY") ?: "").trim()
+    buildConfigField("String", "SAM_OPENAI_KEY", "\"${samOpenAiKey}\"")
   }
 
   signingConfigs {
@@ -48,8 +52,7 @@ android {
       isMinifyEnabled = true
       isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-      
-      // Sécurisation de la signature Release : ne pas crasher si le fichier keystore n'existe pas en local
+
       val releaseKeystore = signingConfigs.getByName("release").storeFile
       if (releaseKeystore != null && releaseKeystore.exists()) {
         signingConfig = signingConfigs.getByName("release")
@@ -89,13 +92,10 @@ android {
   }
 }
 
-// Configuration robuste du plugin Secrets Gradle :
-// S'il n'y a pas de fichier .env présent, il bascule automatiquement sur .env.example
 secrets {
   propertiesFileName = ".env"
   defaultPropertiesFileName = ".env.example"
   ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
-  ignoreList.add("OPENAI_API_KEY")
 }
 
 googleServices {
@@ -119,9 +119,7 @@ dependencies {
   implementation("androidx.security:security-crypto:1.1.0-alpha06")
   implementation("androidx.work:work-runtime-ktx:2.9.0")
 
-  
-
-  // Compose UI & Material 
+  // Compose UI & Material
   implementation(libs.androidx.activity.compose)
   implementation(libs.androidx.compose.ui)
   implementation(libs.androidx.compose.ui.graphics)
