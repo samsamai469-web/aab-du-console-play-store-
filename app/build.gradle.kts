@@ -1,4 +1,5 @@
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
+import java.util.Properties
 
 plugins {
   alias(libs.plugins.android.application)
@@ -28,20 +29,18 @@ android {
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-    // Clés lues depuis les variables d'environnement (secrets GitHub).
-    // Si une clé est absente ou vide, on met une valeur d'exemple non vide pour que BuildConfig reste valide.
-    fun secretValue(name: String): String {
-      val v = (System.getenv(name) ?: "").trim().replace("\\", "").replace("\"", "")
-      return if (v.isEmpty()) "MY_$name" else v
+    val envProps = Properties()
+    val envFile = rootProject.file(".env")
+    if (envFile.exists()) {
+      envFile.reader().use { r -> envProps.load(r) }
+    } else {
+      val envExample = rootProject.file(".env.example")
+      if (envExample.exists()) {
+        envExample.reader().use { r -> envProps.load(r) }
+      }
     }
-    val samOpenAiKey = (System.getenv("OPENAI_API_KEY") ?: "").trim().replace("\"", "")
-    buildConfigField("String", "SAM_OPENAI_KEY", "\"${samOpenAiKey}\"")
-    listOf(
-      "GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY",
-      "TAVILY_API_KEY", "YOUTUBE_API_KEY", "RESEND_API_KEY", "GOOGLE_CLIENT_SECRET"
-    ).forEach { key ->
-      buildConfigField("String", key, "\"${secretValue(key)}\"")
-    }
+    val openAiKey = envProps.getProperty("OPENAI_API_KEY", "MY_OPENAI_API_KEY").trim().removeSurrounding("\"")
+    buildConfigField("String", "OPENAI_API_KEY", "\"$openAiKey\"")
   }
 
   signingConfigs {
@@ -110,15 +109,7 @@ secrets {
   propertiesFileName = ".env"
   defaultPropertiesFileName = ".env.example"
   ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
-  // Ces clés sont définies à la main dans defaultConfig (plus fiable que le fichier .env)
   ignoreList.add("OPENAI_API_KEY")
-  ignoreList.add("GEMINI_API_KEY")
-  ignoreList.add("GROQ_API_KEY")
-  ignoreList.add("OPENROUTER_API_KEY")
-  ignoreList.add("TAVILY_API_KEY")
-  ignoreList.add("YOUTUBE_API_KEY")
-  ignoreList.add("RESEND_API_KEY")
-  ignoreList.add("GOOGLE_CLIENT_SECRET")
 }
 
 googleServices {

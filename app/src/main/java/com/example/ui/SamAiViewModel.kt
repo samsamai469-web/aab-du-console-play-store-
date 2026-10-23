@@ -2579,8 +2579,13 @@ RÈGLES D'OR DE COMPORTEMENT :
             var responseSources = openAiResult.sources
 
             if (responseText.isBlank() || isError) {
-                responseText = com.example.data.engine.AutonomousKnowledgeEngine.answer(userText, currentHistory)
-                isError = false
+                if (!openAiResult.errorMessage.isNullOrBlank()) {
+                    responseText = "⚠️ Erreur OpenAI : ${openAiResult.errorMessage}\n\n(Vérifiez votre solde et votre clé sur platform.openai.com)"
+                    isError = true
+                } else {
+                    responseText = com.example.data.engine.AutonomousKnowledgeEngine.answer(userText, currentHistory)
+                    isError = false
+                }
                 responseSources = emptyList<com.example.data.local.WebSource>()
             }
 

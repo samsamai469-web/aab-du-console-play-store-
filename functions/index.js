@@ -278,12 +278,7 @@ Directives impératives de réponse :
       messages: openaiMessages
     };
 
-    if (isReasoningModel) {
-      requestParams.max_completion_tokens = 3000;
-    } else {
-      requestParams.temperature = 0.6;
-      requestParams.max_tokens = 3000;
-    }
+    requestParams.max_completion_tokens = 3000;
 
     const completion = await openai.chat.completions.create(requestParams);
 

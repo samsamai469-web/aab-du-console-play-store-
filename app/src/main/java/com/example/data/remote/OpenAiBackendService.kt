@@ -67,6 +67,14 @@ class OpenAiBackendService(
         }.ifBlank { "gpt-4o" }
     }
 
+    private fun getOpenAiApiKey(): String {
+        return try {
+            BuildConfig.OPENAI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+        } catch (_: Throwable) {
+            ""
+        }
+    }
+
     /**
      * Envoie une question ou un historique complet de discussion à OpenAI.
      */
@@ -86,7 +94,34 @@ class OpenAiBackendService(
 
         val effectiveModel = preferredModel.ifBlank { clientConfiguredModel }
 
-        // 1. APPEL DIRECT OPENAI (puis OpenRouter en secours)
+        // 1. APPEL DIRECT À L'API OFFICIELLE OPENAI (Option B demandée par l'utilisateur)
+        val directOpenAiResult = tryCallOfficialOpenAiApi(
+            messages = messages,
+            userQuestion = cleanQuestion,
+            enableWebSearch = enableWebSearch,
+            model = effectiveModel
+        )
+
+        if (directOpenAiResult != null) {
+            // Si la requête a réussi ou a retourné une erreur API explicite (quota, clé invalide...), on renvoie le résultat directement
+            if (directOpenAiResult.success || !directOpenAiResult.errorMessage.isNullOrBlank()) {
+                return@withContext directOpenAiResult
+            }
+        }
+
+        // 2. TENTATIVE VIA FIREBASE CLOUD FUNCTIONS (Architecture serveur si déployée)
+        val cloudFunctionsResult = tryCallFirebaseCloudFunction(
+            messages = messages,
+            question = cleanQuestion,
+            enableWebSearch = enableWebSearch,
+            model = effectiveModel
+        )
+
+        if (cloudFunctionsResult != null && cloudFunctionsResult.success && cloudFunctionsResult.text.isNotBlank()) {
+            return@withContext cloudFunctionsResult
+        }
+
+        // 3. SECOURS DIRECT HAUTE DISPONIBILITÉ VIA GATEWAY OFFICIELLE OPENROUTER
         val directResult = tryCallDirectOpenAiGateway(
             messages = messages,
             userQuestion = cleanQuestion,
@@ -98,7 +133,7 @@ class OpenAiBackendService(
             return@withContext directResult
         }
 
-        // 2. SECOURS LOCAL INTELLIGENT AUTONOME (Mode hors-ligne ou réseau indisponible)
+        // 4. SECOURS LOCAL INTELLIGENT AUTONOME (Mode hors-ligne ou réseau indisponible)
         val fallbackText = com.example.data.engine.AutonomousKnowledgeEngine.answer(cleanQuestion, messages)
         OpenAiChatResult(
             success = true,
@@ -108,6 +143,177 @@ class OpenAiBackendService(
             searchPerformed = false,
             errorMessage = null
         )
+    }
+
+    /**
+     * Appelle directement l'API officielle OpenAI (https://api.openai.com/v1/chat/completions)
+     */
+    private suspend fun tryCallOfficialOpenAiApi(
+        messages: List<ChatMessage>,
+        userQuestion: String,
+        enableWebSearch: Boolean,
+        model: String
+    ): OpenAiChatResult? {
+        val apiKey = getOpenAiApiKey()
+        if (apiKey.isBlank() || apiKey.contains("MY_OPENAI_API_KEY")) {
+            return null
+        }
+
+        // Recherche Web en direct si activée et nécessaire
+        val webSources = mutableListOf<WebSource>()
+        var webContext = ""
+        val needsSearch = enableWebSearch && isSearchQuery(userQuestion)
+
+        if (needsSearch && tavilySearchService != null) {
+            val tavilyKey = try {
+                BuildConfig.TAVILY_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+            } catch (_: Throwable) { "" }
+
+            if (tavilyKey.isNotBlank() && !tavilyKey.startsWith("tvly-your")) {
+                try {
+                    val searchResp = tavilySearchService.search(
+                        query = userQuestion,
+                        apiKey = tavilyKey,
+                        isNews = true
+                    )
+                    if (searchResp != null && searchResp.results.isNotEmpty()) {
+                        searchResp.results.filter { it.url.isNotBlank() }.forEach { r ->
+                            val domain = try {
+                                java.net.URI(r.url).host?.removePrefix("www.").orEmpty()
+                            } catch (_: Throwable) { "" }
+                            webSources.add(
+                                WebSource(
+                                    title = r.title.ifBlank { domain.ifBlank { "Source Web" } },
+                                    url = r.url,
+                                    domain = domain
+                                )
+                            )
+                        }
+                        webContext = buildString {
+                            appendLine("\n=== INFORMATIONS VÉRIFIÉES DU WEB EN DIRECT ===")
+                            if (!searchResp.answer.isNullOrBlank()) {
+                                appendLine("Synthèse : ${searchResp.answer}")
+                            }
+                            searchResp.results.forEachIndexed { i, r ->
+                                appendLine("[Source ${i + 1}] Titre : ${r.title}")
+                                appendLine("URL : ${r.url}")
+                                appendLine("Extrait : ${r.content}")
+                            }
+                            appendLine("=== FIN DES INFORMATIONS DU WEB ===")
+                            appendLine("Consigne : Base ta réponse avec précision sur ces faits récents vérifiés et cite les sources.")
+                        }
+                    }
+                } catch (e: Throwable) {
+                    Log.w("OpenAiBackendService", "Recherche web Tavily échouée: ${e.message}")
+                }
+            }
+        }
+
+        val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
+        val systemPrompt = """
+            Tu es SAM AI, l'assistant d'élite officiel propulsé par OpenAI et conçu par Abdoul Mohamine Sawadogo, jeune développeur burkinabè.
+            Aujourd'hui nous sommes exactement le $dateStr.
+            Consignes impératives de qualité :
+            1. RÉPONSE DIRECTE : Réponds immédiatement et directement à la question sans introduction robotique ni formule stéréotypée ("Merci pour votre question", etc.).
+            2. APPROFONDISSEMENT UTILE : Si l'utilisateur demande de détailler ou développer, donne des explications concrètes, structurées et complètes.
+            3. INCERTITUDE : Signale clairement si un fait récent est incertain ou non confirmé.
+            4. Ne mentionne ton créateur que si expressément demandé.
+            $webContext
+        """.trimIndent()
+
+        try {
+            val safeHistory = messages.takeLast(16).map {
+                buildJsonObject {
+                    put("role", if (it.role == "assistant" || it.role == "model" || it.role == "ai") "assistant" else "user")
+                    put("content", it.content.take(4000))
+                }
+            }
+
+            val isReasoningModel = model.startsWith("o1") || model.startsWith("o3")
+            val systemRole = if (isReasoningModel) "developer" else "system"
+            val messagesArray = buildJsonArray {
+                add(buildJsonObject {
+                    put("role", systemRole)
+                    put("content", systemPrompt)
+                })
+                safeHistory.forEach { add(it) }
+                if (safeHistory.isEmpty() || safeHistory.last()["content"]?.toString()?.trim('"') != userQuestion) {
+                    add(buildJsonObject {
+                        put("role", "user")
+                        put("content", userQuestion)
+                    })
+                }
+            }
+
+            val requestBodyJson = buildJsonObject {
+                put("model", model)
+                put("messages", messagesArray)
+                put("max_completion_tokens", 3000)
+            }.toString()
+
+            val request = Request.Builder()
+                .url("https://api.openai.com/v1/chat/completions")
+                .addHeader("Authorization", "Bearer $apiKey")
+                .addHeader("Content-Type", "application/json")
+                .post(requestBodyJson.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                val bodyString = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    val parsedError = try {
+                        val jsonErr = json.parseToJsonElement(bodyString) as? kotlinx.serialization.json.JsonObject
+                        val errObj = jsonErr?.get("error") as? kotlinx.serialization.json.JsonObject
+                        (errObj?.get("message") as? kotlinx.serialization.json.JsonPrimitive)?.content
+                    } catch (_: Throwable) { null }
+
+                    val errorDetails = when (response.code) {
+                        401 -> "Clé API OpenAI non valide (code 401). Vérifiez la clé configurée."
+                        429 -> "Quota OpenAI dépassé ou solde insuffisant (code 429). Vérifiez votre solde sur platform.openai.com."
+                        404 -> "Modèle '$model' introuvable ou non autorisé sur votre compte OpenAI (code 404)."
+                        else -> parsedError ?: "Erreur HTTP ${response.code} renvoyée par OpenAI."
+                    }
+                    Log.e("OpenAiBackendService", "OpenAI direct call error [${response.code}]: $errorDetails")
+                    return OpenAiChatResult(
+                        success = false,
+                        text = "",
+                        sources = emptyList(),
+                        model = model,
+                        searchPerformed = false,
+                        errorMessage = errorDetails
+                    )
+                }
+
+                val jsonObject = json.parseToJsonElement(bodyString) as? kotlinx.serialization.json.JsonObject
+                val choices = jsonObject?.get("choices") as? kotlinx.serialization.json.JsonArray
+                val firstChoice = choices?.firstOrNull() as? kotlinx.serialization.json.JsonObject
+                val messageObj = firstChoice?.get("message") as? kotlinx.serialization.json.JsonObject
+                val content = (messageObj?.get("content") as? kotlinx.serialization.json.JsonPrimitive)?.content
+                val actualModel = (jsonObject?.get("model") as? kotlinx.serialization.json.JsonPrimitive)?.content ?: model
+
+                if (!content.isNullOrBlank()) {
+                    return OpenAiChatResult(
+                        success = true,
+                        text = content.trim(),
+                        sources = webSources,
+                        model = actualModel,
+                        searchPerformed = webSources.isNotEmpty(),
+                        errorMessage = null
+                    )
+                }
+            }
+        } catch (e: Throwable) {
+            Log.e("OpenAiBackendService", "Exception during direct OpenAI call: ${e.message}", e)
+            return OpenAiChatResult(
+                success = false,
+                text = "",
+                sources = emptyList(),
+                model = model,
+                searchPerformed = false,
+                errorMessage = "Erreur de connexion : ${e.message ?: "Impossible de joindre les serveurs OpenAI."}"
+            )
+        }
+        return null
     }
 
     /**
@@ -246,33 +452,6 @@ class OpenAiBackendService(
             $webContext
         """.trimIndent()
 
-        // Appel direct à l'API OpenAI (clé injectée au build via GitHub Secrets)
-        val openAiKey = try {
-            BuildConfig.SAM_OPENAI_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
-        } catch (_: Throwable) { "" }
-
-        if (openAiKey.startsWith("sk-")) {
-            val res = callOpenAiCompatibleEndpoint(
-                endpointUrl = "https://api.openai.com/v1/chat/completions",
-                apiKey = openAiKey,
-                model = preferredModel.ifBlank { "gpt-4o" },
-                systemPrompt = systemPrompt,
-                messages = messages,
-                userQuestion = userQuestion
-            )
-            if (res != null) {
-                return OpenAiChatResult(
-                    success = true,
-                    text = res,
-                    sources = webSources,
-                    model = preferredModel.ifBlank { "gpt-4o" },
-                    searchPerformed = webSources.isNotEmpty()
-                )
-            }
-        } else {
-            Log.e("OpenAiBackendService", "OPENAI_API_KEY absente ou invalide dans le build (doit commencer par sk-)")
-        }
-
         // Secours via passerelle OpenRouter si configurée
         val openRouterKey = try {
             BuildConfig.OPENROUTER_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
@@ -317,9 +496,11 @@ class OpenAiBackendService(
                 }
             }
 
+            val isReasoning = model.startsWith("o1") || model.startsWith("o3")
+            val systemRole = if (isReasoning) "developer" else "system"
             val messagesArray = buildJsonArray {
                 add(buildJsonObject {
-                    put("role", "system")
+                    put("role", systemRole)
                     put("content", systemPrompt)
                 })
                 safeHistory.forEach { add(it) }
@@ -334,8 +515,7 @@ class OpenAiBackendService(
             val requestBodyJson = buildJsonObject {
                 put("model", model)
                 put("messages", messagesArray)
-                put("temperature", 0.6)
-                put("max_tokens", 3000)
+                put("max_completion_tokens", 3000)
             }.toString()
 
             val request = Request.Builder()
@@ -347,8 +527,7 @@ class OpenAiBackendService(
 
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    val errBody = response.body?.string().orEmpty().take(500)
-                    Log.e("OpenAiBackendService", "HTTP ${response.code} sur $endpointUrl : $errBody")
+                    Log.w("OpenAiBackendService", "OpenAI HTTP error ${response.code}: ${response.message}")
                     return null
                 }
                 val bodyString = response.body?.string().orEmpty()
@@ -356,7 +535,7 @@ class OpenAiBackendService(
                 val choices = jsonObject?.get("choices") as? kotlinx.serialization.json.JsonArray
                 val firstChoice = choices?.firstOrNull() as? kotlinx.serialization.json.JsonObject
                 val message = firstChoice?.get("message") as? kotlinx.serialization.json.JsonObject
-                val content = (message?.get("content") as? kotlinx.serialization.json.JsonPrimitive)?.content
+                val content = message?.get("content")?.toString()?.trim('"')?.replace("\\n", "\n")?.replace("\\\"", "\"")
                 if (!content.isNullOrBlank()) {
                     return content
                 }
