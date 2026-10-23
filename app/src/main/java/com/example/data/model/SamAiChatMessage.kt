@@ -12,5 +12,7 @@ data class SamAiChatMessage(
     val timestamp: Long = System.currentTimeMillis(),
     val isError: Boolean = false,
     val isStreaming: Boolean = false,
-    val sources: List<WebSource> = emptyList()
+    val sources: List<WebSource> = emptyList(),
+    val model: String? = null
 )
+

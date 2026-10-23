@@ -831,6 +831,20 @@ fun ChatBubbleItem(
                         Spacer(modifier = Modifier.height(2.dp))
                     }
 
+                    if (!isUser && !message.model.isNullOrBlank()) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.padding(top = 2.dp, bottom = 2.dp)
+                        ) {
+                            Text(
+                                text = "⚡ ${message.model}",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                    }
+
                     Text(
                         text = timeStr,
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),

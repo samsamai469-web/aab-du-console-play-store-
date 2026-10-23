@@ -13,14 +13,48 @@ if (!admin.apps.length) {
   admin.initializeApp();
 }
 
-// Secret Firebase sécurisé pour la clé OpenAI
+// Secret Firebase sécurisé pour la clé OpenAI et recherche Web
 const openAiApiKey = defineSecret("OPENAI_API_KEY");
 const tavilyApiKey = defineSecret("TAVILY_API_KEY");
 
-// Modèle par défaut recommandé par OpenAI pour un excellent rapport performance / coût
-const DEFAULT_MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+// Liste des familles et modèles officiels OpenAI compatibles Chat & Responses
+const COMPATIBLE_CHAT_MODELS = [
+  "gpt-4o",
+  "chatgpt-4o-latest",
+  "o3-mini",
+  "o1",
+  "o1-mini",
+  "o1-preview",
+  "gpt-4-turbo",
+  "gpt-4",
+  "gpt-4o-mini",
+  "gpt-3.5-turbo"
+];
 
-// Cache mémoire simple pour limitation de fréquence (Rate limiting)
+/**
+ * Résout et valide le modèle OpenAI à utiliser.
+ * Priorise la variable d'environnement OPENAI_MODEL du serveur sans l'écraser arbitrairement.
+ * Modèle phare par défaut : "gpt-4o" (modèle le plus puissant avec vision et outils).
+ */
+function resolveAndValidateModel(clientModel) {
+  const envModel = (process.env.OPENAI_MODEL || "").trim();
+  const rawModel = envModel || (clientModel || "").trim() || "gpt-4o";
+
+  const isCompatible = COMPATIBLE_CHAT_MODELS.some(
+    (m) => rawModel === m || rawModel.startsWith(`${m}-`) || rawModel.startsWith(m)
+  ) || rawModel.startsWith("gpt-") || rawModel.startsWith("o1") || rawModel.startsWith("o3");
+
+  if (!isCompatible) {
+    console.warn(
+      `[SAM AI] Attention : Le modèle "${rawModel}" n'est pas dans la liste des modèles officiels vérifiés. Utilisation du modèle de référence "gpt-4o".`
+    );
+    return "gpt-4o";
+  }
+
+  return rawModel;
+}
+
+// Rate limiting : Limitation du nombre de requêtes par fenêtre temporelle
 const requestRateMap = new Map();
 const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
 const MAX_REQUESTS_PER_WINDOW = 30; // Max 30 requêtes par minute par utilisateur/IP
@@ -83,19 +117,20 @@ function needsWebSearch(text) {
   if (!text) return false;
   const lower = text.toLowerCase();
   const keywords = [
-    "score", "match", "résultat", "classement", "météo", "cours", "prix",
-    "aujourd'hui", "ce soir", "hier", "demain", "cette semaine", "2026", "2025",
-    "actualité", "dernière minute", "nouvelle", "qui est le président", "gouvernement",
-    "championnat", "ligue", "can", "afcon", "fc", "real", "barça", "psg"
+    "score", "match", "résultat", "resultat", "classement", "météo", "meteo",
+    "cours", "prix", "aujourd'hui", "ce soir", "hier", "demain", "cette semaine",
+    "2026", "2025", "actualité", "actualite", "dernière minute", "nouvelle",
+    "qui est le président", "gouvernement", "championnat", "ligue", "can",
+    "afcon", "fc", "real", "barça", "barca", "psg"
   ];
-  return keywords.some(k => lower.includes(k));
+  return keywords.some((k) => lower.includes(k));
 }
 
 /**
  * Traite la requête utilisateur avec OpenAI
  */
 async function handleChatCore({ messages, question, enableWebSearch = true, clientModel, apiKey, tavilyKey, userIdentifier }) {
-  if (!apiKey) {
+  if (!apiKey || apiKey.includes("MY_OPENAI_API_KEY")) {
     throw new Error("La clé OPENAI_API_KEY n'est pas configurée dans Firebase Secrets.");
   }
 
@@ -110,7 +145,7 @@ async function handleChatCore({ messages, question, enableWebSearch = true, clie
   }
 
   // Limitation à 20 messages d'historique maximum
-  const safeHistory = (messages || []).slice(-20).map(m => ({
+  const safeHistory = (messages || []).slice(-20).map((m) => ({
     role: m.role === "assistant" || m.role === "model" ? "assistant" : "user",
     content: String(m.content || "").slice(0, 4000)
   }));
@@ -119,27 +154,90 @@ async function handleChatCore({ messages, question, enableWebSearch = true, clie
     safeHistory.push({ role: "user", content: userText });
   }
 
-  const modelToUse = clientModel || DEFAULT_MODEL;
+  const modelToUse = resolveAndValidateModel(clientModel);
   const openai = new OpenAI({ apiKey: apiKey });
 
-  const dateOptions = { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', timeZone: 'Africa/Ouagadougou' };
-  const currentDateStr = new Date().toLocaleDateString('fr-FR', dateOptions);
+  const dateOptions = { weekday: "long", year: "numeric", month: "long", day: "numeric", timeZone: "Africa/Ouagadougou" };
+  const currentDateStr = new Date().toLocaleDateString("fr-FR", dateOptions);
 
-  let systemPrompt = `Tu es SAM AI, l'intelligence artificielle d'élite officielle, conçue par le jeune développeur burkinabè Abdoul Mohamine Sawadogo.
+  let systemPrompt = `Tu es SAM AI, l'assistant intelligent d'élite propulsé par OpenAI, conçu par le jeune développeur burkinabè Abdoul Mohamine Sawadogo.
 Aujourd'hui nous sommes exactement le ${currentDateStr}.
-Directives impératives :
-1. Réponds de façon précise, intelligente, structurée et agréable en français.
-2. Si une recherche web est effectuée, base-toi strictement sur les faits vérifiés et cite les sources.
-3. Si l'utilisateur demande "Détaille", "Développe" ou pose une relance, fournis une réponse riche et structurée.
-4. Ne mentionne ton créateur que si l'utilisateur te demande explicitement qui t'a créé.
-5. Respecte et valorise la culture du Burkina Faso (Mooré, Dioula, Haoussa) ainsi que les savoirs universels.`;
+
+Directives impératives de réponse :
+1. RÉPONSE DIRECTE ET IMMÉDIATE : Réponds directement à la question dès la toute première phrase. Ne commence JAMAIS par des formules creuses, robotiques ou répétitives (bannir formellement : "Merci pour votre question : ...", "En tant qu'assistant intelligent SAM AI...", "Voici les éléments clés à retenir :", etc.).
+2. DÉVELOPPEMENT UTILE ET APPROFONDI : Si l'utilisateur demande "Détaille", "Développe", "Peux-tu approfondir ta réponse" ou pose une relance, apporte une explication riche, concrète, avec des exemples pratiques, des données précises et les étapes concrètes, sans te limiter à des généralités abstraites.
+3. TRANSPARENCE ET GESTION DES INCERTITUDES : Explique clairement les points importants. Si une information est incertaine, récente ou non vérifiée, signale expressément l'incertitude plutôt que d'affirmer un fait douteux.
+4. VÉRACITÉ DES SOURCES : Quand une recherche web est effectuée, base-toi strictement sur les faits vérifiés et cite les sources réelles. N'invente aucun lien ni aucune source inexistante.
+5. IDENTITÉ ET CULTURE : Ne mentionne ton créateur Abdoul Mohamine Sawadogo que si l'utilisateur te demande expressément qui t'a créé ou qui tu es. Sois respectueux, bienveillant, et valorise le savoir burkinabè, africain et universel en français fluide et élégant.`;
 
   const webSources = [];
   let webSearchPerformed = false;
 
-  // 2. Recherche Web en temps réel si demandée ou détectée
-  if (enableWebSearch && needsWebSearch(userText)) {
-    // Tentative de recherche web pour enrichir la réponse
+  // 2. Recherche Web en direct si activée et pertinente
+  const shouldSearchWeb = enableWebSearch && needsWebSearch(userText);
+
+  // OPTION A : Tentative via la nouvelle API Responses officielle d'OpenAI avec l'outil officiel web_search_preview
+  const isReasoningModel = modelToUse.startsWith("o1") || modelToUse.startsWith("o3");
+  if (shouldSearchWeb && typeof openai.responses?.create === "function" && !isReasoningModel) {
+    try {
+      const responseResult = await openai.responses.create({
+        model: modelToUse,
+        input: [
+          { role: "system", content: systemPrompt },
+          ...safeHistory
+        ],
+        tools: [{ type: "web_search_preview" }]
+      });
+
+      let textOutput = responseResult.output_text || "";
+      if (!textOutput && responseResult.output) {
+        for (const item of responseResult.output) {
+          if (item.type === "message" && item.content) {
+            for (const c of item.content) {
+              if (c.type === "output_text") {
+                textOutput += c.text || "";
+                if (Array.isArray(c.annotations)) {
+                  c.annotations.forEach((ann) => {
+                    if (ann.type === "url_citation" && ann.url) {
+                      try {
+                        const domain = new URL(ann.url).hostname.replace(/^www\./, "");
+                        webSources.push({
+                          title: ann.title || domain,
+                          url: ann.url,
+                          domain: domain
+                        });
+                      } catch (_) {
+                        webSources.push({
+                          title: ann.title || "Source Web",
+                          url: ann.url,
+                          domain: "web"
+                        });
+                      }
+                    }
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if (textOutput && textOutput.trim().length > 0) {
+        return {
+          success: true,
+          text: textOutput.trim(),
+          sources: webSources,
+          model: modelToUse,
+          searchPerformed: webSources.length > 0
+        };
+      }
+    } catch (responsesErr) {
+      console.warn("[SAM AI] OpenAI Responses API web_search_preview non supporté ou indisponible, bascule sur Chat Completions:", responsesErr.message);
+    }
+  }
+
+  // OPTION B : Chat Completions standard OpenAI avec enrichissement web vérifié
+  if (shouldSearchWeb) {
     const searchData = await performWebSearchIfAvailable(userText, tavilyKey);
     if (searchData && searchData.results && searchData.results.length > 0) {
       webSearchPerformed = true;
@@ -164,24 +262,30 @@ Directives impératives :
           });
         }
       });
-      webContext += `=== FIN DES DONNÉES DU WEB ===\nUtilise ces faits vérifiés pour répondre avec exactitude.`;
+      webContext += `=== FIN DES DONNÉES DU WEB ===\nConsigne : Utilise ces faits vérifiés pour répondre avec exactitude et clarté.`;
       systemPrompt += webContext;
     }
   }
 
-  // 3. Appel de l'API OpenAI Chat Completions / Responses
   const openaiMessages = [
-    { role: "system", content: systemPrompt },
+    { role: isReasoningModel ? "developer" : "system", content: systemPrompt },
     ...safeHistory
   ];
 
   try {
-    const completion = await openai.chat.completions.create({
+    const requestParams = {
       model: modelToUse,
-      messages: openaiMessages,
-      temperature: 0.6,
-      max_tokens: 3000
-    });
+      messages: openaiMessages
+    };
+
+    if (isReasoningModel) {
+      requestParams.max_completion_tokens = 3000;
+    } else {
+      requestParams.temperature = 0.6;
+      requestParams.max_tokens = 3000;
+    }
+
+    const completion = await openai.chat.completions.create(requestParams);
 
     const choice = completion.choices && completion.choices[0];
     const textOutput = (choice && choice.message && choice.message.content) ? choice.message.content.trim() : "";
@@ -199,7 +303,6 @@ Directives impératives :
     };
   } catch (apiErr) {
     console.error("Erreur OpenAI API:", apiErr.message || apiErr);
-    // Masquage strict des détails internes pour l'utilisateur
     let userMsg = "Une erreur est survenue lors de la communication avec OpenAI.";
     if (apiErr.status === 401) {
       userMsg = "Clé API OpenAI non valide. Veuillez vérifier votre configuration dans Firebase Secrets.";
@@ -316,3 +419,109 @@ exports.apiSamAiChat = onRequest(
     }
   }
 );
+
+/**
+ * 3. Cloud Function Callable de diagnostic et vérification du modèle OpenAI
+ * Permet de vérifier sans risque si la clé API a bien accès au modèle configuré
+ * et de lister les modèles d'élite disponibles sur le compte OpenAI.
+ */
+exports.checkSamAiModel = onCall(
+  {
+    secrets: [openAiApiKey],
+    cors: true,
+    maxInstances: 5
+  },
+  async () => {
+    const effectiveApiKey = openAiApiKey.value();
+    const currentConfigured = (process.env.OPENAI_MODEL || "gpt-4o").trim();
+
+    if (!effectiveApiKey || effectiveApiKey.includes("MY_OPENAI_API_KEY")) {
+      return {
+        configuredModel: currentConfigured,
+        isConfiguredAccessible: false,
+        error: "OPENAI_API_KEY n'est pas encore définie dans Firebase Secrets."
+      };
+    }
+
+    try {
+      const openai = new OpenAI({ apiKey: effectiveApiKey });
+      const modelsPage = await openai.models.list();
+      const modelIds = (modelsPage.data || []).map((m) => m.id);
+
+      const isConfiguredAccessible = modelIds.includes(currentConfigured);
+      const hasGpt4o = modelIds.some((id) => id === "gpt-4o");
+      const hasO3Mini = modelIds.some((id) => id.startsWith("o3-mini"));
+      const hasO1 = modelIds.some((id) => id === "o1" || id === "o1-2024-12-17");
+      const hasChatGpt4oLatest = modelIds.some((id) => id === "chatgpt-4o-latest");
+
+      return {
+        configuredModel: currentConfigured,
+        isConfiguredAccessible: isConfiguredAccessible,
+        totalModelsFound: modelIds.length,
+        hasGpt4o,
+        hasO3Mini,
+        hasO1,
+        hasChatGpt4oLatest,
+        status: isConfiguredAccessible ? "VERIFIED_ACCESSIBLE" : "MODEL_NOT_FOUND_ON_ACCOUNT"
+      };
+    } catch (err) {
+      return {
+        configuredModel: currentConfigured,
+        isConfiguredAccessible: false,
+        error: err.message || "Impossible de contacter l'API OpenAI pour vérifier les modèles."
+      };
+    }
+  }
+);
+
+/**
+ * 4. Endpoint HTTPS REST de diagnostic
+ */
+exports.apiCheckSamAiModel = onRequest(
+  {
+    secrets: [openAiApiKey],
+    cors: true,
+    maxInstances: 5
+  },
+  async (req, res) => {
+    const effectiveApiKey = openAiApiKey.value();
+    const currentConfigured = (process.env.OPENAI_MODEL || "gpt-4o").trim();
+
+    if (!effectiveApiKey || effectiveApiKey.includes("MY_OPENAI_API_KEY")) {
+      res.status(200).json({
+        configuredModel: currentConfigured,
+        isConfiguredAccessible: false,
+        error: "OPENAI_API_KEY n'est pas encore définie dans Firebase Secrets."
+      });
+      return;
+    }
+
+    try {
+      const openai = new OpenAI({ apiKey: effectiveApiKey });
+      const modelsPage = await openai.models.list();
+      const modelIds = (modelsPage.data || []).map((m) => m.id);
+
+      const isConfiguredAccessible = modelIds.includes(currentConfigured);
+      const hasGpt4o = modelIds.some((id) => id === "gpt-4o");
+      const hasO3Mini = modelIds.some((id) => id.startsWith("o3-mini"));
+      const hasO1 = modelIds.some((id) => id === "o1" || id === "o1-2024-12-17");
+
+      res.status(200).json({
+        configuredModel: currentConfigured,
+        isConfiguredAccessible: isConfiguredAccessible,
+        totalModelsFound: modelIds.length,
+        hasGpt4o,
+        hasO3Mini,
+        hasO1,
+        status: isConfiguredAccessible ? "VERIFIED_ACCESSIBLE" : "MODEL_NOT_FOUND_ON_ACCOUNT"
+      });
+    } catch (err) {
+      res.status(500).json({
+        configuredModel: currentConfigured,
+        isConfiguredAccessible: false,
+        error: err.message || "Erreur vérification modèles."
+      });
+    }
+  }
+);
+

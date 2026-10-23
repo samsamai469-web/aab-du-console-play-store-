@@ -25,7 +25,7 @@ data class OpenAiChatResult(
     val success: Boolean = true,
     val text: String = "",
     val sources: List<WebSource> = emptyList(),
-    val model: String = "gpt-4o-mini",
+    val model: String = "gpt-4o",
     val searchPerformed: Boolean = false,
     val errorMessage: String? = null
 )
@@ -59,6 +59,14 @@ class OpenAiBackendService(
         coerceInputValues = true
     }
 
+    private val clientConfiguredModel: String by lazy {
+        try {
+            BuildConfig.OPENAI_MODEL.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+        } catch (_: Throwable) {
+            ""
+        }.ifBlank { "gpt-4o" }
+    }
+
     /**
      * Envoie une question ou un historique complet de discussion à OpenAI.
      */
@@ -66,7 +74,7 @@ class OpenAiBackendService(
         messages: List<ChatMessage>,
         userQuestion: String,
         enableWebSearch: Boolean = true,
-        preferredModel: String = "gpt-4o-mini"
+        preferredModel: String = ""
     ): OpenAiChatResult = withContext(Dispatchers.IO) {
         val cleanQuestion = userQuestion.trim()
         if (cleanQuestion.isBlank() && messages.isEmpty()) {
@@ -76,25 +84,27 @@ class OpenAiBackendService(
             )
         }
 
+        val effectiveModel = preferredModel.ifBlank { clientConfiguredModel }
+
         // 1. TENTATIVE VIA FIREBASE CLOUD FUNCTIONS (Architecture serveur sécurisée recommandée)
         val cloudFunctionsResult = tryCallFirebaseCloudFunction(
             messages = messages,
             question = cleanQuestion,
             enableWebSearch = enableWebSearch,
-            model = preferredModel
+            model = effectiveModel
         )
 
         if (cloudFunctionsResult != null && cloudFunctionsResult.success && cloudFunctionsResult.text.isNotBlank()) {
             return@withContext cloudFunctionsResult
         }
 
-        // 2. SECOURS DIRECT HAUTE DISPONIBILITÉ VIA GATEWAY OFFICIELLE OPENAI / OPENROUTER
+        // 2. SECOURS DIRECT HAUTE DISPONIBILITÉ VIA GATEWAY OFFICIELLE OPENROUTER
         // Utilisé si la fonction Cloud Firebase n'est pas encore déployée par l'utilisateur
         val directResult = tryCallDirectOpenAiGateway(
             messages = messages,
             userQuestion = cleanQuestion,
             enableWebSearch = enableWebSearch,
-            preferredModel = preferredModel
+            preferredModel = effectiveModel
         )
 
         if (directResult != null && directResult.success && directResult.text.isNotBlank()) {
@@ -239,17 +249,17 @@ class OpenAiBackendService(
 
         val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
         val systemPrompt = """
-            Tu es SAM AI, l'intelligence artificielle d'élite officielle propulsée par OpenAI et conçue par Abdoul Mohamine Sawadogo, jeune développeur burkinabè.
+            Tu es SAM AI, l'assistant d'élite officiel propulsé par OpenAI et conçu par Abdoul Mohamine Sawadogo, jeune développeur burkinabè.
             Aujourd'hui nous sommes exactement le $dateStr.
-            Consignes d'or :
-            1. Réponds de manière intelligente, structurée, claire et agréable en français.
-            2. Si l'utilisateur demande d'approfondir ou de détailler sa question précédente, développe le sujet en profondeur.
-            3. Ne te présente JAMAIS au milieu d'une conversation déjà engagée.
-            4. Ne mentionne ton créateur que si l'utilisateur te demande expressément qui t'a créé.
+            Consignes impératives de qualité :
+            1. RÉPONSE DIRECTE : Réponds immédiatement et directement à la question sans introduction robotique ni formule stéréotypée ("Merci pour votre question", etc.).
+            2. APPROFONDISSEMENT UTILE : Si l'utilisateur demande de détailler ou développer, donne des explications concrètes, structurées et complètes.
+            3. INCERTITUDE : Signale clairement si un fait récent est incertain ou non confirmé.
+            4. Ne mentionne ton créateur que si expressément demandé.
             $webContext
         """.trimIndent()
 
-        // 1. Tenter avec OpenRouter (clé déjà présente et testée avec modèle openai/gpt-4o-mini)
+        // Secours via passerelle OpenRouter si configurée
         val openRouterKey = try {
             BuildConfig.OPENROUTER_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
         } catch (_: Throwable) { "" }
@@ -258,7 +268,7 @@ class OpenAiBackendService(
             val res = callOpenAiCompatibleEndpoint(
                 endpointUrl = "https://openrouter.ai/api/v1/chat/completions",
                 apiKey = openRouterKey,
-                model = "openai/gpt-4o-mini",
+                model = if (preferredModel.contains("/")) preferredModel else "openai/${preferredModel.ifBlank { "gpt-4o" }}",
                 systemPrompt = systemPrompt,
                 messages = messages,
                 userQuestion = userQuestion
@@ -268,32 +278,7 @@ class OpenAiBackendService(
                     success = true,
                     text = res,
                     sources = webSources,
-                    model = "gpt-4o-mini",
-                    searchPerformed = webSources.isNotEmpty()
-                )
-            }
-        }
-
-        // 2. Tenter avec OpenAI officiel direct si clé configurée
-        val openAiKey = try {
-            BuildConfig.OPENAI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
-        } catch (_: Throwable) { "" }
-
-        if (openAiKey.isNotBlank() && !openAiKey.equals("MY_OPENAI_API_KEY", ignoreCase = true)) {
-            val res = callOpenAiCompatibleEndpoint(
-                endpointUrl = "https://api.openai.com/v1/chat/completions",
-                apiKey = openAiKey,
-                model = preferredModel,
-                systemPrompt = systemPrompt,
-                messages = messages,
-                userQuestion = userQuestion
-            )
-            if (res != null) {
-                return OpenAiChatResult(
-                    success = true,
-                    text = res,
-                    sources = webSources,
-                    model = preferredModel,
+                    model = preferredModel.ifBlank { "gpt-4o" },
                     searchPerformed = webSources.isNotEmpty()
                 )
             }

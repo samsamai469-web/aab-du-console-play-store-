@@ -598,16 +598,45 @@ object AutonomousKnowledgeEngine {
     }
 
     private fun generateGeneralKnowledgeAnswer(question: String): String {
-        return buildString {
-            appendLine("Sur le sujet **$question** :")
-            appendLine()
-            appendLine("1. **Analyse & Contexte :** Pour bien appréhender cette thématique, il convient de considérer ses aspects fondamentaux ainsi que ses retombées pratiques.")
-            appendLine("2. **Principes clés :**")
-            appendLine("   • La maîtrise des notions théoriques et des bases méthodologiques.")
-            appendLine("   • L'importance du contexte spécifique et de la rigueur d'application.")
-            appendLine("   • Les recommandations éprouvées par les spécialistes du domaine.")
-            appendLine()
-            appendLine("3. **Poursuite de l'échange :** Si vous souhaitez des éclaircissements sur un point précis ou une illustration concrète, n'hésitez pas à me le demander !")
+        val qClean = question.trim().removeSuffix("?").trim()
+        val qLower = qClean.lowercase(Locale.ROOT)
+        return when {
+            qLower.startsWith("comment") -> buildString {
+                appendLine("Pour répondre directement à votre question sur la manière d'aborder **$qClean** :")
+                appendLine()
+                appendLine("• **Étape 1 - Préparation :** Définissez précisément votre objectif et rassemblez les ressources ou données nécessaires.")
+                appendLine("• **Étape 2 - Mise en œuvre :** Procédez par étapes progressives en validant chaque palier intermédiaire.")
+                appendLine("• **Étape 3 - Optimisation :** Ajustez votre méthode en fonction des premiers retours ou résultats observés.")
+                appendLine()
+                appendLine("Souhaitez-vous que je détaille une étape particulière ou que je vous donne un exemple appliqué à votre situation ?")
+            }
+            qLower.startsWith("pourquoi") -> buildString {
+                appendLine("Concernant la raison ou la cause de **$qClean** :")
+                appendLine()
+                appendLine("• **Origine première :** Cela s'explique par des impératifs structurels et contextuels déterminants.")
+                appendLine("• **Facteurs moteurs :** Plusieurs éléments conjugués (techniques, logiques ou économiques) renforcent ce phénomène.")
+                appendLine("• **Impact direct :** Cela produit des conséquences concrètes qui rendent cette approche ou cette situation prédominante.")
+                appendLine()
+                appendLine("Dites-moi si vous désirez explorer une conséquence ou une cause spécifique en profondeur.")
+            }
+            qLower.startsWith("qu'est-ce que") || qLower.startsWith("c'est quoi") || qLower.startsWith("definition") -> buildString {
+                appendLine("**$qClean** désigne un concept clé qui se caractérise par :")
+                appendLine()
+                appendLine("• **Définition essentielle :** Une notion ou un système conçu pour répondre à un besoin précis avec des règles et critères établis.")
+                appendLine("• **Rôle et utilité :** Faciliter la structuration, la résolution de problèmes ou l'optimisation des pratiques.")
+                appendLine("• **Exemple d'application :** Utilisé au quotidien par les praticiens et les experts pour assurer rigueur et efficacité.")
+                appendLine()
+                appendLine("Voulez-vous un cas d'usage concret ou une mise en application pratique ?")
+            }
+            else -> buildString {
+                appendLine("Voici les éléments essentiels et concrets concernant **$qClean** :")
+                appendLine()
+                appendLine("• **Point fondamental :** La compréhension de ce sujet repose sur l'analyse de ses paramètres déterminants et de leur mise en pratique.")
+                appendLine("• **Recommandations concrètes :** Privilégiez une démarche méthodique, vérifiez les sources et adaptez la solution aux contraintes réelles du terrain.")
+                appendLine("• **Nuances et incertitudes :** Selon le contexte particulier ou les évolutions récentes, certains aspects peuvent varier et nécessiter un ajustement.")
+                appendLine()
+                appendLine("Précisez-moi votre objectif avec ce sujet ou l'angle spécifique que vous aimeriez développer !")
+            }
         }
     }
 }

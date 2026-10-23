@@ -2571,7 +2571,7 @@ RÈGLES D'OR DE COMPORTEMENT :
                 messages = currentHistory,
                 userQuestion = userText,
                 enableWebSearch = true,
-                preferredModel = "gpt-4o-mini"
+                preferredModel = ""
             )
 
             var responseText = openAiResult.text
@@ -2581,7 +2581,7 @@ RÈGLES D'OR DE COMPORTEMENT :
             if (responseText.isBlank() || isError) {
                 responseText = com.example.data.engine.AutonomousKnowledgeEngine.answer(userText, currentHistory)
                 isError = false
-                responseSources = emptyList()
+                responseSources = emptyList<com.example.data.local.WebSource>()
             }
 
             _isSamAiGeminiThinking.value = false
@@ -2590,7 +2590,8 @@ RÈGLES D'OR DE COMPORTEMENT :
                 text = responseText,
                 timestamp = System.currentTimeMillis(),
                 isError = isError,
-                sources = responseSources
+                sources = responseSources,
+                model = if (!isError && openAiResult.success) openAiResult.model else null
             )
             _samAiChatMessages.value = _samAiChatMessages.value + botMsg
         }
