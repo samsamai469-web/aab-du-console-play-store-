@@ -83,16 +83,16 @@ class AiRepository(
             } catch (_: Throwable) { "" }
         }
         if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-            val fallback = com.example.data.engine.AutonomousKnowledgeEngine.answer(text)
+            val errText = "⚠️ Clé API non configurée."
             chatDao.insertMessage(
                 MessageEntity(
                     conversationId = conversationId,
-                    text = fallback,
+                    text = errText,
                     sender = "ai",
                     timestamp = System.currentTimeMillis()
                 )
             )
-            emit(fallback)
+            emit(errText)
             return@flow
         }
         try {
@@ -122,16 +122,16 @@ class AiRepository(
                 )
             }
         } catch (e: Throwable) {
-            val fallback = com.example.data.engine.AutonomousKnowledgeEngine.answer(text)
+            val errText = "⚠️ Erreur de connexion : ${e.localizedMessage ?: "Vérifiez votre réseau"}"
             chatDao.insertMessage(
                 MessageEntity(
                     conversationId = conversationId,
-                    text = fallback,
+                    text = errText,
                     sender = "ai",
                     timestamp = System.currentTimeMillis()
                 )
             )
-            emit(fallback)
+            emit(errText)
         }
     }.flowOn(Dispatchers.IO)
 

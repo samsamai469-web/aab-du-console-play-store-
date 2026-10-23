@@ -134,76 +134,13 @@ class ApiKeyManager(context: Context) {
         }
     }
 
-    fun getActiveTavilyApiKey(): String {
-        val customKey = prefs.getString(KEY_CUSTOM_TAVILY_API_KEY, null)?.trim()
-        if (!customKey.isNullOrBlank() && !customKey.startsWith("tvly-your-tavily")) {
-            return customKey
-        }
-        val buildConfigKey = try {
-            BuildConfig.TAVILY_API_KEY
-        } catch (_: Throwable) {
-            ""
-        }
-        val clean = buildConfigKey.trim().removeSurrounding("\"").removeSurrounding("'").trim()
-        return if (clean.isNotBlank() && !clean.startsWith("tvly-your-tavily")) clean else ""
-    }
-
-    fun isTavilyConfigured(): Boolean {
-        return getActiveTavilyApiKey().isNotBlank()
-    }
-
-    fun saveTavilyApiKey(key: String) {
-        val clean = key.trim().removeSurrounding("\"").removeSurrounding("'").trim()
-        if (clean.isBlank() || clean.startsWith("tvly-your-tavily")) {
-            clearTavilyApiKey()
-        } else {
-            prefs.edit().putString(KEY_CUSTOM_TAVILY_API_KEY, clean).apply()
-        }
-    }
-
-    fun clearTavilyApiKey() {
-        prefs.edit().remove(KEY_CUSTOM_TAVILY_API_KEY).apply()
-    }
-
-    suspend fun testTavilyApiKey(key: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
-        val cleanKey = key.trim().removeSurrounding("\"").removeSurrounding("'").trim()
-        if (cleanKey.isBlank() || cleanKey.startsWith("tvly-your-tavily")) {
-            return@withContext Pair(false, "Veuillez saisir une clé API Tavily valide.")
-        }
-        try {
-            val body = "{\"query\":\"test\",\"max_results\":1}"
-            val requestBody = body.toRequestBody("application/json; charset=utf-8".toMediaType())
-            val request = Request.Builder()
-                .url("https://api.tavily.com/search")
-                .post(requestBody)
-                .addHeader("Content-Type", "application/json")
-                .addHeader("Authorization", "Bearer $cleanKey")
-                .build()
-            val response = httpClient.newCall(request).execute()
-            if (response.isSuccessful) {
-                Pair(true, "Clé Tavily valide et fonctionnelle")
-            } else {
-                Pair(false, "Clé Tavily invalide (Code ${response.code}) : ${response.message}")
-            }
-        } catch (e: Throwable) {
-            Pair(false, "Erreur de connexion Tavily : ${e.localizedMessage ?: "Vérifiez votre réseau"}")
-        }
-    }
-
     companion object {
         private const val PREFS_NAME = "sam_ai_api_keys"
         private const val KEY_CUSTOM_GEMINI_API_KEY = "custom_gemini_api_key"
         private const val KEY_CUSTOM_GEMINI_LIVE_API_KEY = "custom_gemini_live_api_key"
-        private const val KEY_CUSTOM_TAVILY_API_KEY = "custom_tavily_api_key"
         val DEFAULT_GEMINI_API_KEY: String
             get() = try {
                 BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
-            } catch (_: Throwable) {
-                ""
-            }
-        val DEFAULT_TAVILY_API_KEY: String
-            get() = try {
-                BuildConfig.TAVILY_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
             } catch (_: Throwable) {
                 ""
             }

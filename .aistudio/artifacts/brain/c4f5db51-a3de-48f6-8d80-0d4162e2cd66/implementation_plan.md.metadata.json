@@ -1,6 +1,6 @@
 {
-  "summary":  "Plan de correction de l'assistant SAM AI : élimination totale des messages d'erreur invitant à configurer une clé API, suppression du menu de saisie de clés dans le profil, et mise en place d'un moteur de réponse autonome de secours pour garantir que l'assistant réponde toujours sans accroc.",
-  "updatedAt":  "2026-10-21T22:17:43.096039997Z",
+  "summary":  "Plan de mise en œuvre pour doter SAM AI d'un moteur d'actualités et de recherche en temps réel mondial et burkinabè, alimentant directement l'API OpenAI pour des réponses toujours fraîches et contextualisées.",
+  "updatedAt":  "2026-10-23T20:55:45.144643862Z",
   "requestFeedback":  true,
   "userFacing":  true
 }

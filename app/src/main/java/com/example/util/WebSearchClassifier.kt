@@ -13,7 +13,7 @@ data class SearchDecision(
     val level: SearchNeedLevel,
     val isSearchNeeded: Boolean,
     val isStrictTemporal: Boolean, // If true, live verification is strictly required
-    val isNewsTopic: Boolean,      // Topic "news" for Tavily
+    val isNewsTopic: Boolean,      // Topic "news"
     val cleanSearchQuery: String,  // Query cleaned of conversational prefixes
     val reason: String
 )

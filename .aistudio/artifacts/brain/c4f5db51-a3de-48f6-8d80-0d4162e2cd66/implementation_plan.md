@@ -1,53 +1,58 @@
-# Résolution de l'Assistant SAM AI et Suppression des Références aux Clés API
+# SAM AI : Moteur d'Actualités et de Recherche en Direct pour OpenAI
 
-Ce plan détaille la correction complète de l'assistant SAM AI pour répondre de manière fluide et intelligente à toutes les questions posées par les utilisateurs, sans jamais afficher de message d'erreur technique ni inviter à configurer une clé API, tout en supprimant les options de clés d'API de l'écran Profil.
+Ce plan d'implémentation détaille l'intégration d'un pipeline d'alimentation en temps réel pour l'assistant SAM AI, permettant d'interroger la presse burkinabè (AIB, RTB, LeFaso.net, Sidwaya) et les dépêches mondiales (RFI, France 24, BBC, Reuters) dès qu'une question d'actualité est posée, afin d'injecter ces faits récents dans l'API officielle OpenAI.
 
 ---
 
 ### User Review & Critical Decisions
 
 > [!IMPORTANT]
-> Les directives strictes suivantes fournies par l'utilisateur sont au cœur de cette mise à jour :
-> - **Zéro message sur la clé API** : Aucun utilisateur ne doit jamais voir de message lui demandant de configurer ou vérifier une clé API Gemini dans les paramètres.
-> - **Suppression du Profil** : Retrait définitif du menu et de la boîte de dialogue de saisie manuelle de clés API dans l'écran Profil.
-> - **Assistant toujours fonctionnel** : SAM AI doit répondre avec précision grâce à son moteur hybride (Gemini en ligne lorsque la clé d'environnement est active, et bascule transparente immédiate sur sa riche base de connaissances burkinabè et conversationnelle en local en cas d'absence de clé ou de panne réseau).
+> - **Maintien strict de l'API OpenAI** : L'assistant continue de s'appuyer sur l'API officielle OpenAI (via votre clé `OPENAI_API_KEY`), garantissant la qualité rédactionnelle et l'intelligence de GPT-4o.
+> - **Alimentation dynamique du contexte** : Fin de la réponse « *Je n'ai pas accès aux informations en direct* ». Dès qu'une question d'actualité ou temporelle est posée, l'application récupère en direct les dernières dépêches et les fournit immédiatement au prompt d'OpenAI.
+> - **Couverture double (Faso + Monde)** : Le moteur prend en compte les actualités nationales burkinabè et internationales généralistes.
+> - **Zéro dépendance complexe payante** : Utilisation d'un agrégateur de flux RSS / d'actualités directes et d'un moteur de recherche d'actualités public sans abonnement tiers bloquant.
+
+- **Décision confirmée** : Solution 1 choisie (OpenAI + actualités en temps réel Burkina Faso et Monde).
+- **Format des réponses** : Synthèse soignée par OpenAI avec mention claire des sources d'actualités consultées en bas de bulle.
 
 ---
 
 ### 1. Overview & Core Concept
 
-- **Problème résolu** :
-  - Lorsqu'un utilisateur pose une question dans le chat SAM AI sans que la clé API Gemini soit initialisée côté serveur, l'application renvoyait une erreur textuelle désagréable : *« Clé API Gemini absente ou non configurée »* ou *« Veuillez vérifier votre clé API dans les Paramètres de l'application »*.
-  - De plus, l'écran Profil proposait un bouton technique invitant les utilisateurs finaux à coller des clés API complexes (Gemini et Tavily).
-- **Solution apportée** :
-  - **Masquage et neutralisation technique totale** : Retrait de toute consigne relative aux clés API destinées au grand public.
-  - **Nettoyage de l'écran Profil** : Retrait du bloc « Configuration IA & Recherche Web » dans les préférences de `ProfileScreen.kt`.
-  - **Moteur de réponse résilient** : Si Gemini n'est pas configuré ou rencontre une erreur (quota, réseau, absence de clé), SAM AI active instantanément un générateur de réponses conversationnelles riche basé sur la mémoire locale du Faso (histoire, langues Mooré et Dioula, culture, créateur Abdoul Mohamine Sawadogo, savoirs généraux), garantissant une expérience fluide sans le moindre message d'erreur.
+- **Problème résolu** : 
+  Actuellement, lorsqu'un utilisateur pose une question sur les événements récents (ex: *« Quelles sont les actualités d'aujourd'hui au Burkina Faso ? »*), le modèle OpenAI n'ayant pas de navigateur web par défaut répond : *« Je n'ai pas accès aux informations en direct : je ne peux donc pas confirmer les nouvelles de ce vendredi 23 octobre 2026 »*.
+- **Expérience cible** :
+  L'application détecte en une fraction de seconde le besoin d'actualités, interroge les flux de presse en direct, résume les faits saillants récents et les transmet à OpenAI. L'utilisateur reçoit une réponse riche, documentée et à jour.
+- **Bénéficiaires** :
+  Tous les utilisateurs de SAM AI souhaitant suivre les actualités du Faso, de la sous-région et du monde, la politique, le sport, l'économie et la culture sans quitter leur application mobile.
 
 ---
 
 ### 2. User Experience & Visual Design
 
 - **Dans le chat SAM AI (`SamAiGeminiAssistantModal`)** :
-  - L'utilisateur saisit sa question ou choisit une suggestion.
-  - SAM AI réfléchit et affiche directement une réponse complète, structurée et chaleureuse.
-  - Finie toute bulle d'erreur rouge ou mention de paramètres d'API. L'assistant paraît toujours opérationnel et intelligent.
-- **Dans l'écran Profil (`ProfileScreen`)** :
-  - L'interface des préférences est harmonieuse et accessible : choix du Thème (Sombre / Clair), Style de palette (Moderne / Classique), Langue de l'app (Français / Anglais), Rappels et notifications, À propos et Support.
-  - Zéro formulaire technique de clés d'API pour les utilisateurs normaux.
+  1. L'utilisateur saisit sa question : *« Quelles sont les dernières actualités du Burkina Faso et de la sous-région ? »*.
+  2. Un indicateur discret s'affiche brièvement : *« Consultation des dernières dépêches en direct... ⚡ »*.
+  3. SAM AI (OpenAI) formule une réponse claire et structurée en sections thématiques (Politique, Sécurité/Développement, Société/Sport).
+  4. En bas de la bulle de message, un bloc épuré présente les sources d'information consultées (ex: `AIB • RTB • LeFaso.net • RFI`).
+- **Composants d'interface (Material 3)** :
+  - Badges de fraîcheur temporelle avec icône d'horodatage.
+  - Boutons d'action rapides (Écouter en synthèse vocale, Détailler, Copier).
+  - Aucune mention d'erreur technique ni de message bloquant sur la connectivité internet.
 
 ---
 
 ### 3. Key Product Decisions & Trade-Offs
 
-- **Décision 1 : Fallback conversationnel natif au lieu d'une erreur bloquante**
-  - *Choix* : Si l'API cloud n'est pas joignable ou sans clé valide, intercepter l'erreur au niveau de `SamAiViewModel` et `AiRepository` pour générer une réponse contextuelle immédiate à partir du lexique, des dictionnaires (Mooré, Dioula, Haoussa), de la base de données historique et du moteur de dialogue burkinabè.
-  - *Pourquoi* : L'utilisateur bénéficie d'une réponse utile et immédiate sans frustration.
-- **Décision 2 : Suppression du dialogue de clés API dans Profil**
-  - *Choix* : Supprimer `item_profile_ai_config` et `showAiConfigDialog` de la vue utilisateur standard.
-  - *Pourquoi* : Conforme à la demande explicite de l'utilisateur (« aucun ne doit jamais voir ça, faut l'enlever dans le profil »).
-- **Décision 3 : Réécriture des messages d'erreur de `GeminiErrorHandler`**
-  - *Choix* : Remplacer toute mention de clé d'API par une formulation d'assistance naturelle et bienveillante ou déclencher la réponse autonome.
+- **Décision 1 : Détection intelligente de l'intention d'actualité via `WebSearchClassifier`**
+  - *Choix* : Réutiliser et optimiser le classifieur existant pour différencier les questions générales (traduction, définitions, code) qui vont directement à OpenAI, des questions d'actualité/sport/politique qui déclenchent la récupération de dépêches.
+  - *Pourquoi* : Préserve la réactivité et la vitesse pour les questions intemporelles, tout en activant la recherche uniquement quand elle apporte une réelle valeur.
+- **Décision 2 : Pipeline direct via un service de dépêches d'actualités (`LiveNewsFeedService`)**
+  - *Choix* : Créer un service dédié interrogeant directement les flux d'actualités structurés (AIB, RTB, LeFaso, RFI, France24, BBC Afrique) et les actualités web ouvertes en JSON/XML sans nécessiter de clé API tierce.
+  - *Pourquoi* : Fiabilité maximale, aucun quota tiers bloquant (contrairement aux limites de Tavily ou de clés tierces payantes), rapidité d'exécution.
+- **Décision 3 : Injection dans le prompt OpenAI sans altérer le modèle**
+  - *Choix* : Insérer les titres et résumés dans le message `developer`/`system` sous forme de contexte factuel certifié.
+  - *Pourquoi* : Exploite la pleine puissance de raisonnement de `gpt-4o` tout en évitant toute hallucination sur les dates récentes.
 
 ---
 
@@ -55,39 +60,45 @@ Ce plan détaille la correction complète de l'assistant SAM AI pour répondre d
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                      Utilisateur (Chat SAM AI)                         │
+│                        Utilisateur (Chat SAM AI)                       │
+│             « Dernières actualités du Burkina Faso et du monde »       │
 └───────────────────────────────────┬────────────────────────────────────┘
                                     │
                                     ▼
 ┌────────────────────────────────────────────────────────────────────────┐
-│                            SamAiViewModel                              │
-│                   askSamAiGemini(userQuestion)                         │
-└───────────────────┬────────────────────────────────┬───────────────────┘
-                    │                                │
-    (Clé active présente et valide)   (Absence de clé ou Erreur réseau/API)
-                    ▼                                ▼
-┌───────────────────────────────────────┐ ┌──────────────────────────────┐
-│        Google Gemini API Cloud        │ │  Moteur Local Intelligent    │
-│    (gemini-3.5-flash via Retrofit)    │ │   - Dictionnaires & Langues  │
-│                                       │ │   - Patrimoine & Histoire    │
-│                                       │ │   - Connaissances du Faso    │
-└───────────────────┬───────────────────┘ └──────────────┬───────────────┘
-                    │                                    │
-                    └─────────────────┬──────────────────┘
-                                      │
-                                      ▼
-             ┌─────────────────────────────────────────────────┐
-             │       Réponse fluide, riche et sans erreur      │
-             │       affichée directement dans la bulle        │
-             └─────────────────────────────────────────────────┘
+│                          SamAiViewModel                                │
+│                   sendSamAiUniversalMessage(...)                       │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                  ┌─────────────────┴─────────────────┐
+                  ▼                                   ▼
+         (Question générale)                 (Besoin d'actualité)
+                  │                                   │
+                  │                                   ▼
+                  │                    ┌──────────────────────────────┐
+                  │                    │     LiveNewsFeedService      │
+                  │                    │ - Presse Faso (AIB, RTB,     │
+                  │                    │   Lefaso, Sidwaya)           │
+                  │                    │ - Presse Monde (RFI, BBC,    │
+                  │                    │   France 24)                 │
+                  │                    └──────────────┬───────────────┘
+                  │                                   │ (Dépêches du jour)
+                  ▼                                   ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│                         OpenAiBackendService                           │
+│        Appel https://api.openai.com/v1/chat/completions                │
+│    - Rôle système : SAM AI + Contexte d'actualité temps réel          │
+│    - Rôle utilisateur : Question d'origine                            │
+│    - max_completion_tokens : 3000                                      │
+└───────────────────────────────────┬────────────────────────────────────┘
+                                    │
+                                    ▼
+┌────────────────────────────────────────────────────────────────────────┐
+│            Réponse complète avec faits réels et sources claires        │
+└────────────────────────────────────────────────────────────────────────┘
 ```
 
-- **Fichiers ciblés pour l'exécution** :
-  1. `app/src/main/java/com/example/ui/screens/ProfileScreen.kt` :
-     - Retirer l'élément de liste de configuration IA (`item_profile_ai_config`) et le dialogue `showAiConfigDialog`.
-  2. `app/src/main/java/com/example/util/GeminiErrorHandler.kt` :
-     - Éliminer toute mention invitant à vérifier la clé API dans les paramètres.
-  3. `app/src/main/java/com/example/data/repository/AiRepository.kt` :
-     - Ne plus bloquer ni retourner d'erreur brute « Clé API absente ».
-  4. `app/src/main/java/com/example/ui/SamAiViewModel.kt` :
-     - En cas d'erreur de communication ou d'absence de clé, déclencher automatiquement le moteur de réponse intelligent local pour fournir une réponse de haute qualité sans afficher de message d'erreur.
+- **Composants clés à créer / enrichir** :
+  1. `LiveNewsFeedService.kt` : Moteur de récupération en temps réel des dépêches et articles du Faso et du monde avec cache de courte durée (5 minutes) pour la rapidité.
+  2. `OpenAiBackendService.kt` : Injection dynamique des articles dans le prompt contextuel envoyé à l'API OpenAI.
+  3. `SamAiViewModel.kt` : Orchestration fluide du flux sans temps mort ni message d'erreur.

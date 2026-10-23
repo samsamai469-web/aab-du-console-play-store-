@@ -264,20 +264,20 @@ fun SamAiGeminiAssistantModal(
                                     )
                                     Spacer(modifier = Modifier.width(6.dp))
                                     Surface(
-                                        color = Color(0xFF1B5E20).copy(alpha = 0.2f),
+                                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
                                         shape = RoundedCornerShape(8.dp)
                                     ) {
                                         Text(
-                                            text = "Recherche en direct 🌐",
+                                            text = "OpenAI Officiel ⚡",
                                             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                                             fontWeight = FontWeight.Bold,
-                                            color = Color(0xFF4CAF50),
+                                            color = MaterialTheme.colorScheme.primary,
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
                                     }
                                 }
                                 Text(
-                                    text = "Infos en direct • Actualité en temps réel • Réponses directes",
+                                    text = "Intelligence Artificielle • OpenAI & Actualités en direct",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )

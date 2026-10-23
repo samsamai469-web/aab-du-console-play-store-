@@ -91,8 +91,8 @@ class SamAiViewModel(
     val audienceManager: AnonymousAudienceManager? = null
 ) : ViewModel() {
 
-    private val tavilySearchService = com.example.data.remote.TavilySearchService()
-    private val openAiBackendService = com.example.data.remote.OpenAiBackendService(tavilySearchService)
+    private val openAiBackendService = com.example.data.remote.OpenAiBackendService()
+    private val liveNewsFeedService = com.example.data.remote.LiveNewsFeedService()
 
     fun auditLog(actionId: String, severity: String, details: String) {
         viewModelScope.launch {
@@ -2350,16 +2350,7 @@ class SamAiViewModel(
     fun clearGeminiApiKey() = apiKeyManager.clearGeminiApiKey()
     suspend fun testGeminiApiKey(candidateKey: String): Pair<Boolean, String> = apiKeyManager.testApiKey(candidateKey)
 
-    fun getActiveTavilyApiKey(): String = apiKeyManager.getActiveTavilyApiKey()
-    fun isTavilyConfigured(): Boolean = apiKeyManager.isTavilyConfigured()
-    fun saveTavilyApiKey(key: String) {
-        apiKeyManager.saveTavilyApiKey(key)
-        auditLog("API_KEY_TAVILY_SAVED", "INFO", "Clé API Tavily mise à jour.")
-    }
-    fun clearTavilyApiKey() {
-        apiKeyManager.clearTavilyApiKey()
-        auditLog("API_KEY_TAVILY_CLEARED", "INFO", "Clé API Tavily supprimée.")
-    }
+
 
     // =========================================================================
     // SAM AI ASSISTANT UNIVERSEL & INTELLIGENT (AVEC PERSISTANCE FIREBASE HEBDOMADAIRE)
@@ -2566,12 +2557,31 @@ RÈGLES D'OR DE COMPORTEMENT :
                 )
             }
 
-            // Envoi de la requête à l'API officielle OpenAI (via Firebase Cloud Functions ou passerelle haute disponibilité)
+            // Classification de la requête pour détecter le besoin d'actualités récentes (Faso ou Monde)
+            val searchDecision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
+            var liveContextSummary = ""
+            var liveSources = emptyList<com.example.data.local.WebSource>()
+
+            if (searchDecision.isSearchNeeded || searchDecision.level != com.example.util.SearchNeedLevel.NONE) {
+                try {
+                    val newsResult = liveNewsFeedService.fetchLiveNews(searchDecision.cleanSearchQuery.ifBlank { userText })
+                    if (newsResult.hasNews) {
+                        liveContextSummary = newsResult.contextSummary
+                        liveSources = newsResult.sources
+                    }
+                } catch (e: Throwable) {
+                    android.util.Log.w("SamAiViewModel", "Notice actualités en direct: ${e.message}")
+                }
+            }
+
+            // Envoi de la requête à l'API officielle OpenAI avec le contexte d'actualité temps réel
             val openAiResult = openAiBackendService.sendChatMessage(
                 messages = currentHistory,
                 userQuestion = userText,
-                enableWebSearch = true,
-                preferredModel = ""
+                enableWebSearch = liveSources.isNotEmpty(),
+                preferredModel = "",
+                newsContext = liveContextSummary,
+                sources = liveSources
             )
 
             var responseText = openAiResult.text
@@ -2579,13 +2589,9 @@ RÈGLES D'OR DE COMPORTEMENT :
             var responseSources = openAiResult.sources
 
             if (responseText.isBlank() || isError) {
-                if (!openAiResult.errorMessage.isNullOrBlank()) {
-                    responseText = "⚠️ Erreur OpenAI : ${openAiResult.errorMessage}\n\n(Vérifiez votre solde et votre clé sur platform.openai.com)"
-                    isError = true
-                } else {
-                    responseText = com.example.data.engine.AutonomousKnowledgeEngine.answer(userText, currentHistory)
-                    isError = false
-                }
+                val errorDetails = openAiResult.errorMessage.orEmpty().ifBlank { "Impossible de contacter l'API OpenAI. Vérifiez votre clé API et votre réseau." }
+                responseText = "⚠️ Erreur OpenAI : $errorDetails\n\n(Vérifiez votre solde et votre clé sur platform.openai.com)"
+                isError = true
                 responseSources = emptyList<com.example.data.local.WebSource>()
             }
 
@@ -2658,7 +2664,7 @@ RÈGLES D'OR DE COMPORTEMENT :
 
     /**
      * Traduction directe et contextuelle ultra-haute fidélité pour la Conversation en direct
-     * Utilise le moteur multilingue complet avec Google Gemini, secours Groq et validation linguistique stricte.
+     * Utilise le moteur multilingue complet avec Google Gemini et validation linguistique stricte.
      */
     suspend fun translateDirectlyForLiveConversation(
         text: String,
