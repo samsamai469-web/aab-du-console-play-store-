@@ -33,11 +33,6 @@ android {
     val envFile = rootProject.file(".env")
     if (envFile.exists()) {
       envFile.reader().use { r -> envProps.load(r) }
-    } else {
-      val envExample = rootProject.file(".env.example")
-      if (envExample.exists()) {
-        envExample.reader().use { r -> envProps.load(r) }
-      }
     }
     val openAiKey = envProps.getProperty("OPENAI_API_KEY", "MY_OPENAI_API_KEY").trim().removeSurrounding("\"")
     buildConfigField("String", "OPENAI_API_KEY", "\"$openAiKey\"")

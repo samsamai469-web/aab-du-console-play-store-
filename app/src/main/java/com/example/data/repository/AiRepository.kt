@@ -46,6 +46,7 @@ class AiRepository(
     val apiKeyManager: ApiKeyManager,
     private val auditDao: AuditDao? = null
 ) {
+    private val openAiBackendService = com.example.data.remote.OpenAiBackendService()
     fun getConversationsForUser(userId: String): Flow<List<ConversationEntity>> {
         return chatDao.getConversationsForUser(userId)
     }
@@ -172,6 +173,16 @@ RÈGLES D'OR ABSOLUES :
 4. Rends une phrase fluide, naturelle et directement utilisable.
 ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else ""}
         """.trimIndent()
+
+        // 0. Moteur officiel prioritaire : OpenAI (GPT-4o)
+        try {
+            val openAiTranslation = openAiBackendService.translateWithOpenAi(cleanSrc, srcLang, tgtLang)
+            if (openAiTranslation.isNotBlank() && !openAiTranslation.equals(cleanSrc, ignoreCase = true)) {
+                return@withContext openAiTranslation.trim()
+            }
+        } catch (e: Throwable) {
+            android.util.Log.w("AiRepository", "OpenAI translation notice: ${e.message}")
+        }
 
         // 1. Moteur IA principal via Retrofit REST (Direct, ultra-rapide et fiable)
         if (effectiveKey.isNotBlank() && effectiveKey != "MY_GEMINI_API_KEY") {

@@ -55,11 +55,13 @@ class OpenAiBackendService {
     }
 
     private fun getOpenAiApiKey(): String {
-        return try {
+        val buildKey = try {
             BuildConfig.OPENAI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
         } catch (_: Throwable) {
             ""
         }
+        if (buildKey.isNotBlank() && buildKey != "MY_OPENAI_API_KEY") return buildKey
+        return com.example.data.local.ApiKeyManager.DEFAULT_OPENAI_API_KEY
     }
 
     /**
@@ -230,5 +232,74 @@ class OpenAiBackendService {
             )
         }
         return null
+    }
+
+    /**
+     * Traduction multilingue haute fidélité via l'API OpenAI (GPT-4o).
+     * Prend en charge les langues nationales (Mooré, Dioula, Haoussa, Gulmancema, Fulfulde)
+     * et internationales (Français, Anglais, Espagnol, Arabe, etc.).
+     */
+    suspend fun translateWithOpenAi(
+        text: String,
+        sourceLang: String,
+        targetLang: String
+    ): String = withContext(Dispatchers.IO) {
+        val cleanText = text.trim()
+        if (cleanText.isBlank()) return@withContext ""
+        if (sourceLang.equals(targetLang, ignoreCase = true)) return@withContext cleanText
+
+        val apiKey = getOpenAiApiKey()
+        if (apiKey.isBlank() || apiKey == "MY_OPENAI_API_KEY") {
+            return@withContext ""
+        }
+
+        val prompt = "Texte à traduire du $sourceLang vers le $targetLang :\n\"$cleanText\""
+        val systemPrompt = """
+            Tu es le traducteur expert polyglotte officiel de SAM AI, conçu par Abdoul Mohamine Sawadogo.
+            Tu maîtrises parfaitement les langues du Burkina Faso et de la sous-région ouest-africaine (Mooré, Dioula, Fulfulde, Haoussa, Gulmancema) ainsi que les langues internationales (Français, Anglais, Espagnol, etc.).
+            Consignes impératives :
+            1. Traduis le texte de manière fidèle, naturelle, grammaticalement exacte et idiomatique du $sourceLang vers le $targetLang.
+            2. Renvoie UNIQUEMENT la traduction finale brute. Ne mets aucun guillemet autour, aucune introduction, aucun commentaire, aucune translittération ou explication.
+        """.trimIndent()
+
+        try {
+            val messagesArray = buildJsonArray {
+                add(buildJsonObject {
+                    put("role", "system")
+                    put("content", systemPrompt)
+                })
+                add(buildJsonObject {
+                    put("role", "user")
+                    put("content", prompt)
+                })
+            }
+
+            val requestBodyJson = buildJsonObject {
+                put("model", clientConfiguredModel)
+                put("messages", messagesArray)
+                put("max_completion_tokens", 1000)
+            }.toString()
+
+            val request = Request.Builder()
+                .url("https://api.openai.com/v1/chat/completions")
+                .addHeader("Authorization", "Bearer $apiKey")
+                .addHeader("Content-Type", "application/json")
+                .post(requestBodyJson.toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext ""
+                val bodyString = response.body?.string().orEmpty()
+                val jsonObject = json.parseToJsonElement(bodyString) as? kotlinx.serialization.json.JsonObject
+                val choices = jsonObject?.get("choices") as? kotlinx.serialization.json.JsonArray
+                val firstChoice = choices?.firstOrNull() as? kotlinx.serialization.json.JsonObject
+                val messageObj = firstChoice?.get("message") as? kotlinx.serialization.json.JsonObject
+                val content = (messageObj?.get("content") as? kotlinx.serialization.json.JsonPrimitive)?.content
+                content?.trim()?.removeSurrounding("\"")?.removeSurrounding("«", "»").orEmpty()
+            }
+        } catch (e: Throwable) {
+            Log.e("OpenAiBackendService", "Erreur traduction OpenAI: ${e.message}")
+            ""
+        }
     }
 }

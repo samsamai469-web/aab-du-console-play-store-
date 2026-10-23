@@ -148,13 +148,14 @@ class TranslationRepository(
 
         var translated = ""
         var isLocal = false
-        var badge = "En Ligne (Google / Gemini)"
+        var badge = "OpenAI Officiel ⚡"
 
-        // 1. Traduction 100% en ligne (Google Traduction & Gemini Cloud IA)
+        // 1. Traduction 100% en ligne (OpenAI GPT-4o & Google Traduction)
         try {
             val onlineResult = aiFallback(cleanText, sourceLangInput, targetLangInput, "")
             if (onlineResult.isNotBlank() && !onlineResult.equals(cleanText, ignoreCase = true)) {
                 translated = onlineResult.trim()
+                badge = "OpenAI Officiel ⚡"
             }
         } catch (_: Throwable) {}
 

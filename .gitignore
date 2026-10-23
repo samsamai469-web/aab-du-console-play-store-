@@ -1,18 +1,41 @@
+# Android Studio & Gradle
 *.iml
-.gradle
-.kotlin
+.gradle/
+**/.gradle/
+.kotlin/
+**/.kotlin/
 /local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
+local.properties
+.idea/
+**/.idea/
 .DS_Store
-/build
+build/
+**/build/
+app/build/
+**/app/build/
 /captures
 .externalNativeBuild
-.cxx
-local.properties
+.cxx/
+**/.cxx/
 .env
+
+# Keystores & Keys
+*.jks
+*.keystore
 debug.keystore
+debug.keystore.base64
+
+# Compiled binaries, classes, caches
+*.class
+*.dex
+*.bin
+*.apk
+*.aab
+*.ap_
+.build-outputs/
+output.json
+
+# AI Studio platform internal files
+.aistudio/
+public/
+scripts_archive/

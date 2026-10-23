@@ -2350,7 +2350,16 @@ class SamAiViewModel(
     fun clearGeminiApiKey() = apiKeyManager.clearGeminiApiKey()
     suspend fun testGeminiApiKey(candidateKey: String): Pair<Boolean, String> = apiKeyManager.testApiKey(candidateKey)
 
-
+    fun getActiveOpenAiApiKey(): String = apiKeyManager.getActiveOpenAiApiKey()
+    fun isOpenAiConfigured(): Boolean = apiKeyManager.isOpenAiConfigured()
+    fun saveOpenAiApiKey(key: String) {
+        apiKeyManager.saveOpenAiApiKey(key)
+        auditLog("API_KEY_OPENAI_SAVED", "INFO", "Clé API OpenAI mise à jour.")
+    }
+    fun clearOpenAiApiKey() {
+        apiKeyManager.clearOpenAiApiKey()
+        auditLog("API_KEY_OPENAI_CLEARED", "INFO", "Clé API OpenAI réinitialisée.")
+    }
 
     // =========================================================================
     // SAM AI ASSISTANT UNIVERSEL & INTELLIGENT (AVEC PERSISTANCE FIREBASE HEBDOMADAIRE)

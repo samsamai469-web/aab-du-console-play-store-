@@ -22,14 +22,14 @@ import java.util.UUID
 class ExampleRobolectricTest {
 
     @Test
-    fun `read string from context`() {
+    fun testReadStringFromContext() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val appName = context.getString(R.string.app_name)
         assertEquals("Sam AI", appName)
     }
 
     @Test
-    fun `test auth session manager persistence and encryption`() {
+    fun testAuthSessionManagerPersistenceAndEncryption() {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val sessionManager = AuthSessionManager(context)
 
@@ -65,7 +65,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `test google accounts isolation by subject id`() {
+    fun testGoogleAccountsIsolationBySubjectId() {
         val user1Sub = "118237465019283746501"
         val user2Sub = "229384756102938475612"
 
@@ -80,7 +80,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `test secure token generation and sanitization`() {
+    fun testSecureTokenGenerationAndSanitization() {
         val token1 = SecurityUtils.generateSecureToken(32)
         val token2 = SecurityUtils.generateSecureToken(32)
         assertNotNull(token1)
@@ -95,7 +95,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `test new google user account automatic creation vs existing user reconnection`() {
+    fun testNewGoogleUserAccountCreationVsExistingUserReconnection() {
         val googleSubjectId = "104928374019283746592"
         val userEmail = "nouvel.apprenant@gmail.com"
         val userName = "Nouvel Apprenant"
@@ -122,7 +122,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `test official google oauth url generation contains required params and prompt select_account`() {
+    fun testOfficialGoogleOAuthUrlGeneration() {
         val oauthUrl = com.example.util.GoogleAuthManager.getGoogleOAuthUrl()
 
         assertTrue("Must target accounts.google.com", oauthUrl.startsWith("https://accounts.google.com/o/oauth2/v2/auth"))
@@ -133,7 +133,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `test jwt claims extraction for google identity`() {
+    fun testJwtClaimsExtractionForGoogleIdentity() {
         // Mock a standard base64url encoded OpenID Connect JWT payload
         // {"sub":"108237465019283746501","email":"test.user@gmail.com","name":"Test User"}
         val header = android.util.Base64.encodeToString("{\"alg\":\"RS256\"}".toByteArray(), android.util.Base64.URL_SAFE or android.util.Base64.NO_WRAP)
@@ -148,7 +148,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `test user statistics persistent across restart simulation in room database`() = kotlinx.coroutines.runBlocking {
+    fun testUserStatisticsPersistentAcrossRestartSimulationInRoomDatabase() = kotlinx.coroutines.runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
         val db = androidx.room.Room.inMemoryDatabaseBuilder(context, com.example.data.local.AppDatabase::class.java).build()
         val analyticsDao = db.analyticsDao()
