@@ -248,7 +248,7 @@ class OpenAiBackendService(
 
         // Appel direct à l'API OpenAI (clé injectée au build via GitHub Secrets)
         val openAiKey = try {
-            BuildConfig.OPENAI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+            BuildConfig.SAM_OPENAI_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
         } catch (_: Throwable) { "" }
 
         if (openAiKey.startsWith("sk-")) {
