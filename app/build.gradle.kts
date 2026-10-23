@@ -34,7 +34,9 @@ android {
     if (envFile.exists()) {
       envFile.reader().use { r -> envProps.load(r) }
     }
-    val openAiKey = envProps.getProperty("OPENAI_API_KEY", "MY_OPENAI_API_KEY").trim().removeSurrounding("\"")
+    val openAiKey = (envProps.getProperty("OPENAI_API_KEY")?.takeIf { it.isNotBlank() }
+      ?: System.getenv("OPENAI_API_KEY")?.takeIf { it.isNotBlank() }
+      ?: "MY_OPENAI_API_KEY").trim().removeSurrounding("\"")
     buildConfigField("String", "OPENAI_API_KEY", "\"$openAiKey\"")
   }
 
@@ -42,11 +44,12 @@ android {
     create("release") {
       val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
       val keyFile = file(keystorePath)
-      if (keyFile.exists()) {
+      val storePass = System.getenv("STORE_PASSWORD")?.takeIf { it.isNotBlank() }
+      if (keyFile.exists() && storePass != null) {
         storeFile = keyFile
-        storePassword = System.getenv("STORE_PASSWORD") ?: "android"
-        keyAlias = System.getenv("KEY_ALIAS") ?: "upload"
-        keyPassword = System.getenv("KEY_PASSWORD") ?: "android"
+        storePassword = storePass
+        keyAlias = System.getenv("KEY_ALIAS")?.takeIf { it.isNotBlank() } ?: "upload"
+        keyPassword = System.getenv("KEY_PASSWORD")?.takeIf { it.isNotBlank() } ?: storePass
       }
     }
   }
@@ -59,9 +62,10 @@ android {
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       
       // Sécurisation de la signature Release : ne pas crasher si le fichier keystore n'existe pas en local
-      val releaseKeystore = signingConfigs.getByName("release").storeFile
-      if (releaseKeystore != null && releaseKeystore.exists()) {
-        signingConfig = signingConfigs.getByName("release")
+      val releaseConfig = signingConfigs.getByName("release")
+      val releaseKeystore = releaseConfig.storeFile
+      if (releaseKeystore != null && releaseKeystore.exists() && !releaseConfig.storePassword.isNullOrBlank()) {
+        signingConfig = releaseConfig
       } else {
         signingConfig = signingConfigs.getByName("debug")
       }

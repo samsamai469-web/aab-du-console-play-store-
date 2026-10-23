@@ -19,11 +19,6 @@ app/build/
 **/.cxx/
 .env
 
-# Keystores & Keys
-*.jks
-*.keystore
-debug.keystore
-debug.keystore.base64
 
 # Compiled binaries, classes, caches
 *.class
