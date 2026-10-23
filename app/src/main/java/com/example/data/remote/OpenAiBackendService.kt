@@ -86,20 +86,7 @@ class OpenAiBackendService(
 
         val effectiveModel = preferredModel.ifBlank { clientConfiguredModel }
 
-        // 1. TENTATIVE VIA FIREBASE CLOUD FUNCTIONS (Architecture serveur sécurisée recommandée)
-        val cloudFunctionsResult = tryCallFirebaseCloudFunction(
-            messages = messages,
-            question = cleanQuestion,
-            enableWebSearch = enableWebSearch,
-            model = effectiveModel
-        )
-
-        if (cloudFunctionsResult != null && cloudFunctionsResult.success && cloudFunctionsResult.text.isNotBlank()) {
-            return@withContext cloudFunctionsResult
-        }
-
-        // 2. SECOURS DIRECT HAUTE DISPONIBILITÉ VIA GATEWAY OFFICIELLE OPENROUTER
-        // Utilisé si la fonction Cloud Firebase n'est pas encore déployée par l'utilisateur
+        // 1. APPEL DIRECT OPENAI (puis OpenRouter en secours)
         val directResult = tryCallDirectOpenAiGateway(
             messages = messages,
             userQuestion = cleanQuestion,
@@ -111,7 +98,7 @@ class OpenAiBackendService(
             return@withContext directResult
         }
 
-        // 3. SECOURS LOCAL INTELLIGENT AUTONOME (Mode hors-ligne ou réseau indisponible)
+        // 2. SECOURS LOCAL INTELLIGENT AUTONOME (Mode hors-ligne ou réseau indisponible)
         val fallbackText = com.example.data.engine.AutonomousKnowledgeEngine.answer(cleanQuestion, messages)
         OpenAiChatResult(
             success = true,
@@ -259,6 +246,33 @@ class OpenAiBackendService(
             $webContext
         """.trimIndent()
 
+        // Appel direct à l'API OpenAI (clé injectée au build via GitHub Secrets)
+        val openAiKey = try {
+            BuildConfig.OPENAI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+        } catch (_: Throwable) { "" }
+
+        if (openAiKey.startsWith("sk-")) {
+            val res = callOpenAiCompatibleEndpoint(
+                endpointUrl = "https://api.openai.com/v1/chat/completions",
+                apiKey = openAiKey,
+                model = preferredModel.ifBlank { "gpt-4o" },
+                systemPrompt = systemPrompt,
+                messages = messages,
+                userQuestion = userQuestion
+            )
+            if (res != null) {
+                return OpenAiChatResult(
+                    success = true,
+                    text = res,
+                    sources = webSources,
+                    model = preferredModel.ifBlank { "gpt-4o" },
+                    searchPerformed = webSources.isNotEmpty()
+                )
+            }
+        } else {
+            Log.e("OpenAiBackendService", "OPENAI_API_KEY absente ou invalide dans le build (doit commencer par sk-)")
+        }
+
         // Secours via passerelle OpenRouter si configurée
         val openRouterKey = try {
             BuildConfig.OPENROUTER_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
@@ -333,7 +347,8 @@ class OpenAiBackendService(
 
             httpClient.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) {
-                    Log.w("OpenAiBackendService", "OpenAI HTTP error ${response.code}: ${response.message}")
+                    val errBody = response.body?.string().orEmpty().take(500)
+                    Log.e("OpenAiBackendService", "HTTP ${response.code} sur $endpointUrl : $errBody")
                     return null
                 }
                 val bodyString = response.body?.string().orEmpty()
@@ -341,7 +356,7 @@ class OpenAiBackendService(
                 val choices = jsonObject?.get("choices") as? kotlinx.serialization.json.JsonArray
                 val firstChoice = choices?.firstOrNull() as? kotlinx.serialization.json.JsonObject
                 val message = firstChoice?.get("message") as? kotlinx.serialization.json.JsonObject
-                val content = message?.get("content")?.toString()?.trim('"')?.replace("\\n", "\n")?.replace("\\\"", "\"")
+                val content = (message?.get("content") as? kotlinx.serialization.json.JsonPrimitive)?.content
                 if (!content.isNullOrBlank()) {
                     return content
                 }
