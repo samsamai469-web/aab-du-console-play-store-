@@ -28,9 +28,20 @@ android {
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-    // Clé OpenAI lue depuis la variable d'environnement (secret GitHub)
-    val samOpenAiKey = (System.getenv("OPENAI_API_KEY") ?: "").trim()
+    // Clés lues depuis les variables d'environnement (secrets GitHub).
+    // Si une clé est absente ou vide, on met une valeur d'exemple non vide pour que BuildConfig reste valide.
+    fun secretValue(name: String): String {
+      val v = (System.getenv(name) ?: "").trim().replace("\\", "").replace("\"", "")
+      return if (v.isEmpty()) "MY_$name" else v
+    }
+    val samOpenAiKey = (System.getenv("OPENAI_API_KEY") ?: "").trim().replace("\"", "")
     buildConfigField("String", "SAM_OPENAI_KEY", "\"${samOpenAiKey}\"")
+    listOf(
+      "GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY",
+      "TAVILY_API_KEY", "YOUTUBE_API_KEY", "RESEND_API_KEY", "GOOGLE_CLIENT_SECRET"
+    ).forEach { key ->
+      buildConfigField("String", key, "\"${secretValue(key)}\"")
+    }
   }
 
   signingConfigs {
@@ -52,7 +63,8 @@ android {
       isMinifyEnabled = true
       isShrinkResources = true
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-
+      
+      // Sécurisation de la signature Release : ne pas crasher si le fichier keystore n'existe pas en local
       val releaseKeystore = signingConfigs.getByName("release").storeFile
       if (releaseKeystore != null && releaseKeystore.exists()) {
         signingConfig = signingConfigs.getByName("release")
@@ -92,10 +104,21 @@ android {
   }
 }
 
+// Configuration robuste du plugin Secrets Gradle :
+// S'il n'y a pas de fichier .env présent, il bascule automatiquement sur .env.example
 secrets {
   propertiesFileName = ".env"
   defaultPropertiesFileName = ".env.example"
   ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
+  // Ces clés sont définies à la main dans defaultConfig (plus fiable que le fichier .env)
+  ignoreList.add("OPENAI_API_KEY")
+  ignoreList.add("GEMINI_API_KEY")
+  ignoreList.add("GROQ_API_KEY")
+  ignoreList.add("OPENROUTER_API_KEY")
+  ignoreList.add("TAVILY_API_KEY")
+  ignoreList.add("YOUTUBE_API_KEY")
+  ignoreList.add("RESEND_API_KEY")
+  ignoreList.add("GOOGLE_CLIENT_SECRET")
 }
 
 googleServices {
@@ -119,7 +142,9 @@ dependencies {
   implementation("androidx.security:security-crypto:1.1.0-alpha06")
   implementation("androidx.work:work-runtime-ktx:2.9.0")
 
-  // Compose UI & Material
+  
+
+  // Compose UI & Material 
   implementation(libs.androidx.activity.compose)
   implementation(libs.androidx.compose.ui)
   implementation(libs.androidx.compose.ui.graphics)
