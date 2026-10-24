@@ -897,7 +897,7 @@ fun VisualDioulaCard(
                 contentAlignment = Alignment.Center
             ) {
                 val primarySource: Any = item.localDrawable
-                    ?: item.imageUrl.ifEmpty { R.drawable.img_burkinabe_greeting_hands_1786881917214 }
+                    ?: item.imageUrl.ifEmpty { R.drawable.img_laafi_bala_friends_1786881102699 }
 
                 coil.compose.AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)

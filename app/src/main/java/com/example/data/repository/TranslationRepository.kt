@@ -169,7 +169,7 @@ class TranslationRepository(
 
         var translated = ""
         var isLocal = false
-        var badge = "OpenAI Officiel ⚡"
+        var badge = "SAM AI ⚡"
         var breakdown = emptyList<String>()
 
         // =========================================================================
@@ -254,7 +254,7 @@ class TranslationRepository(
                         if (openAiFinal.isNotBlank()) {
                             translated = openAiFinal
                             breakdown = localToFrench?.breakdown.orEmpty()
-                            badge = "📖 Dictionnaire Local ($localLangLabel) + OpenAI"
+                            badge = "📖 Dictionnaire Local ($localLangLabel)"
                             isLocal = true
                             MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, true)
                         }
@@ -264,14 +264,14 @@ class TranslationRepository(
         }
 
         // =========================================================================
-        // CAS 2 : AUTRES LANGUES (Français, Anglais, Arabe, Haoussa, etc.) -> OPENAI
+        // CAS 2 : AUTRES LANGUES (Français, Anglais, Arabe, Haoussa, etc.) -> IA
         // =========================================================================
         if (translated.isBlank() || translated.equals(cleanText, ignoreCase = true)) {
             try {
                 val onlineResult = aiFallback(cleanText, effectiveSourceLang, effectiveTargetLang, "")
                 if (onlineResult.isNotBlank() && !onlineResult.equals(cleanText, ignoreCase = true)) {
                     translated = onlineResult.trim()
-                    badge = "OpenAI Officiel ⚡"
+                    badge = "SAM AI ⚡"
                     isLocal = false
                     MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, false)
                 }

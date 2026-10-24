@@ -6,17 +6,17 @@ data class VisualMooreItem(
     val id: Long,
     val word: String, // Mooré word / expression
     val pronunciation: String, // Phonetic guide
-    val category: String, // "Expressions", "Famille", "Personnes", "Aliments", "Animaux", "Vêtements", "Commerce", "Transport", "Salutations", "Métiers", "Maison", "Nature", "Éducation"
+    val category: String,
     val imageUrl: String = "",
     val localDrawable: Int? = null,
-    val frenchMeaning: String = "", // Used strictly for internal indexing & search, NEVER displayed in carousel
+    val frenchMeaning: String = "",
     val contextInfo: String = "Burkina Faso",
     val status: String = "validated"
 )
 
 object BurkinaVisualData {
     val visualCatalog: List<VisualMooreItem> = listOf(
-        // --- 1. FAMILLE & PERSONNES BURKINABÈ ---
+        // --- 1. FAMILLE BURKINABÈ ---
         VisualMooreItem(
             id = 101,
             word = "M'ma",
@@ -53,26 +53,8 @@ object BurkinaVisualData {
             localDrawable = R.drawable.img_burkinabe_family_1786879044801,
             contextInfo = "Famille burkinabè unie et chaleureuse."
         ),
-        VisualMooreItem(
-            id = 105,
-            word = "Paga",
-            pronunciation = "Pa-ga",
-            category = "Personnes",
-            frenchMeaning = "Femme",
-            localDrawable = R.drawable.img_burkinabe_beautiful_woman_1786881979996,
-            contextInfo = "Femme burkinabè rayonnante d'élégance."
-        ),
-        VisualMooreItem(
-            id = 107,
-            word = "Rawa",
-            pronunciation = "Ra-wa",
-            category = "Personnes",
-            frenchMeaning = "Homme",
-            localDrawable = R.drawable.img_burkinabe_handsome_man_1786881994077,
-            contextInfo = "Homme burkinabè en tunique traditionnelle."
-        ),
 
-        // --- 3. ALIMENTS & VIE QUOTIDIENNE ---
+        // --- 2. ALIMENTS & VIE QUOTIDIENNE ---
         VisualMooreItem(
             id = 701,
             word = "Koom",
@@ -101,15 +83,6 @@ object BurkinaVisualData {
             contextInfo = "Plat traditionnel national burkinabè de pâte de mil ou maïs avec sa sauce gombo."
         ),
         VisualMooreItem(
-            id = 704,
-            word = "Manga",
-            pronunciation = "Man-ga",
-            category = "Aliments",
-            frenchMeaning = "Mangue",
-            localDrawable = R.drawable.img_burkinabe_mangoes_1786881791264,
-            contextInfo = "Mangues fraîches et juteuses, fierté fruitière du Burkina Faso."
-        ),
-        VisualMooreItem(
             id = 705,
             word = "Gõse",
             pronunciation = "Gonn-sé",
@@ -119,16 +92,7 @@ object BurkinaVisualData {
             contextInfo = "Moment de repos paisible et réparateur."
         ),
 
-        // --- 4. COMMERCE, LIEUX & ÉDUCATION ---
-        VisualMooreItem(
-            id = 501,
-            word = "Yaar",
-            pronunciation = "Ya-ar",
-            category = "Commerce",
-            frenchMeaning = "Marché",
-            localDrawable = R.drawable.img_burkinabe_market_1786879084962,
-            contextInfo = "Le marché burkinabè vibrant avec ses étals colorés et conviviaux."
-        ),
+        // --- 3. MAISON, MÉTIERS & CULTURE ---
         VisualMooreItem(
             id = 502,
             word = "Yiri",
@@ -138,17 +102,6 @@ object BurkinaVisualData {
             localDrawable = R.drawable.img_burkinabe_house_1786881867414,
             contextInfo = "Maison traditionnelle en terre et concession familiale au Burkina Faso."
         ),
-        VisualMooreItem(
-            id = 503,
-            word = "Lekoll",
-            pronunciation = "Lé-koll",
-            category = "Éducation",
-            frenchMeaning = "École",
-            localDrawable = R.drawable.img_burkinabe_school_1786881851073,
-            contextInfo = "Écoliers burkinabè apprenant avec enthousiasme dans leur cour d'école."
-        ),
-
-        // --- 5. MÉTIERS & CULTURE ---
         VisualMooreItem(
             id = 504,
             word = "Kooda",
@@ -177,27 +130,7 @@ object BurkinaVisualData {
             contextInfo = "Pagne en coton tissé à la main, symbole national de l'identité burkinabè."
         ),
 
-        // --- 6. TRANSPORTS DU FASO ---
-        VisualMooreItem(
-            id = 601,
-            word = "Monteur",
-            pronunciation = "Mon-teur",
-            category = "Transport",
-            frenchMeaning = "Moto",
-            localDrawable = R.drawable.img_burkinabe_moto_1786879096886,
-            contextInfo = "La moto, moyen de déplacement emblématique des rues de Ouagadougou."
-        ),
-        VisualMooreItem(
-            id = 602,
-            word = "Kɛkɛ",
-            pronunciation = "Kè-kè",
-            category = "Transport",
-            frenchMeaning = "Bicyclette / Vélo",
-            localDrawable = R.drawable.img_burkinabe_bicycle_1786881807069,
-            contextInfo = "Vélo pour les déplacements du quotidien au Burkina Faso."
-        ),
-
-        // --- 7. ANIMAUX DU FASO ---
+        // --- 4. ANIMAUX DU FASO ---
         VisualMooreItem(
             id = 301,
             word = "Wéefo",
@@ -216,17 +149,8 @@ object BurkinaVisualData {
             localDrawable = R.drawable.img_burkinabe_goat_1786881820618,
             contextInfo = "Chèvre paisible dans la cour d'un village burkinabè."
         ),
-        VisualMooreItem(
-            id = 303,
-            word = "Bõnga",
-            pronunciation = "Bonn-ga",
-            category = "Animaux",
-            frenchMeaning = "Âne",
-            localDrawable = R.drawable.img_burkinabe_donkey_1786881836280,
-            contextInfo = "Âne de bât dans les paysages sahéliens du Burkina."
-        ),
 
-        // --- 8. NATURE & CHAMPS ---
+        // --- 5. NATURE & CHAMPS ---
         VisualMooreItem(
             id = 901,
             word = "Koodo",
@@ -237,14 +161,14 @@ object BurkinaVisualData {
             contextInfo = "Champ de sorgho et mil doré au cœur des terroirs du Burkina Faso."
         ),
 
-        // --- 9. SALUTATIONS CHALEUREUSES ---
+        // --- 6. SALUTATIONS CHALEUREUSES ---
         VisualMooreItem(
             id = 801,
             word = "Nii yi beogo",
             pronunciation = "Nii yi beo-go",
             category = "Salutations",
             frenchMeaning = "Bonjour (Salutation du matin)",
-            localDrawable = R.drawable.bonjour_1,
+            localDrawable = R.drawable.img_laafi_bala_friends_1786881102699,
             contextInfo = "Salutation conviviale et respectueuse du matin au Burkina Faso."
         ),
         VisualMooreItem(
@@ -253,25 +177,20 @@ object BurkinaVisualData {
             pronunciation = "Nii za-bre",
             category = "Salutations",
             frenchMeaning = "Bonsoir (Salutation du soir)",
-            localDrawable = R.drawable.bonsoir_1,
-            contextInfo = "Salutation chaleureuse en fin de journée au coucher du soleil."
+            localDrawable = R.drawable.img_laafi_bala_village_1786881210261,
+            contextInfo = "Salutation chaleureuse en fin de journée au village."
         )
     )
 
     val categories: List<String> = listOf(
         "Toutes",
-        "Expressions",
         "Famille",
-        "Personnes",
         "Aliments",
         "Animaux",
         "Vêtements",
-        "Commerce",
-        "Transport",
         "Salutations",
         "Métiers",
         "Maison",
-        "Éducation",
         "Nature"
     )
 }

@@ -49,7 +49,7 @@ fun BonjourWelcomeBanner(
     val (timeImages, greetingTitle, greetingSubtitle) = remember(hour) {
         when (hour) {
             in 5..11 -> Triple(
-                listOf(R.drawable.bonjour_1, R.drawable.bonjour_2, R.drawable.bonjour_3),
+                listOf(R.drawable.bonjour_2, R.drawable.bonjour_3),
                 "Bonjour,",
                 "Bienvenue ! Matin radieux"
             )

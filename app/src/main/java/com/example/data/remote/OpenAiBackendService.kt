@@ -22,14 +22,13 @@ data class OpenAiChatResult(
     val success: Boolean = true,
     val text: String = "",
     val sources: List<WebSource> = emptyList(),
-    val model: String = "gpt-4o",
+    val model: String = "",
     val searchPerformed: Boolean = false,
     val errorMessage: String? = null
 )
 
 /**
- * Service client pour l'intégration officielle et exclusive de l'API OpenAI dans SAM AI.
- * Aucun service tiers (Groq, OpenRouter) ni moteur local de substitution.
+ * Service client pour l'intégration officielle et exclusive de l'API dans SAM AI.
  */
 class OpenAiBackendService {
 
@@ -64,8 +63,17 @@ class OpenAiBackendService {
         return com.example.data.local.ApiKeyManager.DEFAULT_OPENAI_API_KEY
     }
 
+    private fun sanitizeSamAiText(raw: String): String {
+        return raw
+            .replace(Regex("(?i)\\bChatGPT\\b"), "SAM AI")
+            .replace(Regex("(?i)\\bGPT-4o(-mini|-2024-\\d{2}-\\d{2})?\\b"), "SAM AI")
+            .replace(Regex("(?i)\\bGPT-4(-turbo)?\\b"), "SAM AI")
+            .replace(Regex("(?i)\\bOpenAI\\b"), "SAM AI")
+            .trim()
+    }
+
     /**
-     * Envoie une question ou un historique complet de discussion exclusivement à l'API OpenAI
+     * Envoie une question ou un historique complet de discussion à SAM AI
      * en injectant si disponible le contexte des dépêches d'actualités en direct.
      */
     suspend fun sendChatMessage(
@@ -97,13 +105,13 @@ class OpenAiBackendService {
         directOpenAiResult ?: OpenAiChatResult(
             success = false,
             text = "",
-            model = effectiveModel,
+            model = "",
             errorMessage = "Impossible de joindre le serveur SAM AI. Vérifiez votre connexion réseau."
         )
     }
 
     /**
-     * Appelle directement l'API officielle OpenAI (https://api.openai.com/v1/chat/completions)
+     * Appelle directement l'API
      */
     private suspend fun tryCallOfficialOpenAiApi(
         messages: List<ChatMessage>,
@@ -117,14 +125,14 @@ class OpenAiBackendService {
             return OpenAiChatResult(
                 success = false,
                 text = "",
-                model = model,
+                model = "",
                 errorMessage = "Service SAM AI temporairement indisponible."
             )
         }
 
         val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
         val systemPrompt = buildString {
-            append("Tu es SAM AI, l'assistant d'élite officiel propulsé par OpenAI et conçu par Abdoul Mohamine Sawadogo, jeune développeur burkinabè.\n")
+            append("Tu es SAM AI, l'assistant intelligent d'élite officiel conçu par Abdoul Mohamine Sawadogo, jeune développeur burkinabè.\n")
             append("Aujourd'hui nous sommes exactement le $dateStr.\n")
             if (newsContext.isNotBlank()) {
                 append("\n--- ACTUALITÉS ET DÉPÊCHES EN DIRECT FOURNIES EN TEMPS RÉEL ---\n")
@@ -135,7 +143,7 @@ class OpenAiBackendService {
             append("1. RÉPONSE DIRECTE ET FLUIDE : Réponds immédiatement et directement à la question sans introduction robotique ni formule stéréotypée (\"Merci pour votre question\", etc.).\n")
             append("2. INFORMATIONS D'ACTUALITÉ : Exploite immédiatement et pleinement les faits, dépêches et articles récents fournis pour répondre aux questions sur le Burkina Faso et le monde. Présente directement les nouvelles saillantes de manière claire et structurée. Ne dis JAMAIS que tu n'as pas accès à internet ou aux informations en direct, et ne commence JAMAIS par dire qu'il n'y a pas de dépêche : entre directement dans le vif du sujet avec les faits et actualités fournis.\n")
             append("3. APPROFONDISSEMENT UTILE : Si l'utilisateur demande de détailler ou développer, donne des explications concrètes, structurées et complètes.\n")
-            append("4. Ne mentionne ton créateur que si expressément demandé.\n")
+            append("4. IDENTITÉ EXCLUSIVE SAM AI : Tu es uniquement et exclusivement SAM AI. Ne mentionne JAMAIS OpenAI, ChatGPT, GPT-4 ou GPT sous aucun prétexte. Si on te demande qui tu es ou quel modèle tu es, réponds uniquement que tu es SAM AI, l'intelligence artificielle développée par Abdoul Mohamine Sawadogo.\n")
         }
 
         try {
@@ -189,14 +197,14 @@ class OpenAiBackendService {
                         401 -> "Service SAM AI temporairement indisponible (code 401)."
                         429 -> "Le serveur SAM AI reçoit trop de requêtes actuellement. Veuillez réessayer dans un instant."
                         404 -> "Service de génération temporairement indisponible (code 404)."
-                        else -> parsedError ?: "Erreur de communication avec le serveur (${response.code})."
+                        else -> "Erreur de communication avec le serveur SAM AI (${response.code})."
                     }
-                    Log.e("OpenAiBackendService", "OpenAI direct call error [${response.code}]: $errorDetails")
+                    Log.e("OpenAiBackendService", "Direct call error [${response.code}]: ${parsedError ?: errorDetails}")
                     return OpenAiChatResult(
                         success = false,
                         text = "",
                         sources = emptyList(),
-                        model = model,
+                        model = "",
                         searchPerformed = false,
                         errorMessage = errorDetails
                     )
@@ -207,28 +215,27 @@ class OpenAiBackendService {
                 val firstChoice = choices?.firstOrNull() as? kotlinx.serialization.json.JsonObject
                 val messageObj = firstChoice?.get("message") as? kotlinx.serialization.json.JsonObject
                 val content = (messageObj?.get("content") as? kotlinx.serialization.json.JsonPrimitive)?.content
-                val actualModel = (jsonObject?.get("model") as? kotlinx.serialization.json.JsonPrimitive)?.content ?: model
 
                 if (!content.isNullOrBlank()) {
                     return OpenAiChatResult(
                         success = true,
-                        text = content.trim(),
+                        text = sanitizeSamAiText(content),
                         sources = sources,
-                        model = actualModel,
+                        model = "",
                         searchPerformed = sources.isNotEmpty(),
                         errorMessage = null
                     )
                 }
             }
         } catch (e: Throwable) {
-            Log.e("OpenAiBackendService", "Exception during direct OpenAI call: ${e.message}", e)
+            Log.e("OpenAiBackendService", "Exception during direct call: ${e.message}", e)
             return OpenAiChatResult(
                 success = false,
                 text = "",
                 sources = emptyList(),
-                model = model,
+                model = "",
                 searchPerformed = false,
-                errorMessage = "Erreur de connexion : ${e.message ?: "Impossible de joindre les serveurs OpenAI."}"
+                errorMessage = "Impossible de joindre les serveurs SAM AI. Vérifiez votre connexion Internet."
             )
         }
         return null

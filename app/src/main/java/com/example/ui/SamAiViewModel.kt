@@ -308,7 +308,7 @@ class SamAiViewModel(
         SamAiChatMessage(
             id = "welcome_msg",
             sender = "sam_ai",
-            text = "Bonjour ! Je suis **SAM AI**, une intelligence artificielle créée par **Abdoul Mohamine Sawadogo**, un jeune Burkinabè ⚡.\n\nJe suis là pour vous aider dans vos questions et besoins quotidiens, vous faire découvrir et apprendre les langues burkinabè, valoriser notre culture, et vous informer sur le Burkina Faso et le monde avec recherche en direct !\n\n🔒 **Messages éphémères** : Les discussions et les réponses ne sont pas gardées en mémoire. Dès que vous quittez la page, tout s'efface automatiquement.",
+            text = "Bonjour ! Je suis **SAM AI**, une intelligence artificielle créée par **Abdoul Mohamine Sawadogo**, un jeune Burkinabè ⚡.\n\nJe suis là pour vous aider dans vos questions et besoins quotidiens, vous faire découvrir et apprendre les langues burkinabè, valoriser notre culture, et vous informer sur le Burkina Faso et le monde avec recherche en direct !",
             timestamp = System.currentTimeMillis()
         )
     )
@@ -1749,7 +1749,7 @@ class SamAiViewModel(
                 scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, outputStream)
                 val base64Data = android.util.Base64.encodeToString(outputStream.toByteArray(), android.util.Base64.NO_WRAP)
 
-                val activeKey = getActiveGeminiApiKey().ifBlank {
+                val activeKey = aiRepository.apiKeyManager.getActiveGeminiApiKey().ifBlank {
                     try { BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim() } catch (_: Throwable) { "" }
                 }
 
@@ -2270,16 +2270,16 @@ class SamAiViewModel(
                 )
             )
 
-            // 6. Test Masquage des Clés & Secrets (Secret Redactor)
-            val fakeSecretPayload = "API Key is AIzaSyD4j5k6L7m8N9o0P1q2R3s4T5u6V7w8X9y and Bearer eyJhbGciOiJIUzI1NiJ9"
+            // 6. Test Masquage des Données Sensibles (Secret Redactor)
+            val fakeSecretPayload = "Token AIzaSyD4j5k6L7m8N9o0P1q2R3s4T5u6V7w8X9y and Bearer eyJhbGciOiJIUzI1NiJ9"
             val redacted = SecurityUtils.redactSecrets(fakeSecretPayload)
             val secretsMasked = !redacted.contains("AIzaSyD4j5k6") && !redacted.contains("eyJhbGciOi")
             results.add(
                 SecurityTestResult(
-                    name = "Masquage & Protection des Clés d'API dans les Logs",
+                    name = "Masquage & Protection des Données Sensibles dans les Logs",
                     passed = secretsMasked,
-                    category = "Gestion des secrets",
-                    details = if (secretsMasked) "Toutes les clés d'API et tokens sont automatiquement masqués avant écriture dans les journaux." else "Échec: clés visibles."
+                    category = "Protection des données",
+                    details = if (secretsMasked) "Tous les identifiants sensibles et jetons sont automatiquement masqués avant écriture dans les journaux." else "Échec: données visibles."
                 )
             )
 
@@ -2339,28 +2339,6 @@ class SamAiViewModel(
         }
     }
 
-    // API Key Management (Google AI Studio)
-    val apiKeyManager = aiRepository.apiKeyManager
-    val geminiKeyFlow = apiKeyManager.geminiKeyFlow
-
-    fun getActiveGeminiApiKey(): String = apiKeyManager.getActiveGeminiApiKey()
-    fun isGeminiConfigured(): Boolean = apiKeyManager.isGeminiConfigured()
-    fun getGeminiKeySource(): com.example.data.local.ApiKeySource = apiKeyManager.getGeminiKeySource()
-    fun saveGeminiApiKey(key: String) = apiKeyManager.saveGeminiApiKey(key)
-    fun clearGeminiApiKey() = apiKeyManager.clearGeminiApiKey()
-    suspend fun testGeminiApiKey(candidateKey: String): Pair<Boolean, String> = apiKeyManager.testApiKey(candidateKey)
-
-    fun getActiveOpenAiApiKey(): String = apiKeyManager.getActiveOpenAiApiKey()
-    fun isOpenAiConfigured(): Boolean = apiKeyManager.isOpenAiConfigured()
-    fun saveOpenAiApiKey(key: String) {
-        apiKeyManager.saveOpenAiApiKey(key)
-        auditLog("API_KEY_OPENAI_SAVED", "INFO", "Clé API OpenAI mise à jour.")
-    }
-    fun clearOpenAiApiKey() {
-        apiKeyManager.clearOpenAiApiKey()
-        auditLog("API_KEY_OPENAI_CLEARED", "INFO", "Clé API OpenAI réinitialisée.")
-    }
-
     // =========================================================================
     // SAM AI ASSISTANT UNIVERSEL & INTELLIGENT (AVEC PERSISTANCE FIREBASE HEBDOMADAIRE)
     // =========================================================================
@@ -2389,6 +2367,7 @@ class SamAiViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val loadedMessages = com.example.data.remote.SamAiFirebaseHistoryService.loadWeeklyChatHistory(targetUserId)
+                    .map { it.copy(model = null) }
                 withContext(Dispatchers.Main) {
                     _isSamAiHistoryLoading.value = false
                     _samAiSavedWeeklyHistory.value = loadedMessages
@@ -2529,15 +2508,24 @@ RÈGLES D'OR DE COMPORTEMENT :
                 qNorm.contains("quel est l'objectif de sam ai") || qNorm.contains("pourquoi existe sam ai")
             )
 
-            if (isExplicitCreatorQuestion) {
-                val directAnswer = "J’ai été créée par Abdoul Mohamine Sawadogo, un jeune Burkinabè. Son objectif est de développer une intelligence artificielle utile aux personnes, de faciliter l’apprentissage et la communication, et de valoriser le Burkina Faso."
+            val isExplicitModelOrOpenAiQuestion = (
+                qNorm.contains("openai") || qNorm.contains("open ai") ||
+                qNorm.contains("chatgpt") || qNorm.contains("chat gpt") ||
+                qNorm.contains("gpt-4") || qNorm.contains("gpt4") ||
+                qNorm.contains("quel modele") || qNorm.contains("quel est ton modele") ||
+                qNorm.contains("quelle ia es-tu") || qNorm.contains("quelle intelligence artificielle es-tu")
+            )
+
+            if (isExplicitCreatorQuestion || isExplicitModelOrOpenAiQuestion) {
+                val directAnswer = "Je suis SAM AI, une intelligence artificielle créée par Abdoul Mohamine Sawadogo, un jeune Burkinabè, pour faciliter l’apprentissage, la communication multilingue et l'accès à l'information."
                 _isSamAiGeminiThinking.value = false
                 val botMsg = SamAiChatMessage(
                     sender = "sam_ai",
                     text = directAnswer,
                     timestamp = System.currentTimeMillis(),
                     isError = false,
-                    sources = emptyList()
+                    sources = emptyList(),
+                    model = null
                 )
                 _samAiChatMessages.value = _samAiChatMessages.value + botMsg
                 return@launch
@@ -2551,7 +2539,8 @@ RÈGLES D'OR DE COMPORTEMENT :
                     text = directAnswer,
                     timestamp = System.currentTimeMillis(),
                     isError = false,
-                    sources = emptyList()
+                    sources = emptyList(),
+                    model = null
                 )
                 _samAiChatMessages.value = _samAiChatMessages.value + botMsg
                 return@launch
@@ -2598,8 +2587,8 @@ RÈGLES D'OR DE COMPORTEMENT :
             var responseSources = openAiResult.sources
 
             if (responseText.isBlank() || isError) {
-                val errorDetails = openAiResult.errorMessage.orEmpty().ifBlank { "Impossible de contacter l'API OpenAI. Vérifiez votre clé API et votre réseau." }
-                responseText = "⚠️ Erreur OpenAI : $errorDetails\n\n(Vérifiez votre solde et votre clé sur platform.openai.com)"
+                val errorDetails = openAiResult.errorMessage.orEmpty().ifBlank { "Impossible de contacter le serveur SAM AI. Vérifiez votre connexion réseau." }
+                responseText = "⚠️ Service SAM AI : $errorDetails"
                 isError = true
                 responseSources = emptyList<com.example.data.local.WebSource>()
             }
@@ -2611,7 +2600,7 @@ RÈGLES D'OR DE COMPORTEMENT :
                 timestamp = System.currentTimeMillis(),
                 isError = isError,
                 sources = responseSources,
-                model = if (!isError && openAiResult.success) openAiResult.model else null
+                model = null
             )
             _samAiChatMessages.value = _samAiChatMessages.value + botMsg
         }

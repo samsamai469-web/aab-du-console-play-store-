@@ -254,83 +254,18 @@ fun SamAiGeminiAssistantModal(
 
                             Spacer(modifier = Modifier.width(12.dp))
 
-                            Column {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text(
-                                        text = "SAM AI",
-                                        style = MaterialTheme.typography.titleMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Surface(
-                                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Text(
-                                            text = "OpenAI Officiel ⚡",
-                                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                            fontWeight = FontWeight.Bold,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                                        )
-                                    }
-                                }
-                                Text(
-                                    text = "Intelligence Artificielle • OpenAI & Actualités en direct",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Spacer(modifier = Modifier.height(3.dp))
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        Icons.Default.Lock,
-                                        contentDescription = null,
-                                        tint = Color(0xFF00897B),
-                                        modifier = Modifier.size(11.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "Messages éphémères : les questions et réponses ne sont pas gardées",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.5.sp),
-                                        fontWeight = FontWeight.Medium,
-                                        color = Color(0xFF00897B)
-                                    )
-                                }
-                            }
+                            Text(
+                                text = "SAM AI",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
                         }
 
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
-                            // Badge Confidentialité & Mode Éphémère (Zéro enregistrement)
-                            Surface(
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Icon(
-                                        Icons.Default.Lock,
-                                        contentDescription = null,
-                                        tint = Color(0xFF00897B),
-                                        modifier = Modifier.size(12.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text(
-                                        text = "Éphémère",
-                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                                        fontWeight = FontWeight.Bold,
-                                        color = Color(0xFF00897B)
-                                    )
-                                }
-                            }
 
                             // Bouton réinitialiser / effacer la conversation immédiatement
                             IconButton(
@@ -406,40 +341,6 @@ fun SamAiGeminiAssistantModal(
                             contentPadding = PaddingValues(top = 10.dp, bottom = 16.dp),
                             verticalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            item(key = "ephemeral_notice_pill") {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(vertical = 2.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Surface(
-                                        shape = RoundedCornerShape(16.dp),
-                                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f),
-                                        border = BorderStroke(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 5.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(
-                                                Icons.Default.Lock,
-                                                contentDescription = null,
-                                                tint = Color(0xFF00897B),
-                                                modifier = Modifier.size(12.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(6.dp))
-                                            Text(
-                                                text = "Messages éphémères • Réponses non conservées",
-                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                                                fontWeight = FontWeight.Medium,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
                             items(chatMessages, key = { it.id }) { msg ->
                                 val isLatestResponse = !isThinking && msg.sender == "sam_ai" && msg.id == chatMessages.lastOrNull { it.sender == "sam_ai" }?.id
                                 ChatBubbleItem(
@@ -724,26 +625,6 @@ fun ChatBubbleItem(
                 shadowElevation = if (isLatestResponse && message.id != "welcome_msg") 3.dp else 1.dp
             ) {
                 Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                    if (isLatestResponse && message.id != "welcome_msg") {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(bottom = 6.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(0xFF1E88E5))
-                            )
-                            Spacer(modifier = Modifier.width(5.dp))
-                            Text(
-                                text = "Nouvelle réponse ⚡",
-                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF1E88E5)
-                            )
-                        }
-                    }
 
                     Text(
                         text = message.text,
@@ -829,20 +710,6 @@ fun ChatBubbleItem(
                             }
                         }
                         Spacer(modifier = Modifier.height(2.dp))
-                    }
-
-                    if (!isUser && !message.model.isNullOrBlank()) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(top = 2.dp, bottom = 2.dp)
-                        ) {
-                            Text(
-                                text = "⚡ ${message.model}",
-                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.85f),
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
                     }
 
                     Text(

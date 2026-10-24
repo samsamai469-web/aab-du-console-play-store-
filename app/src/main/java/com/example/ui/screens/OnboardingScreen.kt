@@ -411,7 +411,7 @@ private fun HowItWorksPage(
 
             // 4 Cartes de fonctionnalités
             FeatureItemCard(
-                imageRes = R.drawable.img_burkinabe_market_1786879084962,
+                imageRes = R.drawable.img_burkinabe_family_1786879044801,
                 badgeIcon = Icons.Default.Translate,
                 title = "Traduire des langues",
                 description = "Traduisez rapidement mots, phrases et expressions entre le Français, le Mooré, le Dioula, l'Anglais et l'Allemand."
@@ -438,7 +438,7 @@ private fun HowItWorksPage(
             Spacer(modifier = Modifier.height(10.dp))
 
             FeatureItemCard(
-                imageRes = R.drawable.img_burkinabe_school_1786881851073,
+                imageRes = R.drawable.img_laafi_bala_village_1786881210261,
                 badgeIcon = Icons.Default.History,
                 title = "Historique personnel sécurisé",
                 description = "Toutes vos traductions et échanges sont automatiquement sauvegardés et consultables à tout moment."

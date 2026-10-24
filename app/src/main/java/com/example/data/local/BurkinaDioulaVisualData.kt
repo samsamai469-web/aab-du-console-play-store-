@@ -27,7 +27,6 @@ object BurkinaDioulaVisualData {
         "Salutations",
         "Famille",
         "Nourriture",
-        "Commerce",
         "Objets & Métiers"
     )
 
@@ -38,7 +37,7 @@ object BurkinaDioulaVisualData {
             frenchTranslation = "Bonjour (le matin)",
             category = "Salutations",
             pronunciation = "I ni so-go-ma",
-            localDrawable = R.drawable.bonjour_1
+            localDrawable = R.drawable.img_laafi_bala_friends_1786881102699
         ),
         VisualDioulaItem(
             id = "dioula_2",
@@ -46,15 +45,7 @@ object BurkinaDioulaVisualData {
             frenchTranslation = "Bonsoir / Bonne nuit",
             category = "Salutations",
             pronunciation = "I ni su",
-            localDrawable = R.drawable.bonsoir_1
-        ),
-        VisualDioulaItem(
-            id = "dioula_3",
-            dioulaWord = "I ni ce",
-            frenchTranslation = "Merci / Bravo",
-            category = "Salutations",
-            pronunciation = "I ni tché",
-            localDrawable = R.drawable.img_burkinabe_greeting_hands_1786881917214
+            localDrawable = R.drawable.img_laafi_bala_village_1786881210261
         ),
         VisualDioulaItem(
             id = "dioula_4",
@@ -79,14 +70,6 @@ object BurkinaDioulaVisualData {
             category = "Famille",
             pronunciation = "So",
             localDrawable = R.drawable.img_burkinabe_house_1786881867414
-        ),
-        VisualDioulaItem(
-            id = "dioula_7",
-            dioulaWord = "Sugu",
-            frenchTranslation = "Marché",
-            category = "Commerce",
-            pronunciation = "Sou-gou",
-            localDrawable = R.drawable.img_burkinabe_market_1786879084962
         ),
         VisualDioulaItem(
             id = "dioula_8",
