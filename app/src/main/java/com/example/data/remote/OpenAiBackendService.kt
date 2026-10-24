@@ -98,7 +98,7 @@ class OpenAiBackendService {
             success = false,
             text = "",
             model = effectiveModel,
-            errorMessage = "Impossible de joindre l'API OpenAI. Vérifiez votre clé API et votre réseau."
+            errorMessage = "Impossible de joindre le serveur SAM AI. Vérifiez votre connexion réseau."
         )
     }
 
@@ -118,7 +118,7 @@ class OpenAiBackendService {
                 success = false,
                 text = "",
                 model = model,
-                errorMessage = "Clé API OpenAI non renseignée. Veuillez configurer OPENAI_API_KEY."
+                errorMessage = "Service SAM AI temporairement indisponible."
             )
         }
 
@@ -186,10 +186,10 @@ class OpenAiBackendService {
                     } catch (_: Throwable) { null }
 
                     val errorDetails = when (response.code) {
-                        401 -> "Clé API OpenAI non valide (code 401). Vérifiez votre clé sur platform.openai.com."
-                        429 -> "Quota OpenAI dépassé ou solde insuffisant (code 429). Vérifiez votre solde sur platform.openai.com."
-                        404 -> "Modèle '$model' introuvable ou non autorisé sur votre compte OpenAI (code 404)."
-                        else -> parsedError ?: "Erreur HTTP ${response.code} renvoyée par OpenAI."
+                        401 -> "Service SAM AI temporairement indisponible (code 401)."
+                        429 -> "Le serveur SAM AI reçoit trop de requêtes actuellement. Veuillez réessayer dans un instant."
+                        404 -> "Service de génération temporairement indisponible (code 404)."
+                        else -> parsedError ?: "Erreur de communication avec le serveur (${response.code})."
                     }
                     Log.e("OpenAiBackendService", "OpenAI direct call error [${response.code}]: $errorDetails")
                     return OpenAiChatResult(

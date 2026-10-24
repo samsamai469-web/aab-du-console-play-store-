@@ -299,7 +299,7 @@ fun LiveConversationScreen(
 
     // Traduction et traitement de la parole d'Abdoul (User 1 -> User 2)
     fun processUser1SpokenSpeech(textSpoken: String) {
-        val clean = ConversationCleaner.cleanVoiceTranscript(textSpoken).ifBlank { textSpoken.trim() }
+        val clean = ConversationCleaner.cleanVoiceTranscript(textSpoken, user1Lang).ifBlank { textSpoken.trim() }
         if (clean.isBlank()) {
             isUser1Listening = false
             user1Status = "Prêt"
@@ -307,11 +307,18 @@ fun LiveConversationScreen(
         }
 
         lastSpeaker = 1
+        // Côté User 1 : uniquement la phrase de départ
         user1SentText = clean
+        user1ReceivedText = ""
         user1Transcript = clean
+        // Côté User 2 : uniquement la traduction finale (efface toute ancienne phrase de départ)
+        user2SentText = ""
+        user2ReceivedText = ""
+        user2Transcript = ""
+
         isUser1Listening = false
-        user1Status = "Traduction..."
-        user2Status = "Réception..."
+        user1Status = "Prêt"
+        user2Status = "Traduction..."
 
         coroutineScope.launch {
             try {
@@ -365,7 +372,7 @@ fun LiveConversationScreen(
 
     // Traduction et traitement de la parole d'Aminata (User 2 -> User 1)
     fun processUser2SpokenSpeech(textSpoken: String) {
-        val clean = ConversationCleaner.cleanVoiceTranscript(textSpoken).ifBlank { textSpoken.trim() }
+        val clean = ConversationCleaner.cleanVoiceTranscript(textSpoken, user2Lang).ifBlank { textSpoken.trim() }
         if (clean.isBlank()) {
             isUser2Listening = false
             user2Status = "Prêt"
@@ -373,11 +380,18 @@ fun LiveConversationScreen(
         }
 
         lastSpeaker = 2
+        // Côté User 2 : uniquement la phrase de départ
         user2SentText = clean
+        user2ReceivedText = ""
         user2Transcript = clean
+        // Côté User 1 : uniquement la traduction finale (efface toute ancienne phrase de départ)
+        user1SentText = ""
+        user1ReceivedText = ""
+        user1Transcript = ""
+
         isUser2Listening = false
-        user2Status = "Traduction..."
-        user1Status = "Réception..."
+        user2Status = "Prêt"
+        user1Status = "Traduction..."
 
         coroutineScope.launch {
             try {
@@ -567,9 +581,12 @@ fun LiveConversationScreen(
         user1Lang = user2Lang
         user2Lang = tempLang
 
-        val tempTranscript = user1Transcript
-        user1Transcript = user2Transcript
-        user2Transcript = tempTranscript
+        user1SentText = ""
+        user1ReceivedText = ""
+        user2SentText = ""
+        user2ReceivedText = ""
+        user1Transcript = ""
+        user2Transcript = ""
 
         user1SpeechManager.stopListening()
         user2SpeechManager.stopListening()
@@ -585,7 +602,8 @@ fun LiveConversationScreen(
     fun onSendTypedMessage() {
         val raw = typedMessage.trim()
         if (raw.isBlank()) return
-        val text = ConversationCleaner.cleanVoiceTranscript(raw).ifBlank { raw }
+        val senderLang = if (typedSenderIsUser1) user1Lang else user2Lang
+        val text = ConversationCleaner.cleanVoiceTranscript(raw, senderLang).ifBlank { raw }
 
         typedMessage = ""
         keyboardController?.hide()
@@ -594,7 +612,11 @@ fun LiveConversationScreen(
             // Abdoul (User 1) -> Aminata (User 2)
             lastSpeaker = 1
             user1SentText = text
+            user1ReceivedText = ""
             user1Transcript = text
+            user2SentText = ""
+            user2ReceivedText = ""
+            user2Transcript = ""
             user1Status = "Prêt"
             user2Status = "Traduction..."
 
@@ -606,7 +628,7 @@ fun LiveConversationScreen(
                         sourceLang = user1Lang,
                         targetLang = user2Lang
                     )
-                    val translated = ConversationCleaner.polishTranslatedText(rawTranslated)
+                    val translated = ConversationCleaner.polishTranslatedText(rawTranslated).ifBlank { rawTranslated.trim() }
                     if (translated.isNotBlank()) {
                         user2ReceivedText = translated
                         user2Transcript = translated
@@ -644,7 +666,11 @@ fun LiveConversationScreen(
             // Aminata (User 2) -> Abdoul (User 1)
             lastSpeaker = 2
             user2SentText = text
+            user2ReceivedText = ""
             user2Transcript = text
+            user1SentText = ""
+            user1ReceivedText = ""
+            user1Transcript = ""
             user2Status = "Prêt"
             user1Status = "Traduction..."
 
@@ -656,7 +682,7 @@ fun LiveConversationScreen(
                         sourceLang = user2Lang,
                         targetLang = user1Lang
                     )
-                    val translated = ConversationCleaner.polishTranslatedText(rawTranslated)
+                    val translated = ConversationCleaner.polishTranslatedText(rawTranslated).ifBlank { rawTranslated.trim() }
                     if (translated.isNotBlank()) {
                         user1ReceivedText = translated
                         user1Transcript = translated
@@ -1001,8 +1027,8 @@ fun LiveConversationScreen(
                         val roleLabel = when {
                             isUser1Listening -> "● Écoute en cours..."
                             user1Status.startsWith("Traduction") -> "⏳ Traduction..."
-                            lastSpeaker == 1 && (user1SentText.isNotBlank() || user1Transcript.isNotBlank()) -> "🗣️ Message envoyé"
-                            lastSpeaker == 2 && (user1ReceivedText.isNotBlank() || user1Transcript.isNotBlank()) -> "✨ Traduction reçue"
+                            lastSpeaker == 1 && (user1SentText.isNotBlank() || user1Transcript.isNotBlank()) -> "🗣️ Phrase de départ"
+                            lastSpeaker == 2 && (user1ReceivedText.isNotBlank() || user1Transcript.isNotBlank()) -> "✨ Traduction finale"
                             else -> "Prêt"
                         }
                         val roleColor = when {
@@ -1067,10 +1093,35 @@ fun LiveConversationScreen(
                             }
                         }
                     }
+                } else if (user1Status.startsWith("Traduction")) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isDark) primaryColor.copy(alpha = 0.14f) else primaryColor.copy(alpha = 0.08f),
+                        border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = primaryColor
+                            )
+                            Text(
+                                text = "Traduction en cours vers $user1Lang...",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                color = primaryColor
+                            )
+                        }
+                    }
                 } else {
-                    val hasMessages = user1SentText.isNotBlank() || user1ReceivedText.isNotBlank() || user1Transcript.isNotBlank()
+                    val sent = if (lastSpeaker == 1) user1SentText.ifBlank { user1Transcript } else ""
+                    val received = if (lastSpeaker == 2) user1ReceivedText.ifBlank { user1Transcript } else ""
 
-                    if (!hasMessages) {
+                    if (sent.isBlank() && received.isBlank()) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1083,177 +1134,170 @@ fun LiveConversationScreen(
                                 color = textSecondaryColor.copy(alpha = 0.7f)
                             )
                         }
-                    } else {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                    } else if (sent.isNotBlank()) {
+                        // Côté User 1 quand User 1 parle : UNIQUEMENT sa phrase de départ
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isDark) surfaceVariantColor.copy(alpha = 0.5f) else Color(0xFFF8FAFC),
+                            border = BorderStroke(0.8.dp, borderColor.copy(alpha = 0.5f)),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            // 1. Message envoyé par Abdoul
-                            val sent = user1SentText.ifBlank { if (lastSpeaker == 1) user1Transcript else "" }
-                            if (sent.isNotBlank()) {
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = if (isDark) surfaceVariantColor.copy(alpha = 0.5f) else Color(0xFFF8FAFC),
-                                    border = BorderStroke(0.8.dp, borderColor.copy(alpha = 0.5f)),
-                                    modifier = Modifier.fillMaxWidth()
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Column(modifier = Modifier.padding(10.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = if (isDark) primaryColor.copy(alpha = 0.25f) else primaryColor.copy(alpha = 0.12f),
+                                            modifier = Modifier.size(width = 28.dp, height = 20.dp)
                                         ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                Surface(
-                                                    shape = RoundedCornerShape(4.dp),
-                                                    color = if (isDark) primaryColor.copy(alpha = 0.25f) else primaryColor.copy(alpha = 0.12f),
-                                                    modifier = Modifier.size(width = 28.dp, height = 20.dp)
-                                                ) {
-                                                    Box(contentAlignment = Alignment.Center) {
-                                                        Text(
-                                                            text = getLangCode(user1Lang),
-                                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
-                                                            color = primaryColor
-                                                        )
-                                                    }
-                                                }
+                                            Box(contentAlignment = Alignment.Center) {
                                                 Text(
-                                                    text = "Message original",
-                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, fontSize = 11.sp),
-                                                    color = textSecondaryColor
-                                                )
-                                            }
-                                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                                IconButton(
-                                                    onClick = {
-                                                        ttsManager.speakWithCallback(
-                                                            text = sent,
-                                                            language = user1Lang,
-                                                            rate = speechSpeedRate
-                                                        )
-                                                    },
-                                                    modifier = Modifier.size(26.dp)
-                                                ) {
-                                                    Icon(
-                                                        Icons.AutoMirrored.Filled.VolumeUp,
-                                                        contentDescription = "Écouter original",
-                                                        tint = primaryColor,
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                }
-                                                IconButton(
-                                                    onClick = {
-                                                        clipboardManager.setPrimaryClip(ClipData.newPlainText("Live", sent))
-                                                        Toast.makeText(context, "Copié !", Toast.LENGTH_SHORT).show()
-                                                    },
-                                                    modifier = Modifier.size(26.dp)
-                                                ) {
-                                                    Icon(
-                                                        Icons.Default.ContentCopy,
-                                                        contentDescription = "Copier",
-                                                        tint = textSecondaryColor,
-                                                        modifier = Modifier.size(15.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(
-                                            text = sent,
-                                            style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp, lineHeight = 21.sp),
-                                            color = onSurfaceColor
-                                        )
-                                    }
-                                }
-                            }
-
-                            // 2. Traduction reçue pour Abdoul (provenant d'Aminata)
-                            val received = user1ReceivedText.ifBlank { if (lastSpeaker == 2) user1Transcript else "" }
-                            if (received.isNotBlank()) {
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = if (isDark) primaryColor.copy(alpha = 0.18f) else primaryColor.copy(alpha = 0.10f),
-                                    border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.35f)),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.padding(10.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                Surface(
-                                                    shape = RoundedCornerShape(4.dp),
-                                                    color = primaryColor,
-                                                    modifier = Modifier.size(width = 28.dp, height = 20.dp)
-                                                ) {
-                                                    Box(contentAlignment = Alignment.Center) {
-                                                        Text(
-                                                            text = getLangCode(user1Lang),
-                                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
-                                                            color = colorScheme.onPrimary
-                                                        )
-                                                    }
-                                                }
-                                                Text(
-                                                    text = "✨ Traduction de $user2Name",
-                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 11.sp),
+                                                    text = getLangCode(user1Lang),
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
                                                     color = primaryColor
                                                 )
                                             }
-                                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                                IconButton(
-                                                    onClick = {
-                                                        ttsManager.speakWithCallback(
-                                                            text = received,
-                                                            language = user1Lang,
-                                                            rate = speechSpeedRate
-                                                        )
-                                                    },
-                                                    modifier = Modifier.size(26.dp)
-                                                ) {
-                                                    Icon(
-                                                        Icons.AutoMirrored.Filled.VolumeUp,
-                                                        contentDescription = "Écouter traduction",
-                                                        tint = primaryColor,
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                }
-                                                IconButton(
-                                                    onClick = {
-                                                        clipboardManager.setPrimaryClip(ClipData.newPlainText("Live", received))
-                                                        Toast.makeText(context, "Copié !", Toast.LENGTH_SHORT).show()
-                                                    },
-                                                    modifier = Modifier.size(26.dp)
-                                                ) {
-                                                    Icon(
-                                                        Icons.Default.ContentCopy,
-                                                        contentDescription = "Copier",
-                                                        tint = textSecondaryColor,
-                                                        modifier = Modifier.size(15.dp)
-                                                    )
-                                                }
-                                            }
                                         }
-                                        Spacer(modifier = Modifier.height(4.dp))
                                         Text(
-                                            text = received,
-                                            style = MaterialTheme.typography.bodyLarge.copy(
-                                                fontSize = 15.sp,
-                                                fontWeight = FontWeight.Medium,
-                                                lineHeight = 21.sp
-                                            ),
-                                            color = onSurfaceColor
+                                            text = "Phrase de départ ($user1Lang)",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, fontSize = 11.sp),
+                                            color = textSecondaryColor
                                         )
                                     }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        IconButton(
+                                            onClick = {
+                                                ttsManager.speakWithCallback(
+                                                    text = sent,
+                                                    language = user1Lang,
+                                                    rate = speechSpeedRate
+                                                )
+                                            },
+                                            modifier = Modifier.size(26.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.AutoMirrored.Filled.VolumeUp,
+                                                contentDescription = "Écouter original",
+                                                tint = primaryColor,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                clipboardManager.setPrimaryClip(ClipData.newPlainText("Live", sent))
+                                                Toast.makeText(context, "Copié !", Toast.LENGTH_SHORT).show()
+                                            },
+                                            modifier = Modifier.size(26.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.ContentCopy,
+                                                contentDescription = "Copier",
+                                                tint = textSecondaryColor,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                        }
+                                    }
                                 }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = sent,
+                                    style = MaterialTheme.typography.bodyLarge.copy(
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        lineHeight = 22.sp
+                                    ),
+                                    color = onSurfaceColor
+                                )
+                            }
+                        }
+                    } else if (received.isNotBlank()) {
+                        // Côté User 1 quand User 2 parle : UNIQUEMENT la traduction finale
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isDark) primaryColor.copy(alpha = 0.18f) else primaryColor.copy(alpha = 0.10f),
+                            border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.35f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = primaryColor,
+                                            modifier = Modifier.size(width = 28.dp, height = 20.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(
+                                                    text = getLangCode(user1Lang),
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                                                    color = colorScheme.onPrimary
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = "✨ Traduction finale ($user1Lang)",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 11.sp),
+                                            color = primaryColor
+                                        )
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        IconButton(
+                                            onClick = {
+                                                ttsManager.speakWithCallback(
+                                                    text = received,
+                                                    language = user1Lang,
+                                                    rate = speechSpeedRate
+                                                )
+                                            },
+                                            modifier = Modifier.size(26.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.AutoMirrored.Filled.VolumeUp,
+                                                contentDescription = "Écouter traduction",
+                                                tint = primaryColor,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                clipboardManager.setPrimaryClip(ClipData.newPlainText("Live", received))
+                                                Toast.makeText(context, "Copié !", Toast.LENGTH_SHORT).show()
+                                            },
+                                            modifier = Modifier.size(26.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.ContentCopy,
+                                                contentDescription = "Copier",
+                                                tint = textSecondaryColor,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = received,
+                                    style = MaterialTheme.typography.bodyLarge.copy(
+                                        fontSize = 17.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        lineHeight = 23.sp
+                                    ),
+                                    color = onSurfaceColor
+                                )
                             }
                         }
                     }
@@ -1305,8 +1349,8 @@ fun LiveConversationScreen(
                         val roleLabel = when {
                             isUser2Listening -> "● Écoute en cours..."
                             user2Status.startsWith("Traduction") -> "⏳ Traduction..."
-                            lastSpeaker == 2 && (user2SentText.isNotBlank() || user2Transcript.isNotBlank()) -> "🗣️ Message envoyé"
-                            lastSpeaker == 1 && (user2ReceivedText.isNotBlank() || user2Transcript.isNotBlank()) -> "✨ Traduction reçue"
+                            lastSpeaker == 2 && (user2SentText.isNotBlank() || user2Transcript.isNotBlank()) -> "🗣️ Phrase de départ"
+                            lastSpeaker == 1 && (user2ReceivedText.isNotBlank() || user2Transcript.isNotBlank()) -> "✨ Traduction finale"
                             else -> "Prêt"
                         }
                         val roleColor = when {
@@ -1371,10 +1415,35 @@ fun LiveConversationScreen(
                             }
                         }
                     }
+                } else if (user2Status.startsWith("Traduction")) {
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isDark) primaryColor.copy(alpha = 0.14f) else primaryColor.copy(alpha = 0.08f),
+                        border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.3f)),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(18.dp),
+                                strokeWidth = 2.dp,
+                                color = primaryColor
+                            )
+                            Text(
+                                text = "Traduction en cours vers $user2Lang...",
+                                style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
+                                color = primaryColor
+                            )
+                        }
+                    }
                 } else {
-                    val hasMessages = user2SentText.isNotBlank() || user2ReceivedText.isNotBlank() || user2Transcript.isNotBlank()
+                    val sent = if (lastSpeaker == 2) user2SentText.ifBlank { user2Transcript } else ""
+                    val received = if (lastSpeaker == 1) user2ReceivedText.ifBlank { user2Transcript } else ""
 
-                    if (!hasMessages) {
+                    if (sent.isBlank() && received.isBlank()) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1387,177 +1456,170 @@ fun LiveConversationScreen(
                                 color = textSecondaryColor.copy(alpha = 0.7f)
                             )
                         }
-                    } else {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                    } else if (sent.isNotBlank()) {
+                        // Côté User 2 quand User 2 parle : UNIQUEMENT sa phrase de départ
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isDark) surfaceVariantColor.copy(alpha = 0.5f) else Color(0xFFF8FAFC),
+                            border = BorderStroke(0.8.dp, borderColor.copy(alpha = 0.5f)),
+                            modifier = Modifier.fillMaxWidth()
                         ) {
-                            // 1. Message envoyé par Aminata
-                            val sent = user2SentText.ifBlank { if (lastSpeaker == 2) user2Transcript else "" }
-                            if (sent.isNotBlank()) {
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = if (isDark) surfaceVariantColor.copy(alpha = 0.5f) else Color(0xFFF8FAFC),
-                                    border = BorderStroke(0.8.dp, borderColor.copy(alpha = 0.5f)),
-                                    modifier = Modifier.fillMaxWidth()
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Column(modifier = Modifier.padding(10.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = if (isDark) primaryColor.copy(alpha = 0.25f) else primaryColor.copy(alpha = 0.12f),
+                                            modifier = Modifier.size(width = 28.dp, height = 20.dp)
                                         ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                Surface(
-                                                    shape = RoundedCornerShape(4.dp),
-                                                    color = if (isDark) primaryColor.copy(alpha = 0.25f) else primaryColor.copy(alpha = 0.12f),
-                                                    modifier = Modifier.size(width = 28.dp, height = 20.dp)
-                                                ) {
-                                                    Box(contentAlignment = Alignment.Center) {
-                                                        Text(
-                                                            text = getLangCode(user2Lang),
-                                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
-                                                            color = primaryColor
-                                                        )
-                                                    }
-                                                }
+                                            Box(contentAlignment = Alignment.Center) {
                                                 Text(
-                                                    text = "Message original",
-                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, fontSize = 11.sp),
-                                                    color = textSecondaryColor
-                                                )
-                                            }
-                                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                                IconButton(
-                                                    onClick = {
-                                                        ttsManager.speakWithCallback(
-                                                            text = sent,
-                                                            language = user2Lang,
-                                                            rate = speechSpeedRate
-                                                        )
-                                                    },
-                                                    modifier = Modifier.size(26.dp)
-                                                ) {
-                                                    Icon(
-                                                        Icons.AutoMirrored.Filled.VolumeUp,
-                                                        contentDescription = "Écouter original",
-                                                        tint = primaryColor,
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                }
-                                                IconButton(
-                                                    onClick = {
-                                                        clipboardManager.setPrimaryClip(ClipData.newPlainText("Live", sent))
-                                                        Toast.makeText(context, "Copié !", Toast.LENGTH_SHORT).show()
-                                                    },
-                                                    modifier = Modifier.size(26.dp)
-                                                ) {
-                                                    Icon(
-                                                        Icons.Default.ContentCopy,
-                                                        contentDescription = "Copier",
-                                                        tint = textSecondaryColor,
-                                                        modifier = Modifier.size(15.dp)
-                                                    )
-                                                }
-                                            }
-                                        }
-                                        Spacer(modifier = Modifier.height(4.dp))
-                                        Text(
-                                            text = sent,
-                                            style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp, lineHeight = 21.sp),
-                                            color = onSurfaceColor
-                                        )
-                                    }
-                                }
-                            }
-
-                            // 2. Traduction reçue pour Aminata (provenant d'Abdoul)
-                            val received = user2ReceivedText.ifBlank { if (lastSpeaker == 1) user2Transcript else "" }
-                            if (received.isNotBlank()) {
-                                Surface(
-                                    shape = RoundedCornerShape(12.dp),
-                                    color = if (isDark) primaryColor.copy(alpha = 0.18f) else primaryColor.copy(alpha = 0.10f),
-                                    border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.35f)),
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Column(modifier = Modifier.padding(10.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth(),
-                                            horizontalArrangement = Arrangement.SpaceBetween,
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Row(
-                                                verticalAlignment = Alignment.CenterVertically,
-                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                            ) {
-                                                Surface(
-                                                    shape = RoundedCornerShape(4.dp),
-                                                    color = primaryColor,
-                                                    modifier = Modifier.size(width = 28.dp, height = 20.dp)
-                                                ) {
-                                                    Box(contentAlignment = Alignment.Center) {
-                                                        Text(
-                                                            text = getLangCode(user2Lang),
-                                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
-                                                            color = colorScheme.onPrimary
-                                                        )
-                                                    }
-                                                }
-                                                Text(
-                                                    text = "✨ Traduction d'$user1Name",
-                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 11.sp),
+                                                    text = getLangCode(user2Lang),
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
                                                     color = primaryColor
                                                 )
                                             }
-                                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                                IconButton(
-                                                    onClick = {
-                                                        ttsManager.speakWithCallback(
-                                                            text = received,
-                                                            language = user2Lang,
-                                                            rate = speechSpeedRate
-                                                        )
-                                                    },
-                                                    modifier = Modifier.size(26.dp)
-                                                ) {
-                                                    Icon(
-                                                        Icons.AutoMirrored.Filled.VolumeUp,
-                                                        contentDescription = "Écouter traduction",
-                                                        tint = primaryColor,
-                                                        modifier = Modifier.size(16.dp)
-                                                    )
-                                                }
-                                                IconButton(
-                                                    onClick = {
-                                                        clipboardManager.setPrimaryClip(ClipData.newPlainText("Live", received))
-                                                        Toast.makeText(context, "Copié !", Toast.LENGTH_SHORT).show()
-                                                    },
-                                                    modifier = Modifier.size(26.dp)
-                                                ) {
-                                                    Icon(
-                                                        Icons.Default.ContentCopy,
-                                                        contentDescription = "Copier",
-                                                        tint = textSecondaryColor,
-                                                        modifier = Modifier.size(15.dp)
-                                                    )
-                                                }
-                                            }
                                         }
-                                        Spacer(modifier = Modifier.height(4.dp))
                                         Text(
-                                            text = received,
-                                            style = MaterialTheme.typography.bodyLarge.copy(
-                                                fontSize = 15.sp,
-                                                fontWeight = FontWeight.Medium,
-                                                lineHeight = 21.sp
-                                            ),
-                                            color = onSurfaceColor
+                                            text = "Phrase de départ ($user2Lang)",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold, fontSize = 11.sp),
+                                            color = textSecondaryColor
                                         )
                                     }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        IconButton(
+                                            onClick = {
+                                                ttsManager.speakWithCallback(
+                                                    text = sent,
+                                                    language = user2Lang,
+                                                    rate = speechSpeedRate
+                                                )
+                                            },
+                                            modifier = Modifier.size(26.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.AutoMirrored.Filled.VolumeUp,
+                                                contentDescription = "Écouter original",
+                                                tint = primaryColor,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                clipboardManager.setPrimaryClip(ClipData.newPlainText("Live", sent))
+                                                Toast.makeText(context, "Copié !", Toast.LENGTH_SHORT).show()
+                                            },
+                                            modifier = Modifier.size(26.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.ContentCopy,
+                                                contentDescription = "Copier",
+                                                tint = textSecondaryColor,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                        }
+                                    }
                                 }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = sent,
+                                    style = MaterialTheme.typography.bodyLarge.copy(
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        lineHeight = 22.sp
+                                    ),
+                                    color = onSurfaceColor
+                                )
+                            }
+                        }
+                    } else if (received.isNotBlank()) {
+                        // Côté User 2 quand User 1 parle : UNIQUEMENT la traduction finale
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (isDark) primaryColor.copy(alpha = 0.18f) else primaryColor.copy(alpha = 0.10f),
+                            border = BorderStroke(1.dp, primaryColor.copy(alpha = 0.35f)),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    ) {
+                                        Surface(
+                                            shape = RoundedCornerShape(4.dp),
+                                            color = primaryColor,
+                                            modifier = Modifier.size(width = 28.dp, height = 20.dp)
+                                        ) {
+                                            Box(contentAlignment = Alignment.Center) {
+                                                Text(
+                                                    text = getLangCode(user2Lang),
+                                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                                                    color = colorScheme.onPrimary
+                                                )
+                                            }
+                                        }
+                                        Text(
+                                            text = "✨ Traduction finale ($user2Lang)",
+                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 11.sp),
+                                            color = primaryColor
+                                        )
+                                    }
+                                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        IconButton(
+                                            onClick = {
+                                                ttsManager.speakWithCallback(
+                                                    text = received,
+                                                    language = user2Lang,
+                                                    rate = speechSpeedRate
+                                                )
+                                            },
+                                            modifier = Modifier.size(26.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.AutoMirrored.Filled.VolumeUp,
+                                                contentDescription = "Écouter traduction",
+                                                tint = primaryColor,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                        IconButton(
+                                            onClick = {
+                                                clipboardManager.setPrimaryClip(ClipData.newPlainText("Live", received))
+                                                Toast.makeText(context, "Copié !", Toast.LENGTH_SHORT).show()
+                                            },
+                                            modifier = Modifier.size(26.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Default.ContentCopy,
+                                                contentDescription = "Copier",
+                                                tint = textSecondaryColor,
+                                                modifier = Modifier.size(15.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = received,
+                                    style = MaterialTheme.typography.bodyLarge.copy(
+                                        fontSize = 17.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        lineHeight = 23.sp
+                                    ),
+                                    color = onSurfaceColor
+                                )
                             }
                         }
                     }
@@ -1781,6 +1843,11 @@ fun LiveConversationScreen(
                                 .clickable {
                                     user1Lang = langName
                                     showUser1LangPicker = false
+                                    if (lastSpeaker == 2 && user2SentText.isNotBlank()) {
+                                        processUser2SpokenSpeech(user2SentText)
+                                    } else if (lastSpeaker == 1 && user1SentText.isNotBlank()) {
+                                        processUser1SpokenSpeech(user1SentText)
+                                    }
                                 }
                                 .padding(vertical = 12.dp, horizontal = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -1822,6 +1889,11 @@ fun LiveConversationScreen(
                                 .clickable {
                                     user2Lang = langName
                                     showUser2LangPicker = false
+                                    if (lastSpeaker == 1 && user1SentText.isNotBlank()) {
+                                        processUser1SpokenSpeech(user1SentText)
+                                    } else if (lastSpeaker == 2 && user2SentText.isNotBlank()) {
+                                        processUser2SpokenSpeech(user2SentText)
+                                    }
                                 }
                                 .padding(vertical = 12.dp, horizontal = 8.dp),
                             verticalAlignment = Alignment.CenterVertically

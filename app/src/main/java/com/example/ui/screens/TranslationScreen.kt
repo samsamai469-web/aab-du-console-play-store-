@@ -587,13 +587,22 @@ fun TranslationScreen(
                         }
                     }
 
-                    // Result Card (Traduction Finale)
+                    // Result Card (Traduction Finale uniquement + Lecture automatique à haute voix)
                     if (translatedText.isNotEmpty()) {
                         val badgeText = lastOutput?.sourceBadge ?: "✦ Traduction Directe"
                         val effectiveSrc = lastOutput?.sourceLang ?: sourceLang
                         val effectiveTgt = lastOutput?.targetLang ?: targetLang
 
                         item {
+                            LaunchedEffect(translatedText, effectiveTgt) {
+                                if (translatedText.isNotBlank() &&
+                                    !translatedText.startsWith("Erreur") &&
+                                    !translatedText.startsWith("⚠️")
+                                ) {
+                                    ttsManager.speak(translatedText, effectiveTgt)
+                                }
+                            }
+
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(18.dp),

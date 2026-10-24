@@ -104,14 +104,23 @@ class TranslationRepository(
         updateValidation(id, true, correctedText)
     }
 
+    private fun isMooreOrDioulaLang(lang: String): Boolean {
+        val l = lang.lowercase().trim()
+        return l.contains("moor") || l.contains("mòoré") || l.contains("dioula") || l.contains("jula")
+    }
+
+    private fun isFrenchLang(lang: String): Boolean {
+        val l = lang.lowercase().trim()
+        return l.contains("franç") || l.contains("franc")
+    }
+
     /**
-     * Moteur de traduction robuste à 6 niveaux de résolution garantie :
-     * 1. Cache intelligent en mémoire
-     * 2. Expressions et salutations certifiées du Burkina Faso (MultilingualTranslationEngine)
-     * 3. Dictionnaire complet hors-ligne (DictionaryLookupEngine : 1900+ entrées Mooré, Dioula, Haoussa)
-     * 4. Base SQLite locale (LinguisticDao)
-     * 5. Moteur IA Gemini (si configuré et connecté)
-     * 6. Traduction modulaire mot-à-mot (ne renvoie JAMAIS la phrase source brute comme traduction)
+     * Architecture de routage hybride :
+     * 1. Pour le MOORÉ et le DIOULA : Le Dictionnaire Local & Moteur d'Assemblage Compositionnel prend le relais
+     *    (découpe les phrases comme "Je suis allé à l'école" en briques du dictionnaire local : "Je" + "suis allé" + "à l'école"
+     *    et les rassemble proprement sans erreurs d'IA).
+     * 2. Pour TOUTES LES AUTRES LANGUES (Anglais, Arabe, Espagnol, Allemand, Haoussa, etc.) :
+     *    Le moteur OpenAI prend le relais directement.
      */
     suspend fun translate(
         originalText: String,
@@ -129,39 +138,148 @@ class TranslationRepository(
                 sourceLang = sourceLangInput,
                 targetLang = targetLangInput,
                 isFromValidatedSource = true,
-                sourceBadge = "Corpus Local"
+                sourceBadge = "Dictionnaire Local"
             )
         }
 
+        val effectiveSourceLang = if (sourceLangInput.trim().startsWith("Auto", ignoreCase = true) || sourceLangInput.isBlank()) {
+            com.example.data.engine.LanguageDetector.detect(cleanText)
+        } else {
+            sourceLangInput.trim()
+        }
+        val effectiveTargetLang = targetLangInput.trim().ifBlank { "Mooré" }
+
         // Si les deux langues sont strictement identiques
-        if (sourceLangInput.trim().equals(targetLangInput.trim(), ignoreCase = true)) {
+        if (effectiveSourceLang.equals(effectiveTargetLang, ignoreCase = true)) {
             return TranslationOutput(
                 translatedText = cleanText,
-                sourceLanguage = sourceLangInput,
-                targetLanguage = targetLangInput,
-                sourceLang = sourceLangInput,
-                targetLang = targetLangInput,
+                sourceLanguage = effectiveSourceLang,
+                targetLanguage = effectiveTargetLang,
+                sourceLang = effectiveSourceLang,
+                targetLang = effectiveTargetLang,
                 isFromValidatedSource = true,
                 sourceBadge = "Identique"
             )
         }
 
+        val srcIsMooreOrDioula = isMooreOrDioulaLang(effectiveSourceLang)
+        val tgtIsMooreOrDioula = isMooreOrDioulaLang(effectiveTargetLang)
+        val srcIsFrench = isFrenchLang(effectiveSourceLang)
+        val tgtIsFrench = isFrenchLang(effectiveTargetLang)
+
         var translated = ""
         var isLocal = false
         var badge = "OpenAI Officiel ⚡"
+        var breakdown = emptyList<String>()
 
-        // 1. Traduction 100% en ligne (OpenAI GPT-4o & Google Traduction)
-        try {
-            val onlineResult = aiFallback(cleanText, sourceLangInput, targetLangInput, "")
-            if (onlineResult.isNotBlank() && !onlineResult.equals(cleanText, ignoreCase = true)) {
-                translated = onlineResult.trim()
-                badge = "OpenAI Officiel ⚡"
+        // =========================================================================
+        // CAS 1 : MOORÉ & DIOULA — LE DICTIONNAIRE LOCAL PREND LE RELAIS EN PRIORITÉ
+        // =========================================================================
+        if (srcIsMooreOrDioula || tgtIsMooreOrDioula) {
+            val localLangLabel = when {
+                effectiveTargetLang.contains("moor", ignoreCase = true) || effectiveSourceLang.contains("moor", ignoreCase = true) -> "Mooré"
+                else -> "Dioula"
             }
-        } catch (_: Throwable) {}
 
-        // 2. Repli automatique et transparent sur le moteur linguistique embarqué (100% autonome et exportable)
-        val areLangsDifferent = !sourceLangInput.trim().equals(targetLangInput.trim(), ignoreCase = true)
-        if (areLangsDifferent && (translated.isBlank() || translated.equals(cleanText, ignoreCase = true))) {
+            // A. Paire directe Français <-> Mooré/Dioula ou Mooré <-> Dioula
+            if ((srcIsFrench && tgtIsMooreOrDioula) || (srcIsMooreOrDioula && tgtIsFrench) || (srcIsMooreOrDioula && tgtIsMooreOrDioula)) {
+                val smartComp = trySmartCompositional(cleanText, effectiveSourceLang, effectiveTargetLang)
+                val localAssembly = DictionaryLookupEngine.assembleSentenceFromLocalDictionary(
+                    input = cleanText,
+                    sourceLang = effectiveSourceLang,
+                    targetLang = effectiveTargetLang
+                )
+
+                if (localAssembly != null && localAssembly.translatedText.isNotBlank() &&
+                    !localAssembly.translatedText.equals(cleanText, ignoreCase = true)
+                ) {
+                    translated = localAssembly.translatedText.trim()
+                    breakdown = localAssembly.breakdown
+                    badge = "📖 Dictionnaire Local ($localLangLabel)"
+                    isLocal = true
+                    MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, true)
+                } else if (!smartComp.isNullOrBlank() && !smartComp.equals(cleanText, ignoreCase = true)) {
+                    translated = smartComp.trim()
+                    badge = "📖 Dictionnaire Local ($localLangLabel)"
+                    isLocal = true
+                    MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, true)
+                }
+            }
+            // B. Paire Autre Langue (ex: Anglais, Arabe, Haoussa, Espagnol) -> Mooré ou Dioula
+            // OpenAI traduit Autre Langue -> Français, puis le Dictionnaire Local Mooré/Dioula traduit mot à mot jusqu'à la fin de la phrase
+            else if (!srcIsFrench && tgtIsMooreOrDioula) {
+                try {
+                    val rawPivot = aiFallback(cleanText, effectiveSourceLang, "Français", "").trim()
+                    val frenchPivot = rawPivot
+                        .replace(Regex("""(?i)^(traduction|translation)\s*:\s*"""), "")
+                        .removeSurrounding("\"")
+                        .removeSurrounding("«", "»")
+                        .trim()
+                    if (frenchPivot.isNotBlank()) {
+                        val smartComp = trySmartCompositional(frenchPivot, "Français", effectiveTargetLang)
+                        val localAssembly = DictionaryLookupEngine.assembleSentenceFromLocalDictionary(
+                            input = frenchPivot,
+                            sourceLang = "Français",
+                            targetLang = effectiveTargetLang
+                        )
+                        if (localAssembly != null && localAssembly.translatedText.isNotBlank()) {
+                            translated = localAssembly.translatedText.trim()
+                            breakdown = localAssembly.breakdown
+                            badge = "📖 Dictionnaire Local ($localLangLabel)"
+                            isLocal = true
+                            MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, true)
+                        } else if (!smartComp.isNullOrBlank()) {
+                            translated = smartComp.trim()
+                            badge = "📖 Dictionnaire Local ($localLangLabel)"
+                            isLocal = true
+                            MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, true)
+                        }
+                    }
+                } catch (_: Throwable) {}
+            }
+            // C. Paire Mooré ou Dioula -> Autre Langue (ex: Anglais, Arabe, Haoussa, Espagnol)
+            // Le Dictionnaire Local Mooré/Dioula traduit mot à mot vers le Français, puis OpenAI traduit vers la langue cible sans erreur
+            else if (srcIsMooreOrDioula && !tgtIsFrench) {
+                val localToFrench = DictionaryLookupEngine.assembleSentenceFromLocalDictionary(
+                    input = cleanText,
+                    sourceLang = effectiveSourceLang,
+                    targetLang = "Français"
+                )
+                val frenchFromLocal = localToFrench?.translatedText?.takeIf { it.isNotBlank() }
+                    ?: trySmartCompositional(cleanText, effectiveSourceLang, "Français")
+                    ?: DictionaryLookupEngine.translateDirect(cleanText, effectiveSourceLang, "Français")
+                if (!frenchFromLocal.isNullOrBlank()) {
+                    try {
+                        val openAiFinal = aiFallback(frenchFromLocal, "Français", effectiveTargetLang, "").trim()
+                        if (openAiFinal.isNotBlank()) {
+                            translated = openAiFinal
+                            breakdown = localToFrench?.breakdown.orEmpty()
+                            badge = "📖 Dictionnaire Local ($localLangLabel) + OpenAI"
+                            isLocal = true
+                            MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, true)
+                        }
+                    } catch (_: Throwable) {}
+                }
+            }
+        }
+
+        // =========================================================================
+        // CAS 2 : AUTRES LANGUES (Français, Anglais, Arabe, Haoussa, etc.) -> OPENAI
+        // =========================================================================
+        if (translated.isBlank() || translated.equals(cleanText, ignoreCase = true)) {
+            try {
+                val onlineResult = aiFallback(cleanText, effectiveSourceLang, effectiveTargetLang, "")
+                if (onlineResult.isNotBlank() && !onlineResult.equals(cleanText, ignoreCase = true)) {
+                    translated = onlineResult.trim()
+                    badge = "OpenAI Officiel ⚡"
+                    isLocal = false
+                    MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, false)
+                }
+            } catch (_: Throwable) {}
+        }
+
+        // Repli local ultime si hors-ligne pour les autres langues
+        if (translated.isBlank() || translated.equals(cleanText, ignoreCase = true)) {
             val compositional = trySmartCompositional(cleanText, sourceLangInput, targetLangInput)
             val dictionaryDirect = if (compositional.isNullOrBlank()) {
                 DictionaryLookupEngine.translateDirect(cleanText, sourceLangInput, targetLangInput)
@@ -171,22 +289,15 @@ class TranslationRepository(
             } else null
 
             val localResult = compositional ?: dictionaryDirect ?: wordByWord
-
             if (!localResult.isNullOrBlank() && !localResult.equals(cleanText, ignoreCase = true)) {
                 translated = localResult.trim()
-                badge = "Traduction Intégrée"
+                badge = "📖 Dictionnaire Local"
                 isLocal = true
-                MultilingualTranslationEngine.putInCache(cleanText, sourceLangInput, targetLangInput, translated, true)
             } else {
                 translated = cleanText
                 badge = "Source"
                 isLocal = false
             }
-        } else if (translated.isNotBlank() && !translated.equals(cleanText, ignoreCase = true)) {
-            isLocal = false
-            MultilingualTranslationEngine.putInCache(cleanText, sourceLangInput, targetLangInput, translated, false)
-        } else {
-            translated = cleanText
         }
 
         val output = TranslationOutput(
@@ -196,7 +307,8 @@ class TranslationRepository(
             sourceLang = sourceLangInput,
             targetLang = targetLangInput,
             isFromValidatedSource = isLocal,
-            sourceBadge = badge
+            sourceBadge = badge,
+            literalBreakdown = breakdown
         )
 
         saveToHistory(
@@ -215,7 +327,7 @@ class TranslationRepository(
         sourceLang: String,
         targetLang: String
     ): String? {
-        val lower = text.trim().lowercase().replace("'", "'").replace("’", "'")
+        val lower = text.trim().lowercase().replace("’", "'")
         val isFromFrench = sourceLang.contains("franç", ignoreCase = true) || sourceLang.contains("franc", ignoreCase = true)
         val isTargetMoore = targetLang.contains("moor", ignoreCase = true)
         val isTargetDioula = targetLang.contains("dioula", ignoreCase = true) || targetLang.contains("jula", ignoreCase = true)
@@ -226,22 +338,22 @@ class TranslationRepository(
             if (lower.startsWith("bonjour ") || lower.startsWith("salut ")) {
                 val suffix = lower.removePrefix("bonjour ").removePrefix("salut ").trim()
                 val (mrSuffix, dyuSuffix, haSuffix) = when (suffix) {
-                    "mon frère", "mon frere" -> Triple("m ba-bi-raoogo", "ne balimake", "ɗan'uwa")
-                    "ma sœur", "ma soeur" -> Triple("m ba-bi-põka", "ne balimamuso", "ƴar'uwa")
-                    "mon ami" -> Triple("m zoodo", "ne teri", "abokina")
-                    "mes amis" -> Triple("m zoodba", "ne teriw", "abokaina")
-                    "papa", "mon père", "mon pere" -> Triple("m baa", "ne fa", "babana")
-                    "maman", "ma mère", "ma mere" -> Triple("m ma", "ne ba", "mamana")
-                    "mon fils", "mon enfant" -> Triple("m biiga", "ne den", "dana")
-                    "ma femme" -> Triple("m paga", "ne muso", "matata")
-                    "mon mari" -> Triple("m sapa", "ne cɛ", "miji na")
-                    "tout le monde" -> Triple("neda fâa", "mogo bèè", "kowa da kowa")
+                    "mon frère", "mon frere" -> Triple("m ba-bi-raoogo", "n balimakɛ", "ɗan'uwa")
+                    "ma sœur", "ma soeur" -> Triple("m ba-bi-põka", "n balimamuso", "ƴar'uwa")
+                    "mon ami" -> Triple("m zoodo", "n teri", "abokina")
+                    "mes amis" -> Triple("m zoodba", "n teriw", "abokaina")
+                    "papa", "mon père", "mon pere" -> Triple("m baa", "n fa", "babana")
+                    "maman", "ma mère", "ma mere" -> Triple("m ma", "n ba", "mamana")
+                    "mon fils", "mon enfant" -> Triple("m biiga", "n den", "dana")
+                    "ma femme" -> Triple("m paga", "n muso", "matata")
+                    "mon mari" -> Triple("m sapa", "n cɛ", "miji na")
+                    "tout le monde" -> Triple("neda fâa", "mɔgɔ bɛɛ", "kowa da kowa")
                     else -> Triple(null, null, null)
                 }
                 if (mrSuffix != null) {
                     return when {
                         isTargetMoore -> "Nii yi beogo $mrSuffix"
-                        isTargetDioula -> "Ani sogoma $dyuSuffix"
+                        isTargetDioula -> "I ni sogoma $dyuSuffix"
                         isTargetHausa -> "Ina kwana $haSuffix"
                         else -> null
                     }
@@ -251,18 +363,18 @@ class TranslationRepository(
             if (lower.startsWith("bonsoir ")) {
                 val suffix = lower.removePrefix("bonsoir ").trim()
                 val (mrSuffix, dyuSuffix, haSuffix) = when (suffix) {
-                    "mon frère", "mon frere" -> Triple("m ba-bi-raoogo", "ne balimake", "ɗan'uwa")
-                    "ma sœur", "ma soeur" -> Triple("m ba-bi-põka", "ne balimamuso", "ƴar'uwa")
-                    "mon ami" -> Triple("m zoodo", "ne teri", "abokina")
-                    "papa", "mon père", "mon pere" -> Triple("m baa", "ne fa", "babana")
-                    "maman", "ma mère", "ma mere" -> Triple("m ma", "ne ba", "mamana")
-                    "tout le monde" -> Triple("neda fâa", "mogo bèè", "kowa da kowa")
+                    "mon frère", "mon frere" -> Triple("m ba-bi-raoogo", "n balimakɛ", "ɗan'uwa")
+                    "ma sœur", "ma soeur" -> Triple("m ba-bi-põka", "n balimamuso", "ƴar'uwa")
+                    "mon ami" -> Triple("m zoodo", "n teri", "abokina")
+                    "papa", "mon père", "mon pere" -> Triple("m baa", "n fa", "babana")
+                    "maman", "ma mère", "ma mere" -> Triple("m ma", "n ba", "mamana")
+                    "tout le monde" -> Triple("neda fâa", "mɔgɔ bɛɛ", "kowa da kowa")
                     else -> Triple(null, null, null)
                 }
                 if (mrSuffix != null) {
                     return when {
                         isTargetMoore -> "Nii zabre $mrSuffix"
-                        isTargetDioula -> "Ani wula $dyuSuffix"
+                        isTargetDioula -> "I ni wula $dyuSuffix"
                         isTargetHausa -> "Ina wuni $haSuffix"
                         else -> null
                     }
@@ -273,16 +385,16 @@ class TranslationRepository(
                 val isMuch = lower.startsWith("merci beaucoup ")
                 val suffix = if (isMuch) lower.removePrefix("merci beaucoup ").trim() else lower.removePrefix("merci ").trim()
                 val (mrPrefix, dyuPrefix, haPrefix) = if (isMuch) {
-                    Triple("Bark wusgo wusgo", "Anitie kossobe", "Nagode sosai")
+                    Triple("Bark wusgo wusgo", "I ni ce kosɛbɛ", "Nagode sosai")
                 } else {
-                    Triple("Barka", "Anitie", "Nagode")
+                    Triple("Barka", "I ni ce", "Nagode")
                 }
                 val (mrSuffix, dyuSuffix, haSuffix) = when (suffix) {
-                    "mon frère", "mon frere" -> Triple("m ba-bi-raoogo", "ne balimake", "ɗan'uwa")
-                    "ma sœur", "ma soeur" -> Triple("m ba-bi-põka", "ne balimamuso", "ƴar'uwa")
-                    "mon ami" -> Triple("m zoodo", "ne teri", "abokina")
-                    "papa" -> Triple("m baa", "ne fa", "babana")
-                    "maman" -> Triple("m ma", "ne ba", "mamana")
+                    "mon frère", "mon frere" -> Triple("m ba-bi-raoogo", "n balimakɛ", "ɗan'uwa")
+                    "ma sœur", "ma soeur" -> Triple("m ba-bi-põka", "n balimamuso", "ƴar'uwa")
+                    "mon ami" -> Triple("m zoodo", "n teri", "abokina")
+                    "papa" -> Triple("m baa", "n fa", "babana")
+                    "maman" -> Triple("m ma", "n ba", "mamana")
                     else -> Triple(null, null, null)
                 }
                 if (mrSuffix != null) {
@@ -301,7 +413,7 @@ class TranslationRepository(
                 if (name.isNotBlank()) {
                     return when {
                         isTargetMoore -> "Mam yʋʋre la $name"
-                        isTargetDioula -> "Oum togo be $name"
+                        isTargetDioula -> "N tɔgɔ ye $name"
                         isTargetHausa -> "Sunana $name"
                         else -> null
                     }
@@ -315,49 +427,21 @@ class TranslationRepository(
                 if (translatedItem != null) {
                     return when {
                         isTargetMoore -> "Kõ-m $translatedItem"
-                        isTargetDioula -> "$translatedItem di ma"
+                        isTargetDioula -> "$translatedItem di n ma"
                         isTargetHausa -> "Ba ni $translatedItem"
                         else -> null
                     }
                 }
             }
 
-            // 4. Modèles "Je veux X"
-            if (lower.startsWith("je veux ") || lower.startsWith("j'ai besoin de ") || lower.startsWith("jai besoin de ")) {
-                val item = lower.removePrefix("je veux ").removePrefix("j'ai besoin de ").removePrefix("jai besoin de ").removePrefix("de l'").removePrefix("du ").removePrefix("de la ").removePrefix("des ").trim()
-                val translatedItem = DictionaryLookupEngine.translateDirect(item, "Français", targetLang)
-                if (translatedItem != null) {
-                    return when {
-                        isTargetMoore -> "M data $translatedItem"
-                        isTargetDioula -> "Oum b'a fe $translatedItem"
-                        isTargetHausa -> "Ina son $translatedItem"
-                        else -> null
-                    }
-                }
-            }
-
-            // 5. Modèles "Je vais à / au X"
-            if (lower.startsWith("je vais à la ") || lower.startsWith("je vais au ") || lower.startsWith("je vais aux ") || lower.startsWith("je vais a ")) {
-                val place = lower.removePrefix("je vais à la ").removePrefix("je vais au ").removePrefix("je vais aux ").removePrefix("je vais a ").removePrefix("je vais à ").trim()
-                val translatedPlace = DictionaryLookupEngine.translateDirect(place, "Français", targetLang)
-                if (translatedPlace != null) {
-                    return when {
-                        isTargetMoore -> "M debda $translatedPlace"
-                        isTargetDioula -> "Mi ta $translatedPlace"
-                        isTargetHausa -> "Ina tafiya $translatedPlace"
-                        else -> null
-                    }
-                }
-            }
-
-            // 6. Modèles "Où est X ?" / "Où se trouve X ?"
+            // 4. Modèles "Où est X ?" / "Où se trouve X ?"
             if (lower.startsWith("où est ") || lower.startsWith("ou est ") || lower.startsWith("où se trouve ") || lower.startsWith("ou se trouve ")) {
                 val item = lower.removePrefix("où est ").removePrefix("ou est ").removePrefix("où se trouve ").removePrefix("ou se trouve ").removePrefix("le ").removePrefix("la ").removePrefix("l'").trim().removeSuffix("?").trim()
                 val translatedItem = DictionaryLookupEngine.translateDirect(item, "Français", targetLang)
                 if (translatedItem != null) {
                     return when {
                         isTargetMoore -> "$translatedItem be yẽ ?"
-                        isTargetDioula -> "$translatedItem be mi ?"
+                        isTargetDioula -> "$translatedItem bɛ min ?"
                         isTargetHausa -> "Ina $translatedItem yake ?"
                         else -> null
                     }
@@ -387,12 +471,12 @@ class TranslationRepository(
                         return "Donne-moi $frItem"
                     }
                 } else if (isFromDioula) {
-                    if (lower.startsWith("oum togo be ")) {
-                        val name = text.trim().substringAfter("be ", "").trim()
+                    if (lower.startsWith("oum togo be ") || lower.startsWith("n tɔgɔ ye ") || lower.startsWith("n togo ye ")) {
+                        val name = text.trim().substringAfterLast(" ", "").trim()
                         return "Je m'appelle $name"
                     }
-                    if (lower.startsWith("oum b'a fe ") || lower.startsWith("oum ba fe ")) {
-                        val item = lower.removePrefix("oum b'a fe ").removePrefix("oum ba fe ").trim()
+                    if (lower.startsWith("oum b'a fe ") || lower.startsWith("oum ba fe ") || lower.startsWith("n b'a fɛ ")) {
+                        val item = lower.removePrefix("oum b'a fe ").removePrefix("oum ba fe ").removePrefix("n b'a fɛ ").trim()
                         val frItem = DictionaryLookupEngine.translateDirect(item, "Dioula", "Français") ?: item
                         return "Je veux $frItem"
                     }
@@ -432,12 +516,11 @@ class TranslationRepository(
                     translatedCount++
                     word.replace(cleanWord, direct)
                 } else {
-                    null // Mot manquant : refus catégorique de mélanger les langues
+                    null
                 }
             }
         }
 
-        // RÈGLE STRICTE ANTI-MÉLANGE : Seule une phrase où 100% des mots sont traduits est acceptée
         return if (translatedCount == words.size && translatedWords.all { it != null }) {
             translatedWords.filterNotNull().joinToString(" ")
         } else {

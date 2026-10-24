@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import com.example.util.ConversationCleaner
 import com.example.data.engine.VoiceIntentEngine
 import com.example.ui.SamAiViewModel
 import com.example.util.SpeechRecognitionManager
@@ -302,24 +303,11 @@ fun VoiceRecognitionInteractiveOverlay(
         speechManager.startListening(
             language = sourceLanguage,
             onResult = { result ->
-                recognizedText = result
-                isAnalyzingAi = true
-                coroutineScope.launch {
-                    try {
-                        val action = VoiceIntentEngine.analyzeSpokenInput(
-                            rawTranscript = result,
-                            currentSourceLang = sourceLanguage,
-                            currentTargetLang = targetLanguage,
-                            aiRepository = viewModel.aiRepository
-                        )
-                        if (action.cleanedFormattedText.isNotBlank()) {
-                            recognizedText = action.cleanedFormattedText
-                        }
-                    } catch (_: Exception) {
-                        recognizedText = result
-                    } finally {
-                        isAnalyzingAi = false
-                    }
+                val cleanImmediate = ConversationCleaner.cleanVoiceTranscript(result, sourceLanguage).ifBlank { result.trim() }
+                recognizedText = cleanImmediate
+                if (cleanImmediate.isNotBlank()) {
+                    onTextReady(cleanImmediate, true)
+                    onDismiss()
                 }
             },
             onError = { _ ->

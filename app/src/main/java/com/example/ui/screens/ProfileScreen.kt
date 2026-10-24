@@ -85,7 +85,6 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
     var showGoogleDirectDialog by remember { mutableStateOf(false) }
     var showEmailAuthDialog by remember { mutableStateOf(false) }
     var showLogoutDialog by remember { mutableStateOf(false) }
-    var showOpenAiKeyDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -753,53 +752,6 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
 
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-                    // Clé API OpenAI (Configuration rapide & Export APK)
-                    ListItem(
-                        modifier = Modifier
-                            .clickable { showOpenAiKeyDialog = true }
-                            .testTag("item_profile_openai_key"),
-                        leadingContent = {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.primaryContainer,
-                                modifier = Modifier.size(38.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Default.VpnKey,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                }
-                            }
-                        },
-                        headlineContent = {
-                            Text(
-                                text = "Clé API OpenAI",
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        },
-                        supportingContent = {
-                            Text(
-                                text = if (viewModel.isOpenAiConfigured()) "Configurée et active (Prête pour APK) ⚡" else "Non configurée",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = if (viewModel.isOpenAiConfigured()) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error
-                            )
-                        },
-                        trailingContent = {
-                            Icon(
-                                Icons.Default.KeyboardArrowRight,
-                                contentDescription = "Ouvrir",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                    )
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
                     // 4. Aide et commentaires (Ouvre la page de support)
                     ListItem(
                         modifier = Modifier
@@ -1180,65 +1132,6 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
 
             Spacer(modifier = Modifier.height(24.dp))
         }
-    }
-
-
-
-    // --- DIALOGUE DE CONFIGURATION CLÉ OPENAI (EXPORT APK & MOBILE) ---
-    if (showOpenAiKeyDialog) {
-        var keyInput by remember { mutableStateOf(viewModel.getActiveOpenAiApiKey()) }
-        AlertDialog(
-            onDismissRequest = { showOpenAiKeyDialog = false },
-            icon = {
-                Icon(
-                    Icons.Default.VpnKey,
-                    contentDescription = "Clé API",
-                    tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(32.dp)
-                )
-            },
-            title = {
-                Text(
-                    text = "Clé API OpenAI",
-                    fontWeight = FontWeight.Bold,
-                    textAlign = TextAlign.Center
-                )
-            },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        text = "Cette clé alimente l'intelligence artificielle SAM AI et la traduction multilingue directement sur votre téléphone.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(14.dp))
-                    OutlinedTextField(
-                        value = keyInput,
-                        onValueChange = { keyInput = it },
-                        label = { Text("Clé OpenAI (sk-...)") },
-                        placeholder = { Text("sk-proj-...") },
-                        singleLine = false,
-                        maxLines = 3,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        viewModel.saveOpenAiApiKey(keyInput)
-                        showOpenAiKeyDialog = false
-                    }
-                ) {
-                    Text("Enregistrer")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showOpenAiKeyDialog = false }) {
-                    Text("Annuler")
-                }
-            }
-        )
     }
 
     // --- 0.15 DIALOGUE DE CONNEXION GOOGLE DIRECTE (SANS CRASH NI SORTIE D'APP) ---

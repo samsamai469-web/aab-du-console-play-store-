@@ -84,7 +84,7 @@ class AiRepository(
             } catch (_: Throwable) { "" }
         }
         if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-            val errText = "⚠️ Clé API non configurée."
+            val errText = "⚠️ Service SAM AI temporairement indisponible."
             chatDao.insertMessage(
                 MessageEntity(
                     conversationId = conversationId,
@@ -174,7 +174,28 @@ RÈGLES D'OR ABSOLUES :
 ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else ""}
         """.trimIndent()
 
-        // 0. Moteur officiel prioritaire : OpenAI (GPT-4o)
+        val isMooreOrDioula = srcLang.contains("moor", ignoreCase = true) ||
+            tgtLang.contains("moor", ignoreCase = true) ||
+            srcLang.contains("dioula", ignoreCase = true) ||
+            tgtLang.contains("dioula", ignoreCase = true) ||
+            srcLang.contains("jula", ignoreCase = true) ||
+            tgtLang.contains("jula", ignoreCase = true)
+
+        // 0. Pour le Mooré et le Dioula : le Dictionnaire Local & Moteur d'Assemblage prend le relais
+        if (isMooreOrDioula) {
+            val localAssembled = com.example.data.engine.DictionaryLookupEngine.assembleSentenceFromLocalDictionary(
+                input = cleanSrc,
+                sourceLang = srcLang,
+                targetLang = tgtLang
+            )
+            if (localAssembled != null && localAssembled.translatedText.isNotBlank() &&
+                !localAssembled.translatedText.equals(cleanSrc, ignoreCase = true)
+            ) {
+                return@withContext localAssembled.translatedText.trim()
+            }
+        }
+
+        // 1. Pour toutes les autres langues : OpenAI (GPT-4o) prend le relais
         try {
             val openAiTranslation = openAiBackendService.translateWithOpenAi(cleanSrc, srcLang, tgtLang)
             if (openAiTranslation.isNotBlank() && !openAiTranslation.equals(cleanSrc, ignoreCase = true)) {

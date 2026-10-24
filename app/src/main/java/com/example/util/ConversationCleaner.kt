@@ -44,24 +44,33 @@ object ConversationCleaner {
      * 3. Nettoie la ponctuation orpheline ou erratique
      * 4. Ajuste les espaces et majuscules
      */
-    fun cleanVoiceTranscript(rawText: String): String {
+    fun cleanVoiceTranscript(rawText: String, sourceLang: String = ""): String {
         if (rawText.isBlank()) return ""
 
         var result = rawText.trim()
+        val isLocalLang = sourceLang.contains("moor", ignoreCase = true) ||
+            sourceLang.contains("dioula", ignoreCase = true) ||
+            sourceLang.contains("jula", ignoreCase = true) ||
+            sourceLang.contains("haoussa", ignoreCase = true) ||
+            sourceLang.contains("hausa", ignoreCase = true)
 
-        // 1. Suppression des tics d'hésitation
-        result = FILLER_REGEX.replace(result, " ")
+        if (!isLocalLang) {
+            // 1. Suppression des tics d'hésitation uniquement pour les langues non locales
+            result = FILLER_REGEX.replace(result, " ")
 
-        // 2. Normalisation des espaces multiples
-        result = result.replace(Regex("""\s+"""), " ").trim()
+            // 2. Normalisation des espaces multiples
+            result = result.replace(Regex("""\s+"""), " ").trim()
 
-        // 3. Suppression des bégaiements consécutifs
-        var prev = ""
-        var iterations = 0
-        while (prev != result && iterations < 3) {
-            prev = result
-            result = STUTTER_REGEX.replace(result, "$1")
-            iterations++
+            // 3. Suppression des bégaiements consécutifs (sauf en Mooré/Dioula où la réduplication est grammaticale)
+            var prev = ""
+            var iterations = 0
+            while (prev != result && iterations < 3) {
+                prev = result
+                result = STUTTER_REGEX.replace(result, "$1")
+                iterations++
+            }
+        } else {
+            result = result.replace(Regex("""\s+"""), " ").trim()
         }
 
         // 4. Nettoyage de la ponctuation au début du texte
@@ -87,8 +96,7 @@ object ConversationCleaner {
     /**
      * Nettoie et polit la traduction finale :
      * - Supprime les balises ou résidus de prompt IA ("Traduction :", guillemets d'encadrement inutiles)
-     * - Assure une ponctuation finale propre
-     * - Majuscule en début de phrase
+     * - Assure une majuscule en début de phrase sans altérer les mots locaux
      */
     fun polishTranslatedText(rawTranslation: String): String {
         if (rawTranslation.isBlank()) return ""
@@ -105,11 +113,6 @@ object ConversationCleaner {
 
         // Nettoyer les espaces
         clean = clean.replace(Regex("""\s+"""), " ").trim()
-
-        // Ponctuation finale propre si absente
-        if (clean.isNotBlank() && clean.last().isLetterOrDigit()) {
-            clean = "$clean."
-        }
 
         // Majuscule initiale
         clean = clean.replaceFirstChar { char ->
