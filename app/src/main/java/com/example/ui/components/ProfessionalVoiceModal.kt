@@ -155,18 +155,24 @@ fun ProfessionalVoiceModal(
     }
 
     fun stopAndProcess() {
-        speechManager.stopListening()
         isListening = false
         soundLevel = 0f
-        if (editableText.isNotBlank()) {
-            statusMessage = "Traitement & Ponctuation intelligente..."
-            viewModel.processVoiceTranscriptWithAi(
-                rawTranscript = editableText,
-                currentLanguage = selectedVoiceLanguage,
-                autoApplyToSourceText = true
-            ) { result ->
-                editableText = result.correctedText
-                statusMessage = "Phrase comprise avec succès !"
+        statusMessage = "Transcription OpenAI..."
+        speechManager.stopListening { transcribed ->
+            val textToUse = transcribed.ifBlank { editableText }
+            if (textToUse.isNotBlank()) {
+                editableText = textToUse
+                statusMessage = "Traitement & Ponctuation intelligente..."
+                viewModel.processVoiceTranscriptWithAi(
+                    rawTranscript = textToUse,
+                    currentLanguage = selectedVoiceLanguage,
+                    autoApplyToSourceText = true
+                ) { result ->
+                    editableText = result.correctedText
+                    statusMessage = "Phrase comprise avec succès !"
+                }
+            } else {
+                statusMessage = "Prêt à écouter votre phrase"
             }
         }
     }

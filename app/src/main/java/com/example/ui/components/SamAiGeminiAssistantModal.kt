@@ -420,8 +420,15 @@ fun SamAiGeminiAssistantModal(
                                     }
                                     IconButton(
                                         onClick = {
-                                            speechManager.stopListening()
                                             isListeningVoice = false
+                                            speechManager.stopListening { transcript ->
+                                                if (transcript.isNotBlank()) {
+                                                    inputText = transcript
+                                                    hideKeyboard()
+                                                    viewModel.askSamAiGemini(transcript)
+                                                    inputText = ""
+                                                }
+                                            }
                                         },
                                         modifier = Modifier.size(24.dp)
                                     ) {
@@ -445,8 +452,15 @@ fun SamAiGeminiAssistantModal(
                             IconButton(
                                 onClick = {
                                     if (isListeningVoice) {
-                                        speechManager.stopListening()
                                         isListeningVoice = false
+                                        speechManager.stopListening { transcript ->
+                                            if (transcript.isNotBlank()) {
+                                                inputText = transcript
+                                                hideKeyboard()
+                                                viewModel.askSamAiGemini(transcript)
+                                                inputText = ""
+                                            }
+                                        }
                                     } else {
                                         val hasPermission = ContextCompat.checkSelfPermission(
                                             context,

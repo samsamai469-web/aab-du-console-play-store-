@@ -535,13 +535,17 @@ fun LiveConversationScreen(
 
     fun onUser1MicClicked() {
         if (isUser1Listening) {
-            val spoken = user1Transcript.trim().ifBlank { user1SpeechManager.partialText.value.trim() }
-            user1SpeechManager.stopListening()
+            val currentSpoken = user1Transcript.trim().ifBlank { user1SpeechManager.partialText.value.trim() }
             isUser1Listening = false
-            user1Status = "Prêt"
-
-            if (spoken.isNotBlank()) {
-                processUser1SpokenSpeech(spoken)
+            user1Status = "Transcription..."
+            user1SpeechManager.stopListening { transcribed ->
+                val finalText = transcribed.ifBlank { currentSpoken }
+                if (finalText.isNotBlank()) {
+                    user1Transcript = finalText
+                    processUser1SpokenSpeech(finalText)
+                } else {
+                    user1Status = "Prêt"
+                }
             }
         } else {
             if (hasMicPermission) {
@@ -556,13 +560,17 @@ fun LiveConversationScreen(
 
     fun onUser2MicClicked() {
         if (isUser2Listening) {
-            val spoken = user2Transcript.trim().ifBlank { user2SpeechManager.partialText.value.trim() }
-            user2SpeechManager.stopListening()
+            val currentSpoken = user2Transcript.trim().ifBlank { user2SpeechManager.partialText.value.trim() }
             isUser2Listening = false
-            user2Status = "Prêt"
-
-            if (spoken.isNotBlank()) {
-                processUser2SpokenSpeech(spoken)
+            user2Status = "Transcription..."
+            user2SpeechManager.stopListening { transcribed ->
+                val finalText = transcribed.ifBlank { currentSpoken }
+                if (finalText.isNotBlank()) {
+                    user2Transcript = finalText
+                    processUser2SpokenSpeech(finalText)
+                } else {
+                    user2Status = "Prêt"
+                }
             }
         } else {
             if (hasMicPermission) {

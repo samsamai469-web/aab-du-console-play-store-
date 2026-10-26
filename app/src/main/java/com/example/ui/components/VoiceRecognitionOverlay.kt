@@ -401,23 +401,29 @@ fun VoiceRecognitionInteractiveOverlay(
             soundLevel = soundLevel,
             isListening = isListening,
             onCancel = {
-                speechManager.stopListening()
+                speechManager.reset()
                 onDismiss()
             },
             onStopOrPause = {
                 if (isListening) {
-                    speechManager.stopListening()
+                    speechManager.stopListening { transcribed ->
+                        if (transcribed.isNotBlank()) {
+                            recognizedText = transcribed
+                        }
+                    }
                 } else {
                     startListening()
                 }
             },
             onSubmit = {
-                val textToSend = recognizedText.ifBlank { partialText }
-                speechManager.stopListening()
-                if (textToSend.isNotBlank()) {
-                    onTextReady(textToSend, true)
+                val currentText = recognizedText.ifBlank { partialText }
+                speechManager.stopListening { transcribed ->
+                    val finalText = transcribed.ifBlank { currentText }
+                    if (finalText.isNotBlank()) {
+                        onTextReady(finalText, true)
+                    }
+                    onDismiss()
                 }
-                onDismiss()
             }
         )
 
