@@ -752,7 +752,7 @@ fun VisualMooreCard(
                 contentAlignment = Alignment.Center
             ) {
                 val primarySource: Any = item.localDrawable
-                    ?: item.imageUrl.ifEmpty { R.drawable.img_laafi_bala_village_1786881210261 }
+                    ?: item.imageUrl.ifEmpty { R.drawable.img_burkinabe_mother_1786879056257 }
 
                 coil.compose.AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)
@@ -897,7 +897,7 @@ fun VisualDioulaCard(
                 contentAlignment = Alignment.Center
             ) {
                 val primarySource: Any = item.localDrawable
-                    ?: item.imageUrl.ifEmpty { R.drawable.img_laafi_bala_friends_1786881102699 }
+                    ?: item.imageUrl.ifEmpty { R.drawable.img_burkinabe_mother_1786879056257 }
 
                 coil.compose.AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)

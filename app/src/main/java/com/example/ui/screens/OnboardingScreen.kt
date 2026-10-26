@@ -420,7 +420,7 @@ private fun HowItWorksPage(
             Spacer(modifier = Modifier.height(10.dp))
 
             FeatureItemCard(
-                imageRes = R.drawable.img_laafi_bala_friends_1786881102699,
+                imageRes = R.drawable.img_faso_dan_fani_1786953081141,
                 badgeIcon = Icons.Default.SwapHoriz,
                 title = "Langue source & Langue cible",
                 description = "Sélectionnez vos langues en un instant et permutez-les en un seul clic selon vos besoins."
@@ -438,7 +438,7 @@ private fun HowItWorksPage(
             Spacer(modifier = Modifier.height(10.dp))
 
             FeatureItemCard(
-                imageRes = R.drawable.img_laafi_bala_village_1786881210261,
+                imageRes = R.drawable.img_burkinabe_house_1786881867414,
                 badgeIcon = Icons.Default.History,
                 title = "Historique personnel sécurisé",
                 description = "Toutes vos traductions et échanges sont automatiquement sauvegardés et consultables à tout moment."

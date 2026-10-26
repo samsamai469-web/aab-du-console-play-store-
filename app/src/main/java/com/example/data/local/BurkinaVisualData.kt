@@ -159,26 +159,6 @@ object BurkinaVisualData {
             frenchMeaning = "Champ de sorgho / Mil",
             localDrawable = R.drawable.img_burkinabe_sorghum_field_1786881963412,
             contextInfo = "Champ de sorgho et mil doré au cœur des terroirs du Burkina Faso."
-        ),
-
-        // --- 6. SALUTATIONS CHALEUREUSES ---
-        VisualMooreItem(
-            id = 801,
-            word = "Nii yi beogo",
-            pronunciation = "Nii yi beo-go",
-            category = "Salutations",
-            frenchMeaning = "Bonjour (Salutation du matin)",
-            localDrawable = R.drawable.img_laafi_bala_friends_1786881102699,
-            contextInfo = "Salutation conviviale et respectueuse du matin au Burkina Faso."
-        ),
-        VisualMooreItem(
-            id = 802,
-            word = "Nii zabre",
-            pronunciation = "Nii za-bre",
-            category = "Salutations",
-            frenchMeaning = "Bonsoir (Salutation du soir)",
-            localDrawable = R.drawable.img_laafi_bala_village_1786881210261,
-            contextInfo = "Salutation chaleureuse en fin de journée au village."
         )
     )
 
@@ -188,7 +168,6 @@ object BurkinaVisualData {
         "Aliments",
         "Animaux",
         "Vêtements",
-        "Salutations",
         "Métiers",
         "Maison",
         "Nature"
