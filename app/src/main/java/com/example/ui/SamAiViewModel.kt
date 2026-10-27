@@ -750,30 +750,36 @@ class SamAiViewModel(
         }
 
         viewModelScope.launch {
-            val result = com.example.data.remote.FirebaseAuthService.loginWithEmail(cleanEmail, password)
-            if (result.isSuccess) {
-                val profile = result.getOrNull()!!
-                val isSuperAdmin = SecurityUtils.isSuperAdminEmail(cleanEmail)
-                val finalProfile = if (isSuperAdmin) profile.copy(role = "admin") else profile
+            try {
+                val result = com.example.data.remote.FirebaseAuthService.loginWithEmail(cleanEmail, password)
+                if (result.isSuccess) {
+                    val profile = result.getOrNull()!!
+                    val isSuperAdmin = SecurityUtils.isSuperAdminEmail(cleanEmail)
+                    val finalProfile = if (isSuperAdmin) profile.copy(role = "admin") else profile
 
-                _userProfile.value = finalProfile
-                _isLoggedIn.value = true
-                authSessionManager?.saveUserProfile(finalProfile)
+                    _userProfile.value = finalProfile
+                    _isLoggedIn.value = true
+                    authSessionManager?.saveUserProfile(finalProfile)
 
-                if (isSuperAdmin) {
-                    val token = SecurityUtils.generateAdminToken(cleanEmail)
-                    _adminAuthToken.value = token
-                    authSessionManager?.saveAdminToken(token)
+                    if (isSuperAdmin) {
+                        val token = SecurityUtils.generateAdminToken(cleanEmail)
+                        _adminAuthToken.value = token
+                        authSessionManager?.saveAdminToken(token)
+                    }
+
+                    SecurityUtils.resetFailedLogin(cleanEmail)
+                    startNewConversation()
+                    auditLog("AUTH_EMAIL_FIREBASE_SUCCESS", "INFO", "Connexion Firebase Email réussie pour $cleanEmail")
+                    onResult(true, "Bon retour ${finalProfile.name} !")
+                } else {
+                    SecurityUtils.recordFailedLogin(cleanEmail)
+                    val errorMsg = result.exceptionOrNull()?.message ?: "Identifiants incorrects."
+                    auditLog("AUTH_EMAIL_FIREBASE_FAIL", "WARNING", "Échec de connexion Firebase Email pour $cleanEmail : $errorMsg")
+                    onResult(false, errorMsg)
                 }
-
-                SecurityUtils.resetFailedLogin(cleanEmail)
-                startNewConversation()
-                auditLog("AUTH_EMAIL_FIREBASE_SUCCESS", "INFO", "Connexion Firebase Email réussie pour $cleanEmail")
-                onResult(true, "Bon retour ${finalProfile.name} !")
-            } else {
-                SecurityUtils.recordFailedLogin(cleanEmail)
-                val errorMsg = result.exceptionOrNull()?.message ?: "Identifiants incorrects."
-                auditLog("AUTH_EMAIL_FIREBASE_FAIL", "WARNING", "Échec de connexion Firebase Email pour $cleanEmail : $errorMsg")
+            } catch (e: Throwable) {
+                val errorMsg = e.localizedMessage ?: "Erreur de connexion. Veuillez réessayer."
+                auditLog("AUTH_EMAIL_CRASH", "ERROR", "Exception loginWithEmail: $errorMsg")
                 onResult(false, errorMsg)
             }
         }
@@ -862,28 +868,33 @@ class SamAiViewModel(
         val cleanName = SecurityUtils.sanitizeInput(name, 100).ifBlank { cleanEmail.substringBefore("@") }
 
         viewModelScope.launch {
-            val result = com.example.data.remote.FirebaseAuthService.registerWithEmail(cleanEmail, password, cleanName)
-            if (result.isSuccess) {
-                val profile = result.getOrNull()!!
-                val isSuperAdmin = SecurityUtils.isSuperAdminEmail(cleanEmail)
-                val finalProfile = if (isSuperAdmin) profile.copy(role = "admin") else profile
+            try {
+                val result = com.example.data.remote.FirebaseAuthService.registerWithEmail(cleanEmail, password, cleanName)
+                if (result.isSuccess) {
+                    val profile = result.getOrNull()!!
+                    val isSuperAdmin = SecurityUtils.isSuperAdminEmail(cleanEmail)
+                    val finalProfile = if (isSuperAdmin) profile.copy(role = "admin") else profile
 
-                _userProfile.value = finalProfile
-                _isLoggedIn.value = true
-                authSessionManager?.saveUserProfile(finalProfile)
+                    _userProfile.value = finalProfile
+                    _isLoggedIn.value = true
+                    authSessionManager?.saveUserProfile(finalProfile)
 
-                if (isSuperAdmin) {
-                    val token = SecurityUtils.generateAdminToken(cleanEmail)
-                    _adminAuthToken.value = token
-                    authSessionManager?.saveAdminToken(token)
+                    if (isSuperAdmin) {
+                        val token = SecurityUtils.generateAdminToken(cleanEmail)
+                        _adminAuthToken.value = token
+                        authSessionManager?.saveAdminToken(token)
+                    }
+
+                    startNewConversation()
+                    auditLog("REGISTER_EMAIL_FIREBASE_SUCCESS", "INFO", "Création de compte Firebase Email réussie pour $cleanEmail")
+                    onResult(true, "Compte créé avec succès ! Bienvenue ${finalProfile.name}.")
+                } else {
+                    val errorMsg = result.exceptionOrNull()?.message ?: "Erreur lors de la création du compte."
+                    auditLog("REGISTER_EMAIL_FIREBASE_FAIL", "WARNING", "Échec création compte Firebase Email pour $cleanEmail : $errorMsg")
+                    onResult(false, errorMsg)
                 }
-
-                startNewConversation()
-                auditLog("REGISTER_EMAIL_FIREBASE_SUCCESS", "INFO", "Création de compte Firebase Email réussie pour $cleanEmail")
-                onResult(true, "Compte créé avec succès ! Bienvenue ${finalProfile.name}.")
-            } else {
-                val errorMsg = result.exceptionOrNull()?.message ?: "Erreur lors de la création du compte."
-                auditLog("REGISTER_EMAIL_FIREBASE_FAIL", "WARNING", "Échec création compte Firebase Email pour $cleanEmail : $errorMsg")
+            } catch (e: Throwable) {
+                val errorMsg = e.localizedMessage ?: "Erreur lors de la création du compte."
                 onResult(false, errorMsg)
             }
         }
@@ -896,13 +907,17 @@ class SamAiViewModel(
     ) {
         val cleanEmail = email.trim().lowercase()
         viewModelScope.launch {
-            val result = com.example.data.remote.FirebaseAuthService.resendVerificationEmail(cleanEmail, password)
-            if (result.isSuccess) {
-                auditLog("AUTH_VERIFICATION_RESENT", "INFO", "Email de vérification renvoyé à $cleanEmail")
-                onResult(true, "Un nouvel email de confirmation a été envoyé à $cleanEmail. Vérifiez votre boîte Gmail (et dossier spam).")
-            } else {
-                val errorMsg = result.exceptionOrNull()?.message ?: "Impossible de renvoyer l'email."
-                onResult(false, errorMsg)
+            try {
+                val result = com.example.data.remote.FirebaseAuthService.resendVerificationEmail(cleanEmail, password)
+                if (result.isSuccess) {
+                    auditLog("AUTH_VERIFICATION_RESENT", "INFO", "Email de vérification renvoyé à $cleanEmail")
+                    onResult(true, "Un nouvel email de confirmation a été envoyé à $cleanEmail. Vérifiez votre boîte Gmail (et dossier spam).")
+                } else {
+                    val errorMsg = result.exceptionOrNull()?.message ?: "Impossible de renvoyer l'email."
+                    onResult(false, errorMsg)
+                }
+            } catch (e: Throwable) {
+                onResult(false, e.localizedMessage ?: "Impossible de renvoyer l'email.")
             }
         }
     }
@@ -918,13 +933,17 @@ class SamAiViewModel(
         }
 
         viewModelScope.launch {
-            val result = com.example.data.remote.FirebaseAuthService.sendPasswordResetEmail(cleanEmail)
-            if (result.isSuccess) {
-                auditLog("AUTH_PASSWORD_RESET_SENT", "INFO", "Email de réinitialisation envoyé à $cleanEmail")
-                onResult(true, "Un email contenant les instructions de réinitialisation a été envoyé à $cleanEmail.")
-            } else {
-                val errorMsg = result.exceptionOrNull()?.message ?: "Erreur lors de l'envoi de l'email."
-                onResult(false, errorMsg)
+            try {
+                val result = com.example.data.remote.FirebaseAuthService.sendPasswordResetEmail(cleanEmail)
+                if (result.isSuccess) {
+                    auditLog("AUTH_PASSWORD_RESET_SENT", "INFO", "Email de réinitialisation envoyé à $cleanEmail")
+                    onResult(true, "Un email contenant les instructions de réinitialisation a été envoyé à $cleanEmail.")
+                } else {
+                    val errorMsg = result.exceptionOrNull()?.message ?: "Erreur lors de l'envoi de l'email."
+                    onResult(false, errorMsg)
+                }
+            } catch (e: Throwable) {
+                onResult(false, e.localizedMessage ?: "Erreur lors de l'envoi de l'email.")
             }
         }
     }
@@ -942,14 +961,18 @@ class SamAiViewModel(
         val cleanName = SecurityUtils.sanitizeInput(name, 100).ifBlank { cleanEmail.substringBefore("@") }
 
         viewModelScope.launch {
-            val result = com.example.data.remote.FirebaseAuthService.sendSignInLinkToEmail(context, cleanEmail, cleanName)
-            if (result.isSuccess) {
-                auditLog("AUTH_SIGNIN_LINK_SENT", "INFO", "Lien de connexion magique Firebase envoyé à $cleanEmail")
-                onResult(true, result.getOrNull() ?: "Lien de connexion envoyé avec succès !")
-            } else {
-                val errorMsg = result.exceptionOrNull()?.message ?: "Échec de l'envoi du lien de connexion."
-                auditLog("AUTH_SIGNIN_LINK_FAIL", "WARNING", "Échec envoi lien à $cleanEmail: $errorMsg")
-                onResult(false, errorMsg)
+            try {
+                val result = com.example.data.remote.FirebaseAuthService.sendSignInLinkToEmail(context, cleanEmail, cleanName)
+                if (result.isSuccess) {
+                    auditLog("AUTH_SIGNIN_LINK_SENT", "INFO", "Lien de connexion magique Firebase envoyé à $cleanEmail")
+                    onResult(true, result.getOrNull() ?: "Lien de connexion envoyé avec succès !")
+                } else {
+                    val errorMsg = result.exceptionOrNull()?.message ?: "Échec de l'envoi du lien de connexion."
+                    auditLog("AUTH_SIGNIN_LINK_FAIL", "WARNING", "Échec envoi lien à $cleanEmail: $errorMsg")
+                    onResult(false, errorMsg)
+                }
+            } catch (e: Throwable) {
+                onResult(false, e.localizedMessage ?: "Échec de l'envoi du lien de connexion.")
             }
         }
     }

@@ -19,9 +19,11 @@ import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.SetOptions
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.TimeUnit
 
 /**
@@ -239,60 +241,69 @@ object FirebaseAuthService {
             ?: return Result.failure(Exception("Service Firebase Auth indisponible."))
         val cleanName = displayName.trim().ifBlank { cleanEmail.substringBefore("@") }
 
-        return try {
-            val authResult = firebaseAuth.createUserWithEmailAndPassword(cleanEmail, password).await()
-            val user = authResult.user
-                ?: return Result.failure(Exception("Échec de la création de l'utilisateur Firebase."))
-
-            val uid = user.uid
-
-            // Mise à jour du profil Firebase avec le nom
+        return withContext(Dispatchers.IO) {
             try {
-                val profileUpdates = com.google.firebase.auth.UserProfileChangeRequest.Builder()
-                    .setDisplayName(cleanName)
-                    .build()
-                user.updateProfile(profileUpdates).await()
-            } catch (e: Exception) {
-                Log.w(TAG, "Impossible de définir le nom d'affichage: ${e.message}")
-            }
+                val authResult = withTimeout(9000L) {
+                    firebaseAuth.createUserWithEmailAndPassword(cleanEmail, password).await()
+                }
+                val user = authResult.user
+                    ?: return@withContext Result.failure(Exception("Échec de la création de l'utilisateur Firebase."))
 
-            // Envoi de l'email de vérification officiel certifié par Google
-            try {
-                firebaseAuth.setLanguageCode("fr")
-                user.sendEmailVerification()
-                Log.d(TAG, "Email de vérification officiel Google envoyé à $cleanEmail")
-            } catch (e: Exception) {
-                Log.w(TAG, "Envoi email de vérification: ${e.message}")
-            }
+                val uid = user.uid
 
-            // Enregistrement dans Cloud Firestore en tâche de fond
-            try {
-                syncUserToFirestore(
-                    uid = uid,
-                    name = cleanName,
+                // Traitements asynchrones d'arrière-plan (ne bloquent pas l'interface)
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        val profileUpdates = com.google.firebase.auth.UserProfileChangeRequest.Builder()
+                            .setDisplayName(cleanName)
+                            .build()
+                        user.updateProfile(profileUpdates).await()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Impossible de définir le nom d'affichage: ${e.message}")
+                    }
+
+                    try {
+                        firebaseAuth.setLanguageCode("fr")
+                        user.sendEmailVerification()
+                        Log.d(TAG, "Email de vérification officiel Google envoyé à $cleanEmail")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Envoi email de vérification: ${e.message}")
+                    }
+
+                    try {
+                        withTimeout(5000L) {
+                            syncUserToFirestore(
+                                uid = uid,
+                                name = cleanName,
+                                email = cleanEmail,
+                                photoUrl = null,
+                                phoneNumber = null
+                            )
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Sync Firestore en tâche de fond: ${e.message}")
+                    }
+                }
+
+                val profile = UserProfile(
+                    isLoggedIn = true,
+                    userId = uid,
                     email = cleanEmail,
-                    photoUrl = null,
-                    phoneNumber = null
+                    name = cleanName,
+                    role = if (cleanEmail.equals(ADMIN_EMAIL, ignoreCase = true)) "admin" else "user",
+                    provider = AuthProvider.EMAIL,
+                    isCloudSynced = true
                 )
+
+                Log.d(TAG, "Inscription réussie avec Google Firebase: $cleanEmail ($uid)")
+                Result.success(profile)
+            } catch (e: TimeoutCancellationException) {
+                Log.e(TAG, "Délai d'inscription dépassé: $cleanEmail")
+                Result.failure(Exception("Le serveur Firebase met trop de temps à répondre. Vérifiez votre connexion Internet."))
             } catch (e: Exception) {
-                Log.w(TAG, "Sync Firestore: ${e.message}")
+                Log.e(TAG, "Erreur registerWithEmail: ${e.message}", e)
+                Result.failure(Exception(translateFirebaseError(e)))
             }
-
-            val profile = UserProfile(
-                isLoggedIn = true,
-                userId = uid,
-                email = cleanEmail,
-                name = cleanName,
-                role = if (cleanEmail.equals(ADMIN_EMAIL, ignoreCase = true)) "admin" else "user",
-                provider = AuthProvider.EMAIL,
-                isCloudSynced = true
-            )
-
-            Log.d(TAG, "Inscription réussie avec Google Firebase: $cleanEmail ($uid)")
-            Result.success(profile)
-        } catch (e: Exception) {
-            Log.e(TAG, "Erreur registerWithEmail: ${e.message}", e)
-            Result.failure(Exception(translateFirebaseError(e)))
         }
     }
 
@@ -312,39 +323,54 @@ object FirebaseAuthService {
         val firebaseAuth = auth
             ?: return Result.failure(Exception("Service Firebase Auth indisponible."))
 
-        return try {
-            val authResult = firebaseAuth.signInWithEmailAndPassword(cleanEmail, password).await()
-            val user = authResult.user
-                ?: return Result.failure(Exception("Échec de l'authentification Firebase."))
+        return withContext(Dispatchers.IO) {
+            try {
+                val authResult = withTimeout(9000L) {
+                    firebaseAuth.signInWithEmailAndPassword(cleanEmail, password).await()
+                }
+                val user = authResult.user
+                    ?: return@withContext Result.failure(Exception("Échec de l'authentification Firebase."))
 
-            val isSuperAdmin = cleanEmail.equals(ADMIN_EMAIL, ignoreCase = true)
-            val uid = user.uid
-            val name = user.displayName ?: cleanEmail.substringBefore("@")
+                val isSuperAdmin = cleanEmail.equals(ADMIN_EMAIL, ignoreCase = true)
+                val uid = user.uid
+                val name = user.displayName ?: cleanEmail.substringBefore("@")
 
-            // Synchronisation de la dernière connexion dans Firestore
-            syncUserToFirestore(
-                uid = uid,
-                name = name,
-                email = cleanEmail,
-                photoUrl = user.photoUrl?.toString(),
-                phoneNumber = user.phoneNumber
-            )
+                // Synchronisation de la dernière connexion dans Firestore en arrière-plan (non bloquant)
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        withTimeout(5000L) {
+                            syncUserToFirestore(
+                                uid = uid,
+                                name = name,
+                                email = cleanEmail,
+                                photoUrl = user.photoUrl?.toString(),
+                                phoneNumber = user.phoneNumber
+                            )
+                        }
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Sync Firestore dernière connexion en arrière-plan: ${e.message}")
+                    }
+                }
 
-            val profile = UserProfile(
-                isLoggedIn = true,
-                userId = uid,
-                email = cleanEmail,
-                name = name,
-                photoUrl = user.photoUrl?.toString(),
-                role = if (isSuperAdmin) "admin" else "user",
-                provider = AuthProvider.EMAIL,
-                isCloudSynced = true
-            )
-            Log.d(TAG, "Connexion Email validée dans Firebase: $cleanEmail ($uid)")
-            Result.success(profile)
-        } catch (e: Exception) {
-            Log.e(TAG, "Erreur loginWithEmail: ${e.message}", e)
-            Result.failure(Exception(translateFirebaseError(e)))
+                val profile = UserProfile(
+                    isLoggedIn = true,
+                    userId = uid,
+                    email = cleanEmail,
+                    name = name,
+                    photoUrl = user.photoUrl?.toString(),
+                    role = if (isSuperAdmin) "admin" else "user",
+                    provider = AuthProvider.EMAIL,
+                    isCloudSynced = true
+                )
+                Log.d(TAG, "Connexion Email validée dans Firebase: $cleanEmail ($uid)")
+                Result.success(profile)
+            } catch (e: TimeoutCancellationException) {
+                Log.e(TAG, "Délai de connexion dépassé pour: $cleanEmail")
+                Result.failure(Exception("Délai de connexion dépassé (9 sec). Vérifiez votre connexion Internet."))
+            } catch (e: Exception) {
+                Log.e(TAG, "Erreur loginWithEmail: ${e.message}", e)
+                Result.failure(Exception(translateFirebaseError(e)))
+            }
         }
     }
 
@@ -356,15 +382,23 @@ object FirebaseAuthService {
             ?: return Result.failure(Exception("Service Firebase Auth indisponible."))
         val cleanEmail = email.trim().lowercase()
 
-        return try {
-            val authResult = firebaseAuth.signInWithEmailAndPassword(cleanEmail, password).await()
-            val user = authResult.user
-                ?: return Result.failure(Exception("Utilisateur introuvable."))
-            user.sendEmailVerification().await()
-            firebaseAuth.signOut()
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Result.failure(e)
+        return withContext(Dispatchers.IO) {
+            try {
+                val authResult = withTimeout(8000L) {
+                    firebaseAuth.signInWithEmailAndPassword(cleanEmail, password).await()
+                }
+                val user = authResult.user
+                    ?: return@withContext Result.failure(Exception("Utilisateur introuvable."))
+                withTimeout(8000L) {
+                    user.sendEmailVerification().await()
+                }
+                firebaseAuth.signOut()
+                Result.success(Unit)
+            } catch (e: TimeoutCancellationException) {
+                Result.failure(Exception("Délai d'envoi dépassé. Vérifiez votre connexion Internet."))
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
         }
     }
 
@@ -376,14 +410,20 @@ object FirebaseAuthService {
             ?: return Result.failure(Exception("Service Firebase Auth indisponible."))
         val cleanEmail = email.trim().lowercase()
 
-        return try {
-            firebaseAuth.setLanguageCode("fr")
-            firebaseAuth.sendPasswordResetEmail(cleanEmail).await()
-            Log.d(TAG, "Email officiel de réinitialisation en français envoyé à $cleanEmail")
-            Result.success(Unit)
-        } catch (e: Exception) {
-            Log.e(TAG, "Erreur sendPasswordResetEmail: ${e.message}", e)
-            Result.failure(Exception(translateFirebaseError(e)))
+        return withContext(Dispatchers.IO) {
+            try {
+                firebaseAuth.setLanguageCode("fr")
+                withTimeout(8000L) {
+                    firebaseAuth.sendPasswordResetEmail(cleanEmail).await()
+                }
+                Log.d(TAG, "Email officiel de réinitialisation en français envoyé à $cleanEmail")
+                Result.success(Unit)
+            } catch (e: TimeoutCancellationException) {
+                Result.failure(Exception("Délai d'envoi dépassé. Vérifiez votre connexion Internet."))
+            } catch (e: Exception) {
+                Log.e(TAG, "Erreur sendPasswordResetEmail: ${e.message}", e)
+                Result.failure(Exception(translateFirebaseError(e)))
+            }
         }
     }
 
@@ -449,28 +489,34 @@ object FirebaseAuthService {
         val firebaseAuth = auth
             ?: return Result.failure(Exception("Service Firebase Auth indisponible."))
 
-        return try {
-            val actionCodeSettings = com.google.firebase.auth.ActionCodeSettings.newBuilder()
-                .setUrl("https://sam-traduction.firebaseapp.com")
-                .setHandleCodeInApp(true)
-                .setAndroidPackageName("com.anvil.samai", true, "12")
-                .build()
+        return withContext(Dispatchers.IO) {
+            try {
+                val actionCodeSettings = com.google.firebase.auth.ActionCodeSettings.newBuilder()
+                    .setUrl("https://sam-traduction.firebaseapp.com")
+                    .setHandleCodeInApp(true)
+                    .setAndroidPackageName("com.anvil.samai", true, "12")
+                    .build()
 
-            firebaseAuth.setLanguageCode("fr")
-            firebaseAuth.sendSignInLinkToEmail(cleanEmail, actionCodeSettings).await()
+                firebaseAuth.setLanguageCode("fr")
+                withTimeout(8000L) {
+                    firebaseAuth.sendSignInLinkToEmail(cleanEmail, actionCodeSettings).await()
+                }
 
-            // Sauvegarde locale de l'email et du nom pour vérification lors de l'ouverture du lien
-            val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
-            prefs.edit()
-                .putString("saved_email", cleanEmail)
-                .putString("saved_name", displayName?.trim())
-                .apply()
+                // Sauvegarde locale de l'email et du nom pour vérification lors de l'ouverture du lien
+                val prefs = context.getSharedPreferences("auth_prefs", Context.MODE_PRIVATE)
+                prefs.edit()
+                    .putString("saved_email", cleanEmail)
+                    .putString("saved_name", displayName?.trim())
+                    .apply()
 
-            Log.d(TAG, "Lien de connexion magique Firebase envoyé à $cleanEmail")
-            Result.success("Un e-mail de connexion sécurisé a été envoyé à $cleanEmail. Ouvrez votre boîte de réception et cliquez sur le lien pour vous connecter automatiquement !")
-        } catch (e: Exception) {
-            Log.e(TAG, "Erreur sendSignInLinkToEmail: ${e.message}", e)
-            Result.failure(Exception(translateFirebaseError(e)))
+                Log.d(TAG, "Lien de connexion magique Firebase envoyé à $cleanEmail")
+                Result.success("Un e-mail de connexion sécurisé a été envoyé à $cleanEmail. Ouvrez votre boîte de réception et cliquez sur le lien pour vous connecter automatiquement !")
+            } catch (e: TimeoutCancellationException) {
+                Result.failure(Exception("Délai d'envoi dépassé. Vérifiez votre connexion Internet."))
+            } catch (e: Exception) {
+                Log.e(TAG, "Erreur sendSignInLinkToEmail: ${e.message}", e)
+                Result.failure(Exception(translateFirebaseError(e)))
+            }
         }
     }
 
@@ -500,48 +546,60 @@ object FirebaseAuthService {
             return Result.failure(Exception("Adresse email introuvable pour valider la session. Veuillez réécrire votre adresse email."))
         }
 
-        return try {
-            val authResult = firebaseAuth.signInWithEmailLink(savedEmail, emailLink).await()
-            val user = authResult.user
-                ?: return Result.failure(Exception("Échec de la validation du lien Firebase."))
+        return withContext(Dispatchers.IO) {
+            try {
+                val authResult = withTimeout(9000L) {
+                    firebaseAuth.signInWithEmailLink(savedEmail, emailLink).await()
+                }
+                val user = authResult.user
+                    ?: return@withContext Result.failure(Exception("Échec de la validation du lien Firebase."))
 
-            val uid = user.uid
-            val displayName = user.displayName ?: savedName ?: savedEmail.substringBefore("@")
+                val uid = user.uid
+                val displayName = user.displayName ?: savedName ?: savedEmail.substringBefore("@")
 
-            if (!savedName.isNullOrBlank() && user.displayName.isNullOrBlank()) {
-                try {
-                    val profileUpdates = com.google.firebase.auth.UserProfileChangeRequest.Builder()
-                        .setDisplayName(savedName)
-                        .build()
-                    user.updateProfile(profileUpdates).await()
-                } catch (_: Exception) {}
+                if (!savedName.isNullOrBlank() && user.displayName.isNullOrBlank()) {
+                    try {
+                        val profileUpdates = com.google.firebase.auth.UserProfileChangeRequest.Builder()
+                            .setDisplayName(savedName)
+                            .build()
+                        user.updateProfile(profileUpdates).await()
+                    } catch (_: Exception) {}
+                }
+
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        withTimeout(5000L) {
+                            syncUserToFirestore(
+                                uid = uid,
+                                name = displayName,
+                                email = savedEmail,
+                                photoUrl = user.photoUrl?.toString(),
+                                phoneNumber = user.phoneNumber
+                            )
+                        }
+                    } catch (_: Exception) {}
+                }
+
+                val isSuperAdmin = savedEmail.equals(ADMIN_EMAIL, ignoreCase = true)
+                val profile = UserProfile(
+                    isLoggedIn = true,
+                    userId = uid,
+                    email = savedEmail,
+                    name = displayName,
+                    photoUrl = user.photoUrl?.toString(),
+                    role = if (isSuperAdmin) "admin" else "user",
+                    provider = AuthProvider.EMAIL,
+                    isCloudSynced = true
+                )
+
+                Log.d(TAG, "Connexion par Email Link réussie: $savedEmail ($uid)")
+                Result.success(profile)
+            } catch (e: TimeoutCancellationException) {
+                Result.failure(Exception("Délai de validation du lien dépassé. Vérifiez votre connexion."))
+            } catch (e: Exception) {
+                Log.e(TAG, "Erreur signInWithEmailLink: ${e.message}", e)
+                Result.failure(Exception(e.localizedMessage ?: "Erreur lors de la validation du lien de connexion."))
             }
-
-            syncUserToFirestore(
-                uid = uid,
-                name = displayName,
-                email = savedEmail,
-                photoUrl = user.photoUrl?.toString(),
-                phoneNumber = user.phoneNumber
-            )
-
-            val isSuperAdmin = savedEmail.equals(ADMIN_EMAIL, ignoreCase = true)
-            val profile = UserProfile(
-                isLoggedIn = true,
-                userId = uid,
-                email = savedEmail,
-                name = displayName,
-                photoUrl = user.photoUrl?.toString(),
-                role = if (isSuperAdmin) "admin" else "user",
-                provider = AuthProvider.EMAIL,
-                isCloudSynced = true
-            )
-
-            Log.d(TAG, "Connexion par Email Link réussie: $savedEmail ($uid)")
-            Result.success(profile)
-        } catch (e: Exception) {
-            Log.e(TAG, "Erreur signInWithEmailLink: ${e.message}", e)
-            Result.failure(Exception(e.localizedMessage ?: "Erreur lors de la validation du lien de connexion."))
         }
     }
 

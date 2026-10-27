@@ -121,20 +121,27 @@ class SpeechRecognitionManager(private val context: Context) {
         mainHandler.post {
             try {
                 destroyNativeRecognizer()
+                var silenceRetryCount = 0
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, getLanguageTag(language))
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                    putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 5000L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
+                    putExtra("android.speech.extra.DICTATION_MODE", true)
+                }
+
                 speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
                     setRecognitionListener(object : RecognitionListener {
                         override fun onReadyForSpeech(params: Bundle?) {
                             _state.value = State.Listening
-                            if (_partialText.value.isBlank()) {
-                                _partialText.value = "Parlez maintenant, j'écris en direct..."
-                            }
                         }
 
                         override fun onBeginningOfSpeech() {
                             _state.value = State.Listening
-                            if (_partialText.value.startsWith("Parlez")) {
-                                _partialText.value = ""
-                            }
                         }
 
                         override fun onRmsChanged(rmsdB: Float) {
@@ -150,10 +157,19 @@ class SpeechRecognitionManager(private val context: Context) {
 
                         override fun onError(error: Int) {
                             Log.d(TAG, "SpeechRecognizer notice [code $error]")
-                            val currentText = _partialText.value.trim().takeIf { !it.startsWith("Parlez") }.orEmpty()
+                            val currentText = _partialText.value.trim()
                             if (currentText.isNotBlank()) {
                                 deliverSuccess(currentText)
                                 return
+                            }
+
+                            if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) && silenceRetryCount < 1) {
+                                silenceRetryCount++
+                                Log.d(TAG, "Relance de l'écoute après silence initial")
+                                try {
+                                    startListening(intent)
+                                    return
+                                } catch (_: Exception) {}
                             }
 
                             if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
@@ -161,8 +177,8 @@ class SpeechRecognitionManager(private val context: Context) {
                                 _state.value = State.Error(msg)
                                 activeOnError?.invoke(msg)
                             } else {
-                                // En cas d'erreur de reconnaissance vocale native, bascule silencieuse sur Whisper
-                                Log.w(TAG, "Bascule vers enregistreur audio de secours Whisper")
+                                // En cas d'erreur de reconnaissance vocale native (service indisponible ou permissions), bascule vers Whisper
+                                Log.w(TAG, "Bascule vers enregistreur audio Whisper")
                                 startWhisperRecognition(activeLanguage)
                             }
                         }
@@ -170,7 +186,7 @@ class SpeechRecognitionManager(private val context: Context) {
                         override fun onResults(results: Bundle?) {
                             val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                             val recognized = matches?.firstOrNull()?.trim().orEmpty()
-                            val fallback = _partialText.value.trim().takeIf { !it.startsWith("Parlez") }.orEmpty()
+                            val fallback = _partialText.value.trim()
                             val finalText = if (recognized.isNotBlank()) recognized else fallback
 
                             if (finalText.isNotBlank()) {
@@ -194,14 +210,6 @@ class SpeechRecognitionManager(private val context: Context) {
                     })
                 }
 
-                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, getLanguageTag(language))
-                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-                    putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
-                }
-
                 speechRecognizer?.startListening(intent)
             } catch (e: Exception) {
                 Log.w(TAG, "Échec démarrage SpeechRecognizer, bascule vers Whisper: ${e.message}")
@@ -212,7 +220,7 @@ class SpeechRecognitionManager(private val context: Context) {
 
     private fun startWhisperRecognition(language: String) {
         isUsingNativeRecognizer = false
-        _partialText.value = "Écoute en cours... Parlez clairement."
+        _partialText.value = ""
         
         val audioFile = audioRecorder.startRecording()
         if (audioFile == null) {
@@ -256,7 +264,7 @@ class SpeechRecognitionManager(private val context: Context) {
      */
     fun stopListening(onFinished: ((String) -> Unit)? = null) {
         if (_state.value !is State.Listening) {
-            val existing = _partialText.value.takeIf { !it.startsWith("Parlez") && !it.startsWith("Écoute") }.orEmpty()
+            val existing = _partialText.value.trim()
             onFinished?.invoke(existing)
             return
         }
@@ -267,7 +275,7 @@ class SpeechRecognitionManager(private val context: Context) {
                     speechRecognizer?.stopListening()
                 } catch (_: Exception) {}
             }
-            val current = _partialText.value.takeIf { !it.startsWith("Parlez") && !it.startsWith("Écoute") }.orEmpty()
+            val current = _partialText.value.trim()
             if (current.isNotBlank()) {
                 deliverSuccess(current)
                 onFinished?.invoke(current)

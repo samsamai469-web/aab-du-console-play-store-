@@ -1296,10 +1296,20 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
             }
         }
 
-        Dialog(onDismissRequest = {
-            if (!isEmailLoading) {
-                showEmailAuthDialog = false
+        // Sécurité anti-blocage : garantit que le spinner ne tourne JAMAIS à l'infini
+        LaunchedEffect(isEmailLoading) {
+            if (isEmailLoading) {
+                kotlinx.coroutines.delay(10000L)
+                if (isEmailLoading) {
+                    isEmailLoading = false
+                    errorMessage = "Le serveur Firebase a pris trop de temps à répondre. Vérifiez votre connexion Internet et réessayez."
+                }
             }
+        }
+
+        Dialog(onDismissRequest = {
+            isEmailLoading = false
+            showEmailAuthDialog = false
         }) {
             Surface(
                 shape = RoundedCornerShape(24.dp),
@@ -1742,8 +1752,10 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             TextButton(
-                                enabled = !isEmailLoading,
-                                onClick = { showEmailAuthDialog = false }
+                                onClick = {
+                                    isEmailLoading = false
+                                    showEmailAuthDialog = false
+                                }
                             ) {
                                 Text("Annuler")
                             }
