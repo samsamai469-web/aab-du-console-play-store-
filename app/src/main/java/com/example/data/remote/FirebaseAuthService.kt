@@ -286,17 +286,9 @@ object FirebaseAuthService {
 
             Log.d(TAG, "Inscription réussie avec Google Firebase: $cleanEmail ($uid)")
             Result.success(profile)
-        } catch (e: com.google.firebase.auth.FirebaseAuthWeakPasswordException) {
-            Result.failure(Exception("Le mot de passe est trop court (au moins 6 caractères requis)."))
-        } catch (e: com.google.firebase.auth.FirebaseAuthUserCollisionException) {
-            Result.failure(Exception("Un compte Firebase existe déjà avec cette adresse email. Veuillez vous connecter."))
-        } catch (e: com.google.firebase.auth.FirebaseAuthInvalidCredentialsException) {
-            Result.failure(Exception("L'adresse email saisie est invalide selon Google."))
-        } catch (e: com.google.firebase.FirebaseNetworkException) {
-            Result.failure(Exception("Aucune connexion Internet. Veuillez vérifier votre réseau."))
         } catch (e: Exception) {
             Log.e(TAG, "Erreur registerWithEmail: ${e.message}", e)
-            Result.failure(Exception(e.localizedMessage ?: "Erreur lors de l'inscription avec Firebase."))
+            Result.failure(Exception(translateFirebaseError(e)))
         }
     }
 
@@ -346,15 +338,9 @@ object FirebaseAuthService {
             )
             Log.d(TAG, "Connexion Email validée dans Firebase: $cleanEmail ($uid)")
             Result.success(profile)
-        } catch (e: com.google.firebase.auth.FirebaseAuthInvalidUserException) {
-            Result.failure(Exception("Aucun compte trouvé avec cette adresse email. Avez-vous créé votre compte ?"))
-        } catch (e: com.google.firebase.auth.FirebaseAuthInvalidCredentialsException) {
-            Result.failure(Exception("Mot de passe incorrect ou adresse email invalide."))
-        } catch (e: com.google.firebase.FirebaseNetworkException) {
-            Result.failure(Exception("Aucune connexion Internet. Veuillez vérifier votre réseau."))
         } catch (e: Exception) {
             Log.e(TAG, "Erreur loginWithEmail: ${e.message}", e)
-            Result.failure(Exception(e.localizedMessage ?: "Erreur lors de la connexion avec Firebase."))
+            Result.failure(Exception(translateFirebaseError(e)))
         }
     }
 
@@ -391,11 +377,54 @@ object FirebaseAuthService {
             firebaseAuth.sendPasswordResetEmail(cleanEmail).await()
             Log.d(TAG, "Email officiel de réinitialisation en français envoyé à $cleanEmail")
             Result.success(Unit)
-        } catch (e: com.google.firebase.auth.FirebaseAuthInvalidUserException) {
-            Result.failure(Exception("Aucun compte trouvé avec cet email."))
         } catch (e: Exception) {
             Log.e(TAG, "Erreur sendPasswordResetEmail: ${e.message}", e)
-            Result.failure(Exception(e.localizedMessage ?: "Erreur lors de l'envoi de l'email de réinitialisation."))
+            Result.failure(Exception(translateFirebaseError(e)))
+        }
+    }
+
+    /**
+     * Traduction conviviale en français des exceptions et codes d'erreur Google Firebase
+     */
+    fun translateFirebaseError(e: Throwable?): String {
+        if (e == null) return "Une erreur inattendue est survenue."
+        val msg = e.message ?: ""
+        return when {
+            e is com.google.firebase.auth.FirebaseAuthWeakPasswordException ||
+                    msg.contains("weak-password", ignoreCase = true) ||
+                    msg.contains("Password should be at least", ignoreCase = true) ->
+                "Le mot de passe doit comporter au moins 6 caractères."
+
+            e is com.google.firebase.auth.FirebaseAuthUserCollisionException ||
+                    msg.contains("email-already-in-use", ignoreCase = true) ||
+                    msg.contains("already in use", ignoreCase = true) ->
+                "Un compte existe déjà avec cette adresse e-mail. Veuillez utiliser l'onglet « Se connecter »."
+
+            e is com.google.firebase.auth.FirebaseAuthInvalidUserException ||
+                    msg.contains("user-not-found", ignoreCase = true) ||
+                    msg.contains("no user record", ignoreCase = true) ->
+                "Aucun compte trouvé avec cet e-mail. Veuillez d'abord créer votre compte dans l'onglet « Créer un compte »."
+
+            e is com.google.firebase.auth.FirebaseAuthInvalidCredentialsException ||
+                    msg.contains("wrong-password", ignoreCase = true) ||
+                    msg.contains("invalid-credential", ignoreCase = true) ||
+                    msg.contains("INVALID_LOGIN_CREDENTIALS", ignoreCase = true) ->
+                "Mot de passe incorrect ou adresse email invalide."
+
+            e is com.google.firebase.FirebaseNetworkException ||
+                    msg.contains("network", ignoreCase = true) ||
+                    msg.contains("timeout", ignoreCase = true) ->
+                "Connexion Internet instable ou indisponible. Veuillez vérifier votre réseau."
+
+            msg.contains("operation is not allowed", ignoreCase = true) ||
+                    msg.contains("OPERATION_NOT_ALLOWED", ignoreCase = true) ->
+                "Ce mode de connexion par lien e-mail est désactivé. Veuillez utiliser l'onglet « Créer un compte » avec votre mot de passe."
+
+            msg.contains("too-many-requests", ignoreCase = true) ||
+                    msg.contains("blocked", ignoreCase = true) ->
+                "Trop de tentatives infructueuses. Veuillez patienter un instant avant de réessayer."
+
+            else -> e.localizedMessage ?: "Erreur d'authentification. Veuillez réessayer."
         }
     }
 
@@ -420,7 +449,7 @@ object FirebaseAuthService {
             val actionCodeSettings = com.google.firebase.auth.ActionCodeSettings.newBuilder()
                 .setUrl("https://sam-traduction.firebaseapp.com")
                 .setHandleCodeInApp(true)
-                .setAndroidPackageName("com.aistudio.samai.eltbev", true, "12")
+                .setAndroidPackageName("com.anvil.samai", true, "12")
                 .build()
 
             firebaseAuth.setLanguageCode("fr")
@@ -437,7 +466,7 @@ object FirebaseAuthService {
             Result.success("Un e-mail de connexion sécurisé a été envoyé à $cleanEmail. Ouvrez votre boîte de réception et cliquez sur le lien pour vous connecter automatiquement !")
         } catch (e: Exception) {
             Log.e(TAG, "Erreur sendSignInLinkToEmail: ${e.message}", e)
-            Result.failure(Exception(e.localizedMessage ?: "Erreur lors de l'envoi du lien de connexion."))
+            Result.failure(Exception(translateFirebaseError(e)))
         }
     }
 

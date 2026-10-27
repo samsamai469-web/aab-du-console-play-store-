@@ -40,36 +40,44 @@ class AudioRecorderHelper(private val context: Context) {
         stopRecordingInternal(deleteFile = true)
         startTimeMillis = System.currentTimeMillis()
 
-        // 1. Essai MediaRecorder (AAC .m4a)
-        try {
-            val file = File(context.cacheDir, "speech_rec_${System.currentTimeMillis()}.m4a")
-            val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                MediaRecorder(context)
-            } else {
-                @Suppress("DEPRECATION")
-                MediaRecorder()
-            }
+        // 1. Essai MediaRecorder (AAC .m4a) avec VOICE_RECOGNITION puis MIC standard
+        val sourcesToTry = listOf(
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.MIC
+        )
 
-            recorder.setAudioSource(MediaRecorder.AudioSource.MIC)
-            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            recorder.setAudioEncodingBitRate(128000)
-            recorder.setAudioSamplingRate(44100)
-            recorder.setOutputFile(file.absolutePath)
-            recorder.prepare()
-            recorder.start()
-
-            mediaRecorder = recorder
-            activeAudioFile = file
-            isRecording.set(true)
-            Log.d(TAG, "Enregistrement MediaRecorder AAC démarré")
-            return file
-        } catch (e: Exception) {
-            Log.w(TAG, "MediaRecorder non disponible, bascule sur AudioRecord PCM/WAV: ${e.message}")
+        for (audioSource in sourcesToTry) {
             try {
-                mediaRecorder?.release()
-            } catch (_: Exception) {}
-            mediaRecorder = null
+                val file = File(context.cacheDir, "speech_rec_${System.currentTimeMillis()}.m4a")
+                val recorder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    MediaRecorder(context)
+                } else {
+                    @Suppress("DEPRECATION")
+                    MediaRecorder()
+                }
+
+                recorder.setAudioSource(audioSource)
+                recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+                recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+                recorder.setAudioChannels(1) // Mono optimisé pour la voix
+                recorder.setAudioSamplingRate(16000) // 16kHz optimal pour OpenAI Whisper
+                recorder.setAudioEncodingBitRate(64000)
+                recorder.setOutputFile(file.absolutePath)
+                recorder.prepare()
+                recorder.start()
+
+                mediaRecorder = recorder
+                activeAudioFile = file
+                isRecording.set(true)
+                Log.d(TAG, "Enregistrement MediaRecorder AAC démarré avec source audio $audioSource")
+                return file
+            } catch (e: Exception) {
+                Log.w(TAG, "MediaRecorder source $audioSource échoué: ${e.message}")
+                try {
+                    mediaRecorder?.release()
+                } catch (_: Exception) {}
+                mediaRecorder = null
+            }
         }
 
         // 2. Bascule de repli : AudioRecord vers fichier .wav standard
@@ -171,8 +179,8 @@ class AudioRecorderHelper(private val context: Context) {
         isRecording.set(false)
 
         val elapsed = System.currentTimeMillis() - startTimeMillis
-        if (elapsed < 350) {
-            try { Thread.sleep(350 - elapsed) } catch (_: Exception) {}
+        if (elapsed < 500) {
+            try { Thread.sleep(500 - elapsed) } catch (_: Exception) {}
         }
 
         mediaRecorder?.let { mr ->

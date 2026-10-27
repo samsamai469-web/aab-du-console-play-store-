@@ -1324,7 +1324,7 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                     Spacer(modifier = Modifier.height(10.dp))
 
                     Text(
-                        text = if (isLinkSentStep) "Vérifiez vos e-mails" else if (authTab == 0) "Créer un compte et Se connecter" else "Connexion par mot de passe",
+                        text = if (authTab == 0) "Créer un compte" else "Se connecter",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface,
@@ -1332,7 +1332,7 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                     )
 
                     Text(
-                        text = if (isLinkSentStep) "Un e-mail de confirmation Google Firebase vous attend dans votre boîte de réception" else "Authentification sécurisée officielle Google Firebase",
+                        text = "Authentification officielle Google Firebase",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
@@ -1342,7 +1342,7 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                     Spacer(modifier = Modifier.height(12.dp))
 
                     if (!isLinkSentStep) {
-                        // Onglets : Créer un compte & Se connecter (Lien sécurisé) OU Mot de passe classique
+                        // Onglets : Créer un compte & Se connecter
                         TabRow(
                             selectedTabIndex = authTab,
                             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
@@ -1357,7 +1357,7 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                                 },
                                 text = { 
                                     Text(
-                                        "Créer un compte et Se connecter",
+                                        "Créer un compte",
                                         fontWeight = FontWeight.Bold,
                                         style = MaterialTheme.typography.labelMedium,
                                         textAlign = TextAlign.Center
@@ -1373,7 +1373,7 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                                 },
                                 text = { 
                                     Text(
-                                        "Mot de passe",
+                                        "Se connecter",
                                         fontWeight = FontWeight.Bold,
                                         style = MaterialTheme.typography.labelMedium,
                                         textAlign = TextAlign.Center
@@ -1465,35 +1465,36 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                             }
                         }
 
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        OutlinedTextField(
+                            value = passwordInput,
+                            onValueChange = {
+                                passwordInput = it
+                                errorMessage = null
+                            },
+                            label = { Text(if (authTab == 0) "Créer un mot de passe (min. 6 car.)" else "Mot de passe") },
+                            placeholder = { Text("Au moins 6 caractères") },
+                            leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                            trailingIcon = {
+                                IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                                    Icon(
+                                        if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = "Afficher/Masquer le mot de passe"
+                                    )
+                                }
+                            },
+                            visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                            singleLine = true,
+                            enabled = !isEmailLoading,
+                            keyboardOptions = KeyboardOptions(
+                                keyboardType = KeyboardType.Password,
+                                imeAction = ImeAction.Done
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
                         if (authTab == 1) {
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            OutlinedTextField(
-                                value = passwordInput,
-                                onValueChange = {
-                                    passwordInput = it
-                                    errorMessage = null
-                                },
-                                label = { Text("Mot de passe") },
-                                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                                trailingIcon = {
-                                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                                        Icon(
-                                            if (passwordVisible) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                                            contentDescription = "Afficher/Masquer le mot de passe"
-                                        )
-                                    }
-                                },
-                                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                                singleLine = true,
-                                enabled = !isEmailLoading,
-                                keyboardOptions = KeyboardOptions(
-                                    keyboardType = KeyboardType.Password,
-                                    imeAction = ImeAction.Done
-                                ),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.End,
@@ -1512,7 +1513,8 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                                         viewModel.sendPasswordResetEmail(cleanEmail) { success, msg ->
                                             isEmailLoading = false
                                             if (success) {
-                                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                                infoMessage = "Un e-mail de réinitialisation sécurisé a été expédié à $cleanEmail !"
+                                                Toast.makeText(context, "E-mail de réinitialisation envoyé", Toast.LENGTH_LONG).show()
                                             } else {
                                                 errorMessage = msg
                                             }
@@ -1530,32 +1532,33 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                             Spacer(modifier = Modifier.height(10.dp))
                             Surface(
                                 shape = RoundedCornerShape(12.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
                                 border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
                                 modifier = Modifier.fillMaxWidth()
                             ) {
                                 Row(
                                     modifier = Modifier.padding(12.dp),
-                                    verticalAlignment = Alignment.Top
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Icon(
-                                        Icons.Default.Info,
+                                        Icons.Default.VerifiedUser,
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(20.dp).padding(top = 2.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                     Spacer(modifier = Modifier.width(10.dp))
                                     Column {
                                         Text(
-                                            text = "Un seul lien pour créer & vous connecter",
+                                            text = "Création de compte sécurisée",
                                             style = MaterialTheme.typography.labelMedium,
                                             fontWeight = FontWeight.Bold,
                                             color = MaterialTheme.colorScheme.onSurface
                                         )
                                         Spacer(modifier = Modifier.height(2.dp))
                                         Text(
-                                            text = "Si vous avez déjà un compte, vous retrouverez toutes vos anciennes données et traductions. Si vous êtes nouveau, votre compte sera créé instantanément sans mot de passe !",
+                                            text = "Votre compte sera sauvegardé dans Firebase. Un e-mail officiel de confirmation vous sera envoyé.",
                                             style = MaterialTheme.typography.bodySmall,
+                                            fontSize = 11.sp,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant
                                         )
                                     }
@@ -1757,24 +1760,29 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                                     }
 
                                     if (authTab == 0) {
-                                        // Envoi du lien d'inscription et de connexion officiel Google Firebase
+                                        // Inscription avec mot de passe et synchronisation Cloud Firestore
+                                        if (passwordInput.length < 6) {
+                                            errorMessage = "Le mot de passe doit comporter au moins 6 caractères"
+                                            infoMessage = null
+                                            return@Button
+                                        }
                                         isEmailLoading = true
                                         errorMessage = null
                                         infoMessage = null
                                         val chosenName = nameInput.trim().ifBlank { cleanEmail.substringBefore("@") }
-                                        viewModel.sendSignInLinkToEmail(context, cleanEmail, chosenName) { success, msg ->
+                                        viewModel.registerWithEmail(chosenName, cleanEmail, passwordInput) { success, msg ->
                                             isEmailLoading = false
                                             if (success) {
-                                                isLinkSentStep = true
-                                                infoMessage = msg
+                                                Toast.makeText(context, "Compte créé avec succès ! Bienvenue dans Sam AI.", Toast.LENGTH_LONG).show()
+                                                showEmailAuthDialog = false
                                             } else {
                                                 errorMessage = msg
                                             }
                                         }
                                     } else {
                                         // Connexion avec mot de passe
-                                        if (passwordInput.length < 6) {
-                                            errorMessage = "Le mot de passe doit comporter au moins 6 caractères"
+                                        if (passwordInput.isBlank()) {
+                                            errorMessage = "Veuillez saisir votre mot de passe"
                                             infoMessage = null
                                             return@Button
                                         }
@@ -1794,7 +1802,7 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                                 }
                             ) {
                                 Text(
-                                    text = if (authTab == 0) "Envoyer le lien de confirmation" else "Se connecter",
+                                    text = if (authTab == 0) "Créer mon compte" else "Se connecter",
                                     fontWeight = FontWeight.Bold
                                 )
                             }
