@@ -1,6 +1,13 @@
 package com.example.util
 
 import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.util.Log
 import com.example.data.remote.OpenAiWhisperService
 import kotlinx.coroutines.*
@@ -8,11 +15,14 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
+import java.util.Locale
 
 /**
- * Gestionnaire officiel de reconnaissance vocale utilisant l'API OpenAI Whisper.
- * Assure un enregistrement audio exclusif haute fidélité depuis le microphone de l'appareil
- * sans concurrence de ressources matérielles, garantissant une capture vocale optimale sur tout téléphone.
+ * Gestionnaire intelligent de reconnaissance vocale haute performance :
+ * - Mode streaming en direct ultra-rapide (Google SpeechRecognizer) : écrit mot par mot en temps réel
+ *   pendant que vous parlez ("Ça écrit automatiquement quand tu parles").
+ * - Mode haute précision multilingue (OpenAI Whisper) : activé automatiquement pour les langues nationales
+ *   (Mooré, Dioula, etc.) ou en cas d'indisponibilité du service natif.
  */
 class SpeechRecognitionManager(private val context: Context) {
 
@@ -36,9 +46,13 @@ class SpeechRecognitionManager(private val context: Context) {
     private val audioRecorder = AudioRecorderHelper(context)
     private val whisperService = OpenAiWhisperService(context)
 
+    private val mainHandler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var amplitudeJob: Job? = null
     private var transcriptionJob: Job? = null
+
+    private var speechRecognizer: SpeechRecognizer? = null
+    private var isUsingNativeRecognizer = false
 
     private var activeOnResult: ((String) -> Unit)? = null
     private var activeOnError: ((String) -> Unit)? = null
@@ -48,8 +62,30 @@ class SpeechRecognitionManager(private val context: Context) {
         private const val TAG = "SpeechRecognitionMgr"
     }
 
+    private fun isAfricanLanguage(lang: String): Boolean {
+        val l = lang.trim().lowercase(Locale.ROOT)
+        return l.contains("moor") || l.contains("dioul") || l.contains("dyul") ||
+                l.contains("fulf") || l.contains("gulm") || l.contains("bambara")
+    }
+
+    private fun getLanguageTag(lang: String): String {
+        return when (lang.trim().lowercase(Locale.ROOT)) {
+            "fr", "français", "francais", "french" -> "fr-FR"
+            "en", "anglais", "english" -> "en-US"
+            "es", "espagnol", "spanish" -> "es-ES"
+            "de", "allemand", "german" -> "de-DE"
+            "ar", "arabe", "arabic" -> "ar-SA"
+            "it", "italien", "italian" -> "it-IT"
+            "pt", "portugais", "portuguese" -> "pt-PT"
+            "ru", "russe", "russian" -> "ru-RU"
+            "zh", "chinois", "chinese" -> "zh-CN"
+            "ha", "haoussa", "hausa" -> "ha-NE"
+            else -> "fr-FR"
+        }
+    }
+
     /**
-     * Démarre l'enregistrement audio exclusif pour OpenAI Whisper.
+     * Démarre la reconnaissance vocale avec affichage instantané mot par mot.
      */
     fun startListening(
         language: String = "fr-FR",
@@ -61,33 +97,144 @@ class SpeechRecognitionManager(private val context: Context) {
         activeOnResult = onResult
         activeOnError = onError
         activeLanguage = language
-        _partialText.value = "Écoute en cours... Parlez clairement."
+        _partialText.value = ""
         _soundLevel.value = 0f
         _state.value = State.Listening
 
-        // Démarrage de la capture audio réelle du micro (accès exclusif)
+        val isNativeAvailable = try {
+            SpeechRecognizer.isRecognitionAvailable(context)
+        } catch (_: Exception) {
+            false
+        }
+
+        // Pour les langues nationales (Mooré, Dioula), on privilégie Whisper
+        // Pour les langues standards (Français, Anglais, etc.), Google SpeechRecognizer écrit en temps réel
+        if (isNativeAvailable && !isAfricanLanguage(language)) {
+            startNativeRecognition(language)
+        } else {
+            startWhisperRecognition(language)
+        }
+    }
+
+    private fun startNativeRecognition(language: String) {
+        isUsingNativeRecognizer = true
+        mainHandler.post {
+            try {
+                destroyNativeRecognizer()
+                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                    setRecognitionListener(object : RecognitionListener {
+                        override fun onReadyForSpeech(params: Bundle?) {
+                            _state.value = State.Listening
+                            if (_partialText.value.isBlank()) {
+                                _partialText.value = "Parlez maintenant, j'écris en direct..."
+                            }
+                        }
+
+                        override fun onBeginningOfSpeech() {
+                            _state.value = State.Listening
+                            if (_partialText.value.startsWith("Parlez")) {
+                                _partialText.value = ""
+                            }
+                        }
+
+                        override fun onRmsChanged(rmsdB: Float) {
+                            val normalized = (rmsdB.coerceIn(0f, 10f) / 10f)
+                            _soundLevel.value = normalized
+                        }
+
+                        override fun onBufferReceived(buffer: ByteArray?) {}
+
+                        override fun onEndOfSpeech() {
+                            _soundLevel.value = 0f
+                        }
+
+                        override fun onError(error: Int) {
+                            Log.d(TAG, "SpeechRecognizer notice [code $error]")
+                            val currentText = _partialText.value.trim().takeIf { !it.startsWith("Parlez") }.orEmpty()
+                            if (currentText.isNotBlank()) {
+                                deliverSuccess(currentText)
+                                return
+                            }
+
+                            if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+                                val msg = "Aucune parole détectée. Veuillez parler plus fort."
+                                _state.value = State.Error(msg)
+                                activeOnError?.invoke(msg)
+                            } else {
+                                // En cas d'erreur de reconnaissance vocale native, bascule silencieuse sur Whisper
+                                Log.w(TAG, "Bascule vers enregistreur audio de secours Whisper")
+                                startWhisperRecognition(activeLanguage)
+                            }
+                        }
+
+                        override fun onResults(results: Bundle?) {
+                            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            val recognized = matches?.firstOrNull()?.trim().orEmpty()
+                            val fallback = _partialText.value.trim().takeIf { !it.startsWith("Parlez") }.orEmpty()
+                            val finalText = if (recognized.isNotBlank()) recognized else fallback
+
+                            if (finalText.isNotBlank()) {
+                                deliverSuccess(finalText)
+                            } else {
+                                val err = "Aucune parole détectée."
+                                _state.value = State.Error(err)
+                                activeOnError?.invoke(err)
+                            }
+                        }
+
+                        override fun onPartialResults(partialResults: Bundle?) {
+                            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                            val liveWord = matches?.firstOrNull()?.trim().orEmpty()
+                            if (liveWord.isNotBlank()) {
+                                _partialText.value = liveWord
+                            }
+                        }
+
+                        override fun onEvent(eventType: Int, params: Bundle?) {}
+                    })
+                }
+
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, getLanguageTag(language))
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                    putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+                }
+
+                speechRecognizer?.startListening(intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "Échec démarrage SpeechRecognizer, bascule vers Whisper: ${e.message}")
+                startWhisperRecognition(language)
+            }
+        }
+    }
+
+    private fun startWhisperRecognition(language: String) {
+        isUsingNativeRecognizer = false
+        _partialText.value = "Écoute en cours... Parlez clairement."
+        
         val audioFile = audioRecorder.startRecording()
         if (audioFile == null) {
             val msg = "Impossible d'accéder au microphone de l'appareil."
             _state.value = State.Error(msg)
-            onError(msg)
+            activeOnError?.invoke(msg)
             return
         }
 
-        // Boucle de mesure de l'amplitude pour l'animation des ondes sonores et détection de présence vocale
         amplitudeJob = scope.launch(Dispatchers.Default) {
             var speechDetected = false
             while (isActive && _state.value is State.Listening) {
                 val amp = audioRecorder.getMaxAmplitude()
                 val normalized = (amp / 20000f).coerceIn(0f, 1f)
-                
+
                 if (amp > 1200 && !speechDetected) {
                     speechDetected = true
                     withContext(Dispatchers.Main) {
-                        _partialText.value = "Voix détectée... Transcription en fin d'écoute"
+                        _partialText.value = "Voix détectée... Parlez, la transcription arrive."
                     }
                 }
-                
+
                 withContext(Dispatchers.Main) {
                     _soundLevel.value = normalized
                 }
@@ -96,23 +243,47 @@ class SpeechRecognitionManager(private val context: Context) {
         }
     }
 
+    private fun deliverSuccess(text: String) {
+        val clean = text.trim()
+        _state.value = State.Success(clean)
+        _partialText.value = clean
+        _soundLevel.value = 0f
+        activeOnResult?.invoke(clean)
+    }
+
     /**
-     * Arrête l'écoute et déclenche la transcription via l'API OpenAI Whisper.
+     * Arrête l'écoute et finalise la transcription.
      */
     fun stopListening(onFinished: ((String) -> Unit)? = null) {
         if (_state.value !is State.Listening) {
-            val existing = _partialText.value.takeIf { !it.startsWith("Écoute") && !it.startsWith("Voix") }.orEmpty()
+            val existing = _partialText.value.takeIf { !it.startsWith("Parlez") && !it.startsWith("Écoute") }.orEmpty()
             onFinished?.invoke(existing)
             return
         }
 
+        if (isUsingNativeRecognizer) {
+            mainHandler.post {
+                try {
+                    speechRecognizer?.stopListening()
+                } catch (_: Exception) {}
+            }
+            val current = _partialText.value.takeIf { !it.startsWith("Parlez") && !it.startsWith("Écoute") }.orEmpty()
+            if (current.isNotBlank()) {
+                deliverSuccess(current)
+                onFinished?.invoke(current)
+            }
+        } else {
+            stopWhisperRecognition(onFinished)
+        }
+    }
+
+    private fun stopWhisperRecognition(onFinished: ((String) -> Unit)?) {
         amplitudeJob?.cancel()
         amplitudeJob = null
         _soundLevel.value = 0f
         _state.value = State.Processing
-        _partialText.value = "Transcription OpenAI Whisper en cours..."
+        _partialText.value = "Transcription en cours..."
 
-        // Arrêt de l'enregistrement et récupération du fichier audio
         val audioFile = audioRecorder.stopRecording()
 
         transcriptionJob = scope.launch {
@@ -125,14 +296,11 @@ class SpeechRecognitionManager(private val context: Context) {
                 return@launch
             }
 
-            // Appel officiel OpenAI Whisper API
             val result = whisperService.transcribeAudio(audioFile, activeLanguage)
             result.onSuccess { transcribed ->
                 val clean = transcribed.trim()
                 if (clean.isNotBlank()) {
-                    _state.value = State.Success(clean)
-                    _partialText.value = clean
-                    activeOnResult?.invoke(clean)
+                    deliverSuccess(clean)
                     onFinished?.invoke(clean)
                 } else {
                     val err = "Aucune parole détectée."
@@ -161,6 +329,7 @@ class SpeechRecognitionManager(private val context: Context) {
 
     fun reset() {
         cancelCurrentJobs()
+        destroyNativeRecognizer()
         audioRecorder.cancel()
         _partialText.value = ""
         _soundLevel.value = 0f
@@ -178,6 +347,16 @@ class SpeechRecognitionManager(private val context: Context) {
         amplitudeJob = null
         transcriptionJob?.cancel()
         transcriptionJob = null
+    }
+
+    private fun destroyNativeRecognizer() {
+        mainHandler.post {
+            try {
+                speechRecognizer?.cancel()
+                speechRecognizer?.destroy()
+                speechRecognizer = null
+            } catch (_: Exception) {}
+        }
     }
 
     fun destroy() {

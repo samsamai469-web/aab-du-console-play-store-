@@ -58,13 +58,17 @@ object FirebaseAuthService {
     fun isFirebaseReady(context: Context): Boolean {
         return try {
             if (FirebaseApp.getApps(context).isEmpty()) {
-                val options = com.google.firebase.FirebaseOptions.Builder()
-                    .setProjectId("gen-lang-client-0442582402")
-                    .setApplicationId("1:230538524542:web:cc115b34f3c7c22c1fe52f")
-                    .setApiKey("AIzaSyCG9WwdbhYWnpGxgg3vHEEZfikJp9S5qm0")
-                    .setStorageBucket("gen-lang-client-0442582402.firebasestorage.app")
-                    .build()
-                FirebaseApp.initializeApp(context, options)
+                try {
+                    FirebaseApp.initializeApp(context)
+                } catch (_: Throwable) {
+                    val options = com.google.firebase.FirebaseOptions.Builder()
+                        .setProjectId("sam-traduction")
+                        .setApplicationId("1:438563104660:android:adc0f63c861d666ba45181")
+                        .setApiKey("AIzaSyCM2nqPMvLMYxCjHFlLiVXArBbxv1RtPNk")
+                        .setStorageBucket("sam-traduction.firebasestorage.app")
+                        .build()
+                    FirebaseApp.initializeApp(context, options)
+                }
             }
             auth != null
         } catch (e: Throwable) {
@@ -418,7 +422,7 @@ object FirebaseAuthService {
 
             msg.contains("operation is not allowed", ignoreCase = true) ||
                     msg.contains("OPERATION_NOT_ALLOWED", ignoreCase = true) ->
-                "Ce mode de connexion par lien e-mail est désactivé. Veuillez utiliser l'onglet « Créer un compte » avec votre mot de passe."
+                "L'inscription par e-mail/mot de passe n'est pas encore activée dans la console Firebase (Authentication > Sign-in method > Adresse e-mail/Mot de passe > Activer). Vous pouvez vous connecter immédiatement avec le bouton « Continuer avec Google » !"
 
             msg.contains("too-many-requests", ignoreCase = true) ||
                     msg.contains("blocked", ignoreCase = true) ->
