@@ -63,6 +63,11 @@ class SamAiApplication : Application(), ImageLoaderFactory {
             Log.w("SamAiApplication", "Firebase sync init fallback: ${t.message}")
         }
 
+        // Nettoyage complet du cache d'images pour purger immédiatement tout ancien visuel
+        try {
+            cacheDir.resolve("image_cache").deleteRecursively()
+        } catch (_: Throwable) {}
+
         // 2. Seeding et mise à jour de la base de données en arrière-plan
         CoroutineScope(Dispatchers.IO).launch {
             try {
