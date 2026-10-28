@@ -1289,6 +1289,11 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
         var isEmailLoading by remember { mutableStateOf(false) }
         var infoMessage by remember { mutableStateOf<String?>(null) }
 
+        // S'assure que Firebase est immédiatement prêt avec le contexte de l'application
+        LaunchedEffect(Unit) {
+            com.example.data.remote.FirebaseAuthService.initContext(context)
+        }
+
         // Fermeture automatique du dialogue dès que l'utilisateur est connecté via le lien Gmail
         LaunchedEffect(userProfile.isLoggedIn) {
             if (userProfile.isLoggedIn) {
@@ -1520,7 +1525,7 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                                         }
                                         isEmailLoading = true
                                         errorMessage = null
-                                        viewModel.sendPasswordResetEmail(cleanEmail) { success, msg ->
+                                        viewModel.sendPasswordResetEmail(cleanEmail, context) { success, msg ->
                                             isEmailLoading = false
                                             if (success) {
                                                 infoMessage = "Un e-mail de réinitialisation sécurisé a été expédié à $cleanEmail !"
@@ -1782,7 +1787,7 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                                         errorMessage = null
                                         infoMessage = null
                                         val chosenName = nameInput.trim().ifBlank { cleanEmail.substringBefore("@") }
-                                        viewModel.registerWithEmail(chosenName, cleanEmail, passwordInput) { success, msg ->
+                                        viewModel.registerWithEmail(chosenName, cleanEmail, passwordInput, context) { success, msg ->
                                             isEmailLoading = false
                                             if (success) {
                                                 Toast.makeText(context, "Compte créé avec succès ! Bienvenue dans Sam AI.", Toast.LENGTH_LONG).show()
@@ -1801,7 +1806,7 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                                         isEmailLoading = true
                                         errorMessage = null
                                         infoMessage = null
-                                        viewModel.loginWithEmail(cleanEmail, passwordInput) { success, msg ->
+                                        viewModel.loginWithEmail(cleanEmail, passwordInput, context) { success, msg ->
                                             isEmailLoading = false
                                             if (success) {
                                                 Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()

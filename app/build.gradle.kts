@@ -24,8 +24,8 @@ android {
     applicationId = "com.anvil.samai"
     minSdk = 24
     targetSdk = 36
-    versionCode = 10
-    versionName = "1.0.10"
+    versionCode = 22
+    versionName = "1.0.22"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

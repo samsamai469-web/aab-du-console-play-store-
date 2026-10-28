@@ -83,6 +83,8 @@ fun SamAiGeminiAssistantModal(
 
     var inputText by remember { mutableStateOf(initialQuestion ?: "") }
     var isListeningVoice by remember { mutableStateOf(false) }
+    var showMooreVoiceDialog by remember { mutableStateOf(false) }
+    var showVoiceCallDialog by remember { mutableStateOf(false) }
     var showHistoryDialog by remember { mutableStateOf(false) }
 
     var dialogRootView by remember { mutableStateOf<android.view.View?>(null) }
@@ -266,6 +268,27 @@ fun SamAiGeminiAssistantModal(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
+                            // Bouton Appel vocal direct en continu (style conversation téléphonique)
+                            Surface(
+                                onClick = {
+                                    hideKeyboard()
+                                    showVoiceCallDialog = true
+                                },
+                                shape = CircleShape,
+                                color = Color(0xFF009639),
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .testTag("btn_top_voice_call")
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        Icons.Default.Phone,
+                                        contentDescription = "Appel vocal direct",
+                                        tint = Color.White,
+                                        modifier = Modifier.size(19.dp)
+                                    )
+                                }
+                            }
 
                             // Bouton réinitialiser / effacer la conversation immédiatement
                             IconButton(
@@ -390,6 +413,72 @@ fun SamAiGeminiAssistantModal(
                             .fillMaxWidth()
                             .padding(horizontal = 6.dp, vertical = 4.dp)
                     ) {
+                        // Pilules d'accès direct au dialogue et à l'appel en direct en Mooré
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 6.dp, vertical = 3.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                onClick = {
+                                    hideKeyboard()
+                                    showVoiceCallDialog = true
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                                color = Color(0xFF009639).copy(alpha = 0.15f),
+                                border = BorderStroke(1.dp, Color(0xFF009639).copy(alpha = 0.5f)),
+                                modifier = Modifier.testTag("btn_start_voice_call_pill")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.Phone,
+                                        contentDescription = null,
+                                        tint = Color(0xFF009639),
+                                        modifier = Modifier.size(15.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = "Appel en direct",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = Color(0xFF009639)
+                                    )
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("🇧🇫", fontSize = 11.sp)
+                                }
+                            }
+
+                            Surface(
+                                onClick = {
+                                    hideKeyboard()
+                                    showMooreVoiceDialog = true
+                                },
+                                shape = RoundedCornerShape(16.dp),
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f),
+                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
+                                modifier = Modifier.testTag("btn_moore_voice_chat")
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text("🗣️", fontSize = 12.sp)
+                                    Spacer(modifier = Modifier.width(5.dp))
+                                    Text(
+                                        text = "Dictée Mooré",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Medium,
+                                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                                    )
+                                }
+                            }
+                        }
+
                         // Statut vocal actif
                         if (isListeningVoice) {
                             Surface(
@@ -569,6 +658,42 @@ fun SamAiGeminiAssistantModal(
                 }
             }
         }
+
+        // Dialogue vocal immersif en langue Mooré
+        if (showMooreVoiceDialog) {
+            MooreVoiceDialog(
+                onDismiss = {
+                    speechManager.reset()
+                    showMooreVoiceDialog = false
+                },
+                speechManager = speechManager,
+                ttsManager = ttsManager,
+                onSendQuery = { queryText ->
+                    showMooreVoiceDialog = false
+                    viewModel.askSamAiGemini(
+                        userQuestion = queryText,
+                        isMooreVoice = true,
+                        onReply = { botReply ->
+                            ttsManager.speak(botReply, "mooré")
+                        }
+                    )
+                }
+            )
+        }
+
+        // Mode Appel Vocal Direct et Continu (Style appel téléphonique où deux personnes causent)
+        if (showVoiceCallDialog) {
+            SamAiVoiceCallDialog(
+                onDismiss = {
+                    speechManager.reset()
+                    ttsManager.stop()
+                    showVoiceCallDialog = false
+                },
+                viewModel = viewModel,
+                speechManager = speechManager,
+                ttsManager = ttsManager
+            )
+        }
     }
 }
 
@@ -639,6 +764,28 @@ fun ChatBubbleItem(
                 shadowElevation = if (isLatestResponse && message.id != "welcome_msg") 3.dp else 1.dp
             ) {
                 Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+
+                    if (message.language == "mooré") {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = if (isUser) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.2f) else Color(0xFF009639).copy(alpha = 0.15f),
+                            modifier = Modifier.padding(bottom = 6.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("🇧🇫", fontSize = 10.sp)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(
+                                    text = if (isUser) "Question en Mooré" else "Réponse en Mooré (Gom-biiga)",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isUser) MaterialTheme.colorScheme.onPrimary else Color(0xFF009639)
+                                )
+                            }
+                        }
+                    }
 
                     Text(
                         text = message.text,
@@ -747,12 +894,14 @@ fun ChatBubbleItem(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    val isMooreMsg = message.language == "mooré" || message.text.contains("mooré", ignoreCase = true)
                     Surface(
                         onClick = {
-                            ttsManager.speak(message.text, "Français")
+                            val targetLang = if (isMooreMsg) "mooré" else "Français"
+                            ttsManager.speak(message.text, targetLang)
                         },
                         shape = RoundedCornerShape(8.dp),
-                        color = MaterialTheme.colorScheme.surfaceContainer,
+                        color = if (isMooreMsg) Color(0xFF009639).copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceContainer,
                         modifier = Modifier.height(28.dp)
                     ) {
                         Row(
@@ -762,14 +911,14 @@ fun ChatBubbleItem(
                             Icon(
                                 Icons.AutoMirrored.Filled.VolumeUp,
                                 contentDescription = "Écouter",
-                                tint = MaterialTheme.colorScheme.primary,
+                                tint = if (isMooreMsg) Color(0xFF009639) else MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(15.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = "Écouter",
+                                text = if (isMooreMsg) "Écouter en Mooré 🇧🇫" else "Écouter",
                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
-                                color = MaterialTheme.colorScheme.primary,
+                                color = if (isMooreMsg) Color(0xFF009639) else MaterialTheme.colorScheme.primary,
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
@@ -1342,3 +1491,865 @@ fun ThinkingGeminiIndicator() {
         }
     }
 }
+
+/**
+ * Dialogue interactif dédié pour parler vocalement en Mooré avec SAM AI
+ * et écouter la réponse audio immédiate de l'IA en Mooré authentique.
+ */
+@Composable
+fun MooreVoiceDialog(
+    onDismiss: () -> Unit,
+    speechManager: SpeechRecognitionManager,
+    ttsManager: TtsManager,
+    onSendQuery: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val speechState by speechManager.state.collectAsState()
+    val partialTranscript by speechManager.partialText.collectAsState()
+    val soundLevel by speechManager.soundLevel.collectAsState()
+
+    var isRecording by remember { mutableStateOf(false) }
+    var spokenText by remember { mutableStateOf("") }
+
+    val startRecording = {
+        spokenText = ""
+        isRecording = true
+        speechManager.startListening(
+            language = "Mooré",
+            onResult = { result ->
+                if (result.isNotBlank()) {
+                    spokenText = result
+                }
+                isRecording = false
+            },
+            onError = { err ->
+                isRecording = false
+                Toast.makeText(context, "Micro : $err", Toast.LENGTH_SHORT).show()
+            }
+        )
+    }
+
+    val stopRecording = {
+        isRecording = false
+        speechManager.stopListening { finalResult ->
+            if (finalResult.isNotBlank()) {
+                spokenText = finalResult
+            }
+        }
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            startRecording()
+        } else {
+            Toast.makeText(context, "Permission micro requise pour parler en Mooré", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Démarrage automatique de l'écoute à l'ouverture du dialogue
+    LaunchedEffect(Unit) {
+        val hasPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (hasPermission) {
+            startRecording()
+        } else {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    // Mise à jour continue du texte détecté en temps réel
+    LaunchedEffect(partialTranscript) {
+        if (partialTranscript.isNotBlank() && isRecording) {
+            spokenText = partialTranscript
+        }
+    }
+
+    // Animation du halo sonore
+    val infiniteTransition = rememberInfiniteTransition(label = "pulse")
+    val pulseScale by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.25f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "scale"
+    )
+
+    Dialog(
+        onDismissRequest = {
+            speechManager.reset()
+            onDismiss()
+        },
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .wrapContentHeight()
+                .padding(vertical = 24.dp),
+            shape = RoundedCornerShape(28.dp),
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 6.dp,
+            border = BorderStroke(1.5.dp, Color(0xFF009639).copy(alpha = 0.5f))
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // Barre de titre
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("🇧🇫", fontSize = 22.sp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column {
+                            Text(
+                                text = "SAM AI en Mooré",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Gom-biiga la leokre ne SAM AI",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = Color(0xFF009639)
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = {
+                            speechManager.reset()
+                            onDismiss()
+                        },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Fermer",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Zone centrale : Halo & Visualiseur sonore du micro
+                Box(
+                    modifier = Modifier
+                        .size(130.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (isRecording) {
+                        val dynamicHalo = (1f + (soundLevel * 0.8f)).coerceAtLeast(pulseScale)
+                        Box(
+                            modifier = Modifier
+                                .size((96 * dynamicHalo).dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF009639).copy(alpha = 0.2f))
+                        )
+                        Box(
+                            modifier = Modifier
+                                .size((80 * dynamicHalo * 0.9f).dp)
+                                .clip(CircleShape)
+                                .background(Color(0xFF009639).copy(alpha = 0.35f))
+                        )
+                    }
+
+                    Surface(
+                        onClick = {
+                            if (isRecording) {
+                                stopRecording()
+                            } else {
+                                val hasPermission = ContextCompat.checkSelfPermission(
+                                    context,
+                                    Manifest.permission.RECORD_AUDIO
+                                ) == PackageManager.PERMISSION_GRANTED
+                                if (hasPermission) {
+                                    startRecording()
+                                } else {
+                                    permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                }
+                            }
+                        },
+                        shape = CircleShape,
+                        color = if (isRecording) Color(0xFFD32F2F) else Color(0xFF009639),
+                        modifier = Modifier
+                            .size(72.dp)
+                            .testTag("btn_moore_mic_toggle"),
+                        shadowElevation = 4.dp
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                if (isRecording) Icons.Default.Stop else Icons.Default.Mic,
+                                contentDescription = if (isRecording) "Arrêter" else "Parler",
+                                tint = Color.White,
+                                modifier = Modifier.size(36.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Statut de l'écoute
+                Text(
+                    text = when {
+                        isRecording -> "Écoute active... Gom-y, SAM AI wumdame !"
+                        speechState is SpeechRecognitionManager.State.Processing -> "Transcription de votre voix..."
+                        spokenText.isNotBlank() -> "Parole capturée ! Prêt à envoyer."
+                        else -> "Appuyez sur le micro pour parler en Mooré"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (isRecording) Color(0xFF009639) else MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Zone de transcription affichant ce que l'utilisateur a dit
+                Surface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(min = 72.dp, max = 130.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHighest,
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(12.dp)
+                            .verticalScroll(rememberScrollState()),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        Text(
+                            text = if (spokenText.isNotBlank()) spokenText else "« Gom-y kãsem... Dites par exemple : Ne y beogo, laafi bala ? »",
+                            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                            color = if (spokenText.isNotBlank()) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Suggestions rapides de questions en Mooré
+                Text(
+                    text = "Phrases usuelles en Mooré :",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+
+                val suggestions = listOf(
+                    "Ne y beogo, laafi bala ?" to "Bonjour, comment ça va ?",
+                    "Bôe la SAM AI tõe n maane ?" to "Que peux-tu faire ?",
+                    "Kibare bôe n be rũndã ?" to "Quelles sont les nouvelles ?",
+                    "Yel-mam kibare ne Burkina Faso" to "Parle-moi du Burkina Faso"
+                )
+
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(suggestions) { (moorePhrase, frenchLabel) ->
+                        Surface(
+                            onClick = {
+                                spokenText = moorePhrase
+                                if (isRecording) {
+                                    stopRecording()
+                                }
+                            },
+                            shape = RoundedCornerShape(14.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                            border = BorderStroke(0.8.dp, MaterialTheme.colorScheme.outlineVariant)
+                        ) {
+                            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                                Text(
+                                    text = moorePhrase,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF009639)
+                                )
+                                Text(
+                                    text = frenchLabel,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.sp),
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Boutons d'action
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            speechManager.reset()
+                            onDismiss()
+                        },
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(14.dp)
+                    ) {
+                        Text("Annuler")
+                    }
+
+                    Button(
+                        onClick = {
+                            if (isRecording) {
+                                stopRecording()
+                            }
+                            val textToSend = spokenText.trim()
+                            if (textToSend.isNotBlank()) {
+                                onSendQuery(textToSend)
+                            } else {
+                                Toast.makeText(context, "Veuillez parler ou choisir une phrase", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        modifier = Modifier
+                            .weight(1.5f)
+                            .testTag("btn_moore_send_audio"),
+                        shape = RoundedCornerShape(14.dp),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF009639)),
+                        enabled = spokenText.isNotBlank() || isRecording
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.VolumeUp,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = Color.White
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Envoyer & Écouter 🔊",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * État de l'appel vocal direct en temps réel
+ */
+enum class VoiceCallState {
+    CONNECTING,
+    SAM_SPEAKING,
+    USER_SPEAKING,
+    THINKING
+}
+
+/**
+ * Mode Appel Vocal Direct et Continu (Style appel téléphonique où deux personnes causent).
+ * L'utilisateur parle librement, SAM AI répond à voix haute en Mooré,
+ * puis le micro se réouvre automatiquement en continu sans devoir cliquer à chaque fois.
+ */
+@Composable
+fun SamAiVoiceCallDialog(
+    onDismiss: () -> Unit,
+    viewModel: SamAiViewModel,
+    speechManager: SpeechRecognitionManager,
+    ttsManager: TtsManager
+) {
+    val context = LocalContext.current
+    var callState by remember { mutableStateOf(VoiceCallState.CONNECTING) }
+    var isCallActive by remember { mutableStateOf(true) }
+    var isMicMuted by remember { mutableStateOf(false) }
+    var callDurationSeconds by remember { mutableIntStateOf(0) }
+
+    var lastUserSentence by remember { mutableStateOf("") }
+    var lastAiSentence by remember { mutableStateOf("") }
+
+    val soundLevel by speechManager.soundLevel.collectAsState()
+    val partialTranscript by speechManager.partialText.collectAsState()
+
+    // Chronomètre d'appel (00:00)
+    LaunchedEffect(isCallActive) {
+        while (isCallActive) {
+            kotlinx.coroutines.delay(1000L)
+            callDurationSeconds++
+        }
+    }
+
+    // Réception en temps réel des mots prononcés par l'utilisateur
+    LaunchedEffect(partialTranscript) {
+        if (partialTranscript.isNotBlank() && callState == VoiceCallState.USER_SPEAKING) {
+            lastUserSentence = partialTranscript
+        }
+    }
+
+    // Boucle récursive infinie pour que l'appel continue sans limite de tours
+    fun listenTurn() {
+        if (!isCallActive || isMicMuted) return
+        callState = VoiceCallState.USER_SPEAKING
+        speechManager.startListening(
+            language = "Mooré",
+            continuousMode = true,
+            onResult = { recognizedText ->
+                val clean = recognizedText.trim()
+                if (clean.isNotBlank() && isCallActive) {
+                    lastUserSentence = clean
+                    callState = VoiceCallState.THINKING
+                    viewModel.askSamAiGemini(
+                        userQuestion = clean,
+                        isMooreVoice = true,
+                        onReply = { botReply ->
+                            if (isCallActive) {
+                                lastAiSentence = botReply
+                                callState = VoiceCallState.SAM_SPEAKING
+                                ttsManager.speakWithCallback(
+                                    text = botReply,
+                                    language = "mooré",
+                                    onStart = {
+                                        callState = VoiceCallState.SAM_SPEAKING
+                                    },
+                                    onDone = {
+                                        if (isCallActive && !isMicMuted) {
+                                            speechManager.reset()
+                                            listenTurn()
+                                        }
+                                    },
+                                    onError = {
+                                        if (isCallActive && !isMicMuted) {
+                                            speechManager.reset()
+                                            listenTurn()
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    )
+                } else if (isCallActive && !isMicMuted) {
+                    // Aucune parole captée sur ce créneau : on relance l'écoute automatiquement
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        if (isCallActive && !isMicMuted && callState == VoiceCallState.USER_SPEAKING) {
+                            listenTurn()
+                        }
+                    }, 400L)
+                }
+            },
+            onError = { _ ->
+                if (isCallActive && !isMicMuted) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        if (isCallActive && !isMicMuted && callState == VoiceCallState.USER_SPEAKING) {
+                            listenTurn()
+                        }
+                    }, 500L)
+                }
+            }
+        )
+    }
+
+    val startListeningInCall = rememberUpdatedState { listenTurn() }
+
+    val hangUpCall = {
+        isCallActive = false
+        speechManager.reset()
+        ttsManager.stop()
+        onDismiss()
+    }
+
+    // Gestion de la permission microphone
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            val greeting = "Né i béogo ! Lafi bala ? Mam ya Sam. Boé la mam toé na songo fo rounda ? Gomé, mam oumdamé !"
+            lastAiSentence = greeting
+            callState = VoiceCallState.SAM_SPEAKING
+            ttsManager.speakWithCallback(
+                text = greeting,
+                language = "mooré",
+                onDone = {
+                    if (isCallActive) {
+                        startListeningInCall.value()
+                    }
+                }
+            )
+        } else {
+            Toast.makeText(context, "Permission micro requise pour l'appel", Toast.LENGTH_SHORT).show()
+            hangUpCall()
+        }
+    }
+
+    // Déclenchement automatique dès l'ouverture de l'écran d'appel
+    LaunchedEffect(Unit) {
+        val hasPermission = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+
+        if (hasPermission) {
+            val greeting = "Né i béogo ! Lafi bala ? Mam ya Sam. Boé la mam toé na songo fo rounda ? Gomé, mam oumdamé !"
+            lastAiSentence = greeting
+            callState = VoiceCallState.SAM_SPEAKING
+            ttsManager.speakWithCallback(
+                text = greeting,
+                language = "mooré",
+                onDone = {
+                    if (isCallActive) {
+                        startListeningInCall.value()
+                    }
+                }
+            )
+        } else {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    // Nettoyage impératif à la destruction
+    DisposableEffect(Unit) {
+        onDispose {
+            isCallActive = false
+            speechManager.reset()
+            ttsManager.stop()
+        }
+    }
+
+    // Animations de la sphère vocale 3D
+    val infiniteTransition = rememberInfiniteTransition(label = "callOrbPulse")
+    val pulse1 by infiniteTransition.animateFloat(
+        initialValue = 1f,
+        targetValue = 1.35f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(900, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulse1"
+    )
+
+    Dialog(
+        onDismissRequest = { hangUpCall() },
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = true,
+            dismissOnClickOutside = false
+        )
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            color = Color(0xFF101216) // Fond sombre immersif style appel téléphonique moderne
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .systemBarsPadding()
+                    .padding(horizontal = 20.dp, vertical = 16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.SpaceBetween
+            ) {
+                // ==========================================
+                // 1. EN-TÊTE DE L'APPEL
+                // ==========================================
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(20.dp),
+                        color = Color(0xFF1E222B),
+                        border = BorderStroke(1.dp, Color(0xFF009639).copy(alpha = 0.5f))
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("🇧🇫", fontSize = 14.sp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = "Appel en direct • Mooré (Gom-biiga)",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = "SAM AI",
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color.White
+                    )
+
+                    Spacer(modifier = Modifier.height(6.dp))
+
+                    val minutes = callDurationSeconds / 60
+                    val seconds = callDurationSeconds % 60
+                    Text(
+                        text = String.format("%02d:%02d", minutes, seconds),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+
+                // ==========================================
+                // 2. SPHÈRE VOCALE ANIMÉE ET STATUT
+                // ==========================================
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Box(
+                        modifier = Modifier.size(200.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        when (callState) {
+                            VoiceCallState.SAM_SPEAKING -> {
+                                Box(
+                                    modifier = Modifier
+                                        .size((140 * pulse1).dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF009639).copy(alpha = 0.25f))
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .size((115 * pulse1 * 0.9f).dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFFD32F2F).copy(alpha = 0.35f))
+                                )
+                            }
+                            VoiceCallState.USER_SPEAKING -> {
+                                val dynamicHalo = (1f + (soundLevel * 0.8f)).coerceAtLeast(pulse1 * 0.9f)
+                                Box(
+                                    modifier = Modifier
+                                        .size((140 * dynamicHalo).dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF009639).copy(alpha = 0.3f))
+                                )
+                            }
+                            VoiceCallState.THINKING -> {
+                                Box(
+                                    modifier = Modifier
+                                        .size((130 * pulse1).dp)
+                                        .clip(CircleShape)
+                                        .background(Color(0xFFFFB300).copy(alpha = 0.3f))
+                                )
+                            }
+                            else -> {}
+                        }
+
+                        // Noyau central interactif de la sphère (appui pour valider la parole ou couper SAM AI)
+                        Surface(
+                            onClick = {
+                                when (callState) {
+                                    VoiceCallState.USER_SPEAKING -> {
+                                        speechManager.stopListening()
+                                    }
+                                    VoiceCallState.SAM_SPEAKING -> {
+                                        ttsManager.stop()
+                                        speechManager.reset()
+                                        startListeningInCall.value()
+                                    }
+                                    else -> {}
+                                }
+                            },
+                            shape = CircleShape,
+                            color = when (callState) {
+                                VoiceCallState.SAM_SPEAKING -> Color(0xFF009639)
+                                VoiceCallState.USER_SPEAKING -> Color(0xFF1E88E5)
+                                VoiceCallState.THINKING -> Color(0xFFFFB300)
+                                else -> Color(0xFF263238)
+                            },
+                            modifier = Modifier.size(92.dp),
+                            shadowElevation = 8.dp
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    when (callState) {
+                                        VoiceCallState.SAM_SPEAKING -> Icons.AutoMirrored.Filled.VolumeUp
+                                        VoiceCallState.USER_SPEAKING -> Icons.Default.Mic
+                                        VoiceCallState.THINKING -> Icons.Default.AutoAwesome
+                                        else -> Icons.Default.Phone
+                                    },
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier.size(44.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(18.dp))
+
+                    // Libellé de statut conversationnel
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFF1E222B)
+                    ) {
+                        Text(
+                            text = when (callState) {
+                                VoiceCallState.SAM_SPEAKING -> "🔊 SAM AI vous parle en Mooré..."
+                                VoiceCallState.USER_SPEAKING -> "🎙️ À vous de parler, SAM AI écoute..."
+                                VoiceCallState.THINKING -> "⏳ SAM AI réfléchit..."
+                                VoiceCallState.CONNECTING -> "Connexion de l'appel..."
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = when (callState) {
+                                VoiceCallState.SAM_SPEAKING -> Color(0xFF009639)
+                                VoiceCallState.USER_SPEAKING -> Color(0xFF64B5F6)
+                                VoiceCallState.THINKING -> Color(0xFFFFB300)
+                                else -> Color.White
+                            },
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // ==========================================
+                    // 3. SOUS-TITRES EN DIRECT (Dialogue affiché)
+                    // ==========================================
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 90.dp, max = 150.dp),
+                        shape = RoundedCornerShape(18.dp),
+                        color = Color(0xFF181B22),
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f))
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(14.dp)
+                                .verticalScroll(rememberScrollState()),
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            if (lastUserSentence.isNotBlank()) {
+                                Text(
+                                    text = "Vous : « $lastUserSentence »",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color(0xFF90CAF9),
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                            }
+                            if (lastAiSentence.isNotBlank()) {
+                                Text(
+                                    text = "SAM AI : « $lastAiSentence »",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                            if (lastUserSentence.isBlank() && lastAiSentence.isBlank()) {
+                                Text(
+                                    text = "Parlez naturellement comme dans un appel téléphonique.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Color.White.copy(alpha = 0.5f),
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // ==========================================
+                // 4. COMMANDES DE L'APPEL (En bas)
+                // ==========================================
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 24.dp),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    // Bouton Couper/Activer le micro (Mute)
+                    Surface(
+                        onClick = {
+                            isMicMuted = !isMicMuted
+                            if (isMicMuted) {
+                                speechManager.stopListening()
+                            } else if (callState == VoiceCallState.USER_SPEAKING) {
+                                startListeningInCall.value()
+                            }
+                        },
+                        shape = CircleShape,
+                        color = if (isMicMuted) Color(0xFFD32F2F) else Color(0xFF262C38),
+                        modifier = Modifier.size(56.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                if (isMicMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                                contentDescription = "Micro",
+                                tint = Color.White,
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+                    }
+
+                    // Grand Bouton Rouge de Fin d'appel 🔴
+                    Surface(
+                        onClick = { hangUpCall() },
+                        shape = CircleShape,
+                        color = Color(0xFFE53935),
+                        modifier = Modifier
+                            .size(72.dp)
+                            .testTag("btn_hang_up_call"),
+                        shadowElevation = 8.dp
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.CallEnd,
+                                contentDescription = "Raccrocher",
+                                tint = Color.White,
+                                modifier = Modifier.size(36.dp)
+                            )
+                        }
+                    }
+
+                    // Bouton Interrompre / Reprendre la parole
+                    Surface(
+                        onClick = {
+                            ttsManager.stop()
+                            speechManager.reset()
+                            startListeningInCall.value()
+                        },
+                        shape = CircleShape,
+                        color = Color(0xFF262C38),
+                        modifier = Modifier.size(56.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                Icons.Default.RecordVoiceOver,
+                                contentDescription = "Parler",
+                                tint = Color(0xFF009639),
+                                modifier = Modifier.size(26.dp)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

@@ -13,6 +13,7 @@ data class SamAiChatMessage(
     val isError: Boolean = false,
     val isStreaming: Boolean = false,
     val sources: List<WebSource> = emptyList(),
-    val model: String? = null
+    val model: String? = null,
+    val language: String? = null
 )
 

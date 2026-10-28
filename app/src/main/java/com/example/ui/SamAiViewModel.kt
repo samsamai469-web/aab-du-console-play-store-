@@ -739,6 +739,7 @@ class SamAiViewModel(
     fun loginWithEmail(
         email: String,
         password: String,
+        context: android.content.Context? = null,
         onResult: (Boolean, String) -> Unit
     ) {
         val cleanEmail = email.trim().lowercase()
@@ -751,7 +752,7 @@ class SamAiViewModel(
 
         viewModelScope.launch {
             try {
-                val result = com.example.data.remote.FirebaseAuthService.loginWithEmail(cleanEmail, password)
+                val result = com.example.data.remote.FirebaseAuthService.loginWithEmail(cleanEmail, password, context)
                 if (result.isSuccess) {
                     val profile = result.getOrNull()!!
                     val isSuperAdmin = SecurityUtils.isSuperAdminEmail(cleanEmail)
@@ -862,6 +863,7 @@ class SamAiViewModel(
         name: String,
         email: String,
         password: String,
+        context: android.content.Context? = null,
         onResult: (Boolean, String) -> Unit
     ) {
         val cleanEmail = email.trim().lowercase()
@@ -869,7 +871,7 @@ class SamAiViewModel(
 
         viewModelScope.launch {
             try {
-                val result = com.example.data.remote.FirebaseAuthService.registerWithEmail(cleanEmail, password, cleanName)
+                val result = com.example.data.remote.FirebaseAuthService.registerWithEmail(cleanEmail, password, cleanName, context)
                 if (result.isSuccess) {
                     val profile = result.getOrNull()!!
                     val isSuperAdmin = SecurityUtils.isSuperAdminEmail(cleanEmail)
@@ -903,12 +905,13 @@ class SamAiViewModel(
     fun resendVerificationEmail(
         email: String,
         password: String,
+        context: android.content.Context? = null,
         onResult: (Boolean, String) -> Unit
     ) {
         val cleanEmail = email.trim().lowercase()
         viewModelScope.launch {
             try {
-                val result = com.example.data.remote.FirebaseAuthService.resendVerificationEmail(cleanEmail, password)
+                val result = com.example.data.remote.FirebaseAuthService.resendVerificationEmail(cleanEmail, password, context)
                 if (result.isSuccess) {
                     auditLog("AUTH_VERIFICATION_RESENT", "INFO", "Email de vérification renvoyé à $cleanEmail")
                     onResult(true, "Un nouvel email de confirmation a été envoyé à $cleanEmail. Vérifiez votre boîte Gmail (et dossier spam).")
@@ -924,6 +927,7 @@ class SamAiViewModel(
 
     fun sendPasswordResetEmail(
         email: String,
+        context: android.content.Context? = null,
         onResult: (Boolean, String) -> Unit
     ) {
         val cleanEmail = email.trim().lowercase()
@@ -934,7 +938,7 @@ class SamAiViewModel(
 
         viewModelScope.launch {
             try {
-                val result = com.example.data.remote.FirebaseAuthService.sendPasswordResetEmail(cleanEmail)
+                val result = com.example.data.remote.FirebaseAuthService.sendPasswordResetEmail(cleanEmail, context)
                 if (result.isSuccess) {
                     auditLog("AUTH_PASSWORD_RESET_SENT", "INFO", "Email de réinitialisation envoyé à $cleanEmail")
                     onResult(true, "Un email contenant les instructions de réinitialisation a été envoyé à $cleanEmail.")
@@ -2426,7 +2430,11 @@ class SamAiViewModel(
         }
     }
 
-    fun askSamAiGemini(userQuestion: String) {
+    fun askSamAiGemini(
+        userQuestion: String,
+        isMooreVoice: Boolean = false,
+        onReply: ((String) -> Unit)? = null
+    ) {
         val cleanQuestion = userQuestion.trim()
         if (cleanQuestion.isBlank() || _isSamAiGeminiThinking.value) return
 
@@ -2434,7 +2442,8 @@ class SamAiViewModel(
         val userMsg = SamAiChatMessage(
             sender = "user",
             text = cleanQuestion,
-            timestamp = System.currentTimeMillis()
+            timestamp = System.currentTimeMillis(),
+            language = if (isMooreVoice || cleanQuestion.contains("mooré", ignoreCase = true)) "mooré" else null
         )
         val currentList = if (_samAiChatMessages.value.size == 1 && _samAiChatMessages.value.first().id == "welcome_msg") {
             listOf(userMsg)
@@ -2490,6 +2499,9 @@ RÈGLES D'OR DE COMPORTEMENT :
 5. RÈGLE STRICTE SUR L'IDENTITÉ ET LE CRÉATEUR :
    - Tu ne mentionnes ton créateur (Abdoul Mohamine Sawadogo) que SI et SEULEMENT SI l'utilisateur te demande explicitement qui t'a créé, développé ou conçu (ex: "Qui t'a créé ?", "Qui est ton créateur ?").
    - Dans toutes les autres situations, concentre-toi à 100% sur la question posée par l'utilisateur sans aucune digression sur ton identité.
+6. RÈGLE ABSOLUE POUR LES ÉCHANGES EN MOORÉ :
+   - Si la question est posée en Mooré ou marquée par le mode vocal Mooré, réponds DIRECTEMENT et EXCLUSIVEMENT en langue Mooré (Burkina Faso).
+   - INTERDICTION STRICTE DE S'EXCUSER : Ne dis JAMAIS 'Désolé', 'Pardon', 'Je ne parle pas Mooré' ou 'En tant qu'IA'. Réponds immédiatement en Mooré naturel, chaleureux et bienveillant (ex: Ne y beogo, Laafi bala, Yaa sida, Asoe, etc.).
 """.trimIndent()
 
             val qNorm = userText.lowercase(java.util.Locale.ROOT)
@@ -2596,9 +2608,20 @@ RÈGLES D'OR DE COMPORTEMENT :
             }
 
             // Envoi de la requête à l'API officielle OpenAI avec le contexte d'actualité temps réel
+            val effectiveQuestion = if (isMooreVoice) {
+                "Consigne impérative d'appel téléphonique humain 100% en Mooré :\n" +
+                "1. Tu causes en direct au téléphone avec l'utilisateur comme un vrai ami burkinabè à Ouagadougou.\n" +
+                "2. INTERDICTION STRICTE DU FRANÇAIS ET DE L'ANGLAIS : Ne prononce et n'écris AUCUN mot en français (pas de 'bonjour', 'merci', 'oui', 'non', 'mais', 'parce que', 'd'accord') ni AUCUN mot en anglais (pas de 'ok', 'yes', 'no', 'mp'). Tout doit être à 100% en langue Mooré.\n" +
+                "3. Fais une réponse courte, vivante et spontanée (1 à 2 phrases maximum), sans parenthèses, sans liste et sans jamais t'excuser.\n" +
+                "4. Écris directement en Mooré phonétique oral pur : 'Né i béogô', 'Lafi bala', 'Lafi bémé', 'Kibaré', 'Barka ousgô', 'Ya ssida', 'Ouèndé na kô dô lafi', 'Mame oumdamé', 'songô fô', 'mame pousda' (jamais de 'mp' collé, jamais de 'w', jamais de tiret '-', jamais de 'ʋ', 'ɩ' ou '~').\n" +
+                "Parole de l'utilisateur : $userText"
+            } else {
+                userText
+            }
+
             val openAiResult = openAiBackendService.sendChatMessage(
                 messages = currentHistory,
-                userQuestion = userText,
+                userQuestion = effectiveQuestion,
                 enableWebSearch = liveSources.isNotEmpty(),
                 preferredModel = "",
                 newsContext = liveContextSummary,
@@ -2617,15 +2640,26 @@ RÈGLES D'OR DE COMPORTEMENT :
             }
 
             _isSamAiGeminiThinking.value = false
+            val isMooreResponse = isMooreVoice ||
+                cleanQuestion.contains("mooré", ignoreCase = true) ||
+                cleanQuestion.contains("moore", ignoreCase = true)
+
             val botMsg = SamAiChatMessage(
                 sender = "sam_ai",
                 text = responseText,
                 timestamp = System.currentTimeMillis(),
                 isError = isError,
                 sources = responseSources,
-                model = null
+                model = null,
+                language = if (isMooreResponse) "mooré" else null
             )
             _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+
+            if (!isError && onReply != null) {
+                withContext(Dispatchers.Main) {
+                    onReply(responseText)
+                }
+            }
         }
     }
 

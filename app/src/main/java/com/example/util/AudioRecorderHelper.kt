@@ -5,6 +5,9 @@ import android.content.Context
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.os.Build
 import android.util.Log
 import java.io.File
@@ -14,14 +17,17 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
- * Enregistreur audio résilient pour la reconnaissance vocale OpenAI Whisper.
- * Tente d'abord MediaRecorder (MPEG-4 / AAC .m4a), et bascule automatiquement
- * sur AudioRecord direct (PCM 16kHz .wav) si l'environnement ou l'émulateur le requiert.
+ * Enregistreur audio résilient haute définition pour la reconnaissance vocale OpenAI Whisper (optimisé Mooré).
+ * Tente d'abord MediaRecorder (MPEG-4 / AAC .m4a haute clarté 128 kbps), et bascule automatiquement
+ * sur AudioRecord direct (PCM 16kHz .wav avec suppression de bruit et gain automatique) si requis.
  */
 class AudioRecorderHelper(private val context: Context) {
 
     private var mediaRecorder: MediaRecorder? = null
     private var audioRecord: AudioRecord? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
+    private var automaticGainControl: AutomaticGainControl? = null
+    private var echoCanceler: AcousticEchoCanceler? = null
     private var recordingThread: Thread? = null
     private val isRecording = AtomicBoolean(false)
     private var activeAudioFile: File? = null
@@ -40,9 +46,10 @@ class AudioRecorderHelper(private val context: Context) {
         stopRecordingInternal(deleteFile = true)
         startTimeMillis = System.currentTimeMillis()
 
-        // 1. Essai MediaRecorder (AAC .m4a) avec VOICE_RECOGNITION puis MIC standard
+        // 1. Essai MediaRecorder (AAC .m4a haute fidélité vocale) avec VOICE_RECOGNITION, VOICE_COMMUNICATION puis MIC
         val sourcesToTry = listOf(
             MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             MediaRecorder.AudioSource.MIC
         )
 
@@ -59,9 +66,9 @@ class AudioRecorderHelper(private val context: Context) {
                 recorder.setAudioSource(audioSource)
                 recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                 recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                recorder.setAudioChannels(1) // Mono optimisé pour la voix
-                recorder.setAudioSamplingRate(16000) // 16kHz optimal pour OpenAI Whisper
-                recorder.setAudioEncodingBitRate(64000)
+                recorder.setAudioChannels(1) // Mono dédié à la voix
+                recorder.setAudioSamplingRate(24000) // 24kHz pour capturer finement les voyelles nasales et consonnes du Mooré
+                recorder.setAudioEncodingBitRate(128000) // 128 kbps sans artefacts de compression
                 recorder.setOutputFile(file.absolutePath)
                 recorder.prepare()
                 recorder.start()
@@ -69,7 +76,7 @@ class AudioRecorderHelper(private val context: Context) {
                 mediaRecorder = recorder
                 activeAudioFile = file
                 isRecording.set(true)
-                Log.d(TAG, "Enregistrement MediaRecorder AAC démarré avec source audio $audioSource")
+                Log.d(TAG, "Enregistrement MediaRecorder AAC HD démarré avec source audio $audioSource")
                 return file
             } catch (e: Exception) {
                 Log.w(TAG, "MediaRecorder source $audioSource échoué: ${e.message}")
@@ -80,7 +87,7 @@ class AudioRecorderHelper(private val context: Context) {
             }
         }
 
-        // 2. Bascule de repli : AudioRecord vers fichier .wav standard
+        // 2. Bascule de repli : AudioRecord vers fichier .wav standard avec filtres DSP matériels
         return startPcmWavRecording()
     }
 
@@ -95,7 +102,7 @@ class AudioRecorderHelper(private val context: Context) {
             val bufferSize = maxOf(minBufSize, 4096)
 
             val record = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
                 SAMPLE_RATE,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
@@ -107,6 +114,8 @@ class AudioRecorderHelper(private val context: Context) {
                 return null
             }
 
+            attachHardwareAudioEffects(record.audioSessionId)
+
             val wavFile = File(context.cacheDir, "speech_rec_${System.currentTimeMillis()}.wav")
             record.startRecording()
             audioRecord = record
@@ -116,12 +125,30 @@ class AudioRecorderHelper(private val context: Context) {
             recordingThread = thread(start = true, name = "AudioRecordWavThread") {
                 writeAudioDataToWav(record, wavFile, bufferSize)
             }
-            Log.d(TAG, "Enregistrement AudioRecord WAV démarré")
+            Log.d(TAG, "Enregistrement AudioRecord WAV démarré avec DSP")
             return wavFile
         } catch (e: Exception) {
             Log.e(TAG, "Erreur fatale initialisation AudioRecord: ${e.message}", e)
             return null
         }
+    }
+
+    private fun attachHardwareAudioEffects(audioSessionId: Int) {
+        try {
+            if (NoiseSuppressor.isAvailable()) {
+                noiseSuppressor = NoiseSuppressor.create(audioSessionId)?.apply { enabled = true }
+            }
+        } catch (_: Exception) {}
+        try {
+            if (AutomaticGainControl.isAvailable()) {
+                automaticGainControl = AutomaticGainControl.create(audioSessionId)?.apply { enabled = true }
+            }
+        } catch (_: Exception) {}
+        try {
+            if (AcousticEchoCanceler.isAvailable()) {
+                echoCanceler = AcousticEchoCanceler.create(audioSessionId)?.apply { enabled = true }
+            }
+        } catch (_: Exception) {}
     }
 
     private fun writeAudioDataToWav(record: AudioRecord, outputFile: File, bufferSize: Int) {
@@ -194,6 +221,13 @@ class AudioRecorderHelper(private val context: Context) {
             } catch (_: Exception) {}
             mediaRecorder = null
         }
+
+        try { noiseSuppressor?.release() } catch (_: Exception) {}
+        noiseSuppressor = null
+        try { automaticGainControl?.release() } catch (_: Exception) {}
+        automaticGainControl = null
+        try { echoCanceler?.release() } catch (_: Exception) {}
+        echoCanceler = null
 
         audioRecord?.let { ar ->
             try {

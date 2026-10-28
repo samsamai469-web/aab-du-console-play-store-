@@ -88,7 +88,7 @@ fun VideoQuizScreen(
     val badges by quizEngine.badges.collectAsState()
     val unlockedLevel by quizEngine.unlockedLevel.collectAsState()
 
-    var selectedTab by remember { mutableIntStateOf(0) } // 0: Feed Vidéo, 1: Explorer, 2: Défi du Jour, 3: Le Ditanyè en Moore, 4: Classement, 5: Profil, 6: Figures
+    var selectedTab by remember { mutableIntStateOf(0) } // 0: Feed Vidéo, 1: Explorer, 2: Défi du Jour, 3: Le Ditanyè, 4: Classement, 5: Profil, 6: Figures
     var currentFeedIndex by remember { mutableIntStateOf(0) }
     var showCommentsSheet by remember { mutableStateOf(false) }
     var selectedCategoryFilter by remember { mutableStateOf<String?>(null) }
@@ -321,7 +321,7 @@ fun VideoQuizScreen(
                         ttsManager.stop()
                         selectedTab = 3
                     },
-                    icon = { Icon(Icons.Default.MusicVideo, contentDescription = "Le Ditanyè en Moore") },
+                    icon = { Icon(Icons.Default.MusicVideo, contentDescription = "Le Ditanyè") },
                     label = { Text("Ditanyè", style = MaterialTheme.typography.labelSmall) }
                 )
                 NavigationBarItem(
@@ -525,9 +525,9 @@ fun VideoQuizScreen(
                     )
                 }
 
-                // 4. Le Ditanyè en Mooré (Hymne National Vidéo Plein Écran)
+                // 4. Le Ditanyè Authentique (Hymne National du Burkina Faso)
                 3 -> {
-                    DitanyeMooreVideoView(
+                    DitanyeAuthentiqueView(
                         ttsManager = ttsManager,
                         onBack = { selectedTab = 0 }
                     )
@@ -1198,18 +1198,18 @@ fun DailyChallengeView(
 }
 
 @Composable
-fun DitanyeMooreVideoView(
+fun DitanyeAuthentiqueView(
     ttsManager: TtsManager? = null,
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(false) }
     var currentPosition by remember { mutableIntStateOf(0) }
-    var totalDuration by remember { mutableIntStateOf(107) } // 107s
+    var totalDuration by remember { mutableIntStateOf(107) }
     var showControls by remember { mutableStateOf(true) }
     var videoViewInstance by remember { mutableStateOf<VideoView?>(null) }
 
-    // Mise à jour de la timeline de lecture
+    // Mise à jour continue de la progression
     LaunchedEffect(isPlaying, videoViewInstance) {
         while (true) {
             if (isPlaying && videoViewInstance != null) {
@@ -1222,7 +1222,7 @@ fun DitanyeMooreVideoView(
         }
     }
 
-    // Masquage automatique des contrôles après 4 secondes si la vidéo joue
+    // Masquage temporisé des contrôles si la vidéo est en cours de lecture
     LaunchedEffect(showControls, isPlaying) {
         if (showControls && isPlaying) {
             delay(4000)
@@ -1238,12 +1238,12 @@ fun DitanyeMooreVideoView(
                 showControls = !showControls
             }
     ) {
-        // Lecteur Vidéo Plein Écran
+        // Lecteur Vidéo Plein Écran Unique (Remplacement total de la page)
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 VideoView(ctx).apply {
-                    val targetUri = Uri.parse("android.resource://${ctx.packageName}/${R.raw.le_ditanye_en_moore_1}")
+                    val targetUri = Uri.parse("android.resource://${ctx.packageName}/${R.raw.le_ditanye}")
                     setVideoURI(targetUri)
                     setOnPreparedListener { mp ->
                         mp.isLooping = true
@@ -1262,77 +1262,35 @@ fun DitanyeMooreVideoView(
             }
         )
 
-        // Overlay En-tête (Retour + Titre Ditanyè)
+        // En-tête : Bouton Retour
         AnimatedVisibility(
             visible = showControls,
             enter = fadeIn(),
             exit = fadeOut(),
-            modifier = Modifier.align(Alignment.TopCenter)
+            modifier = Modifier.align(Alignment.TopStart)
         ) {
-            Box(
+            IconButton(
+                onClick = onBack,
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        androidx.compose.ui.graphics.Brush.verticalGradient(
-                            colors = listOf(Color.Black.copy(alpha = 0.85f), Color.Transparent)
-                        )
-                    )
-                    .padding(horizontal = 16.dp, vertical = 24.dp)
+                    .padding(start = 16.dp, top = 20.dp)
+                    .size(46.dp)
+                    .background(Color.Black.copy(alpha = 0.55f), CircleShape)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(
-                            onClick = onBack,
-                            modifier = Modifier
-                                .size(42.dp)
-                                .background(Color.Black.copy(alpha = 0.5f), CircleShape)
-                        ) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Retour", tint = Color.White)
-                        }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = "Le Ditanyè en Moore 🇧🇫",
-                                style = MaterialTheme.typography.titleLarge,
-                                fontWeight = FontWeight.Black,
-                                color = Color.White
-                            )
-                            Text(
-                                text = "Hymne National du Burkina Faso",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Color.White.copy(alpha = 0.8f)
-                            )
-                        }
-                    }
-
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFF15803D),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFCD116))
-                    ) {
-                        Text(
-                            text = "OFFICIEL",
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 10.sp
-                        )
-                    }
-                }
+                Icon(
+                    Icons.Default.ArrowBack,
+                    contentDescription = "Retour",
+                    tint = Color.White
+                )
             }
         }
 
-        // Bouton Central Play/Pause tactile si en pause
+        // Bouton central Play si en pause
         if (!isPlaying) {
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    .size(72.dp)
-                    .background(Color.Black.copy(alpha = 0.6f), CircleShape)
+                    .size(76.dp)
+                    .background(Color.Black.copy(alpha = 0.65f), CircleShape)
                     .clickable {
                         videoViewInstance?.start()
                         isPlaying = true
@@ -1341,14 +1299,14 @@ fun DitanyeMooreVideoView(
             ) {
                 Icon(
                     Icons.Default.PlayArrow,
-                    contentDescription = "Lecture",
+                    contentDescription = "Lire la vidéo",
                     tint = Color(0xFFFCD116),
-                    modifier = Modifier.size(48.dp)
+                    modifier = Modifier.size(52.dp)
                 )
             }
         }
 
-        // Overlay Contrôles Bas de Page (Timeline, Play/Pause, Recommencer)
+        // Contrôles en bas : Slider de timeline, Play/Pause, Replay et Temps
         AnimatedVisibility(
             visible = showControls,
             enter = fadeIn(),
@@ -1359,14 +1317,13 @@ fun DitanyeMooreVideoView(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(
-                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                        Brush.verticalGradient(
                             colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.9f))
                         )
                     )
                     .padding(horizontal = 16.dp, vertical = 20.dp)
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    // Slider de progression
                     Slider(
                         value = if (totalDuration > 0) currentPosition.toFloat() / totalDuration.toFloat() else 0f,
                         onValueChange = { frac ->
@@ -1386,7 +1343,6 @@ fun DitanyeMooreVideoView(
 
                     Spacer(modifier = Modifier.height(4.dp))
 
-                    // Contrôles Play / Pause / Replay / Time
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -1434,7 +1390,6 @@ fun DitanyeMooreVideoView(
                             }
                         }
 
-                        // Indicateur de temps
                         Text(
                             text = "${currentPosition / 60}:${(currentPosition % 60).toString().padStart(2, '0')} / ${totalDuration / 60}:${(totalDuration % 60).toString().padStart(2, '0')}",
                             style = MaterialTheme.typography.titleMedium,

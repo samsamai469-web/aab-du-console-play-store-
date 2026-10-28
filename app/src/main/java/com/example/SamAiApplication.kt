@@ -58,7 +58,7 @@ class SamAiApplication : Application(), ImageLoaderFactory {
 
         // 1. Initialiser Firebase de façon synchrone avant toute coroutine
         try {
-            com.example.data.remote.FirebaseAuthService.isFirebaseReady(this)
+            com.example.data.remote.FirebaseAuthService.initContext(this)
         } catch (t: Throwable) {
             Log.w("SamAiApplication", "Firebase sync init fallback: ${t.message}")
         }

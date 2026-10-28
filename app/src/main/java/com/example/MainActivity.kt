@@ -122,6 +122,11 @@ class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     
+    // Initialisation immédiate du contexte Firebase Auth
+    try {
+      com.example.data.remote.FirebaseAuthService.initContext(this)
+    } catch (_: Throwable) {}
+
     // 1. Initialisation système EdgeToEdge sécurisée
     try {
       enableEdgeToEdge()

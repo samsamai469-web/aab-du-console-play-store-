@@ -35,48 +35,109 @@ object FirebaseAuthService {
     private const val USERS_COLLECTION = "users"
     const val ADMIN_EMAIL = "samsamai469@gmail.com"
 
+    @Volatile
+    private var appContext: Context? = null
+
+    fun getExplicitFirebaseOptions(): com.google.firebase.FirebaseOptions {
+        return com.google.firebase.FirebaseOptions.Builder()
+            .setProjectId("sam-traduction")
+            .setApplicationId("1:438563104660:android:adc0f63c861d666ba45181")
+            .setApiKey("AIzaSyCM2nqPMvLMYxCjHFlLiVXArBbxv1RtPNk")
+            .setStorageBucket("sam-traduction.firebasestorage.app")
+            .setGcmSenderId("438563104660")
+            .build()
+    }
+
+    fun initContext(context: Context) {
+        val targetCtx = context.applicationContext ?: context
+        appContext = targetCtx
+        ensureInitialized(targetCtx)
+    }
+
+    fun ensureInitialized(context: Context): Boolean {
+        val targetCtx = context.applicationContext ?: context
+        appContext = targetCtx
+        synchronized(this) {
+            try {
+                val apps = FirebaseApp.getApps(targetCtx)
+                if (apps.isEmpty()) {
+                    val defaultApp = try {
+                        FirebaseApp.initializeApp(targetCtx)
+                    } catch (_: Throwable) {
+                        null
+                    }
+                    if (defaultApp == null || FirebaseApp.getApps(targetCtx).isEmpty()) {
+                        FirebaseApp.initializeApp(targetCtx, getExplicitFirebaseOptions())
+                    }
+                } else {
+                    // Vérifier si l'instance [DEFAULT] possède les clés valides
+                    try {
+                        val currentApp = FirebaseApp.getInstance()
+                        if (currentApp.options.apiKey.isNullOrBlank() || currentApp.options.applicationId.isNullOrBlank()) {
+                            currentApp.delete()
+                            FirebaseApp.initializeApp(targetCtx, getExplicitFirebaseOptions())
+                        }
+                    } catch (_: Exception) {
+                        try {
+                            FirebaseApp.initializeApp(targetCtx, getExplicitFirebaseOptions())
+                        } catch (_: Exception) {}
+                    }
+                }
+                FirebaseAuth.getInstance()
+                return true
+            } catch (e: Exception) {
+                Log.w(TAG, "Tentative de récupération Firebase: ${e.message}")
+                return try {
+                    FirebaseApp.initializeApp(targetCtx, getExplicitFirebaseOptions())
+                    FirebaseAuth.getInstance()
+                    true
+                } catch (e2: Exception) {
+                    Log.e(TAG, "Échec définitif init Firebase: ${e2.message}", e2)
+                    false
+                }
+            }
+        }
+    }
+
     private val auth: FirebaseAuth?
-        get() = try {
-            FirebaseAuth.getInstance()
-        } catch (e: Exception) {
-            Log.w(TAG, "Firebase non initialisé: ${e.message}")
-            null
+        get() {
+            try {
+                return FirebaseAuth.getInstance()
+            } catch (_: Exception) {}
+
+            appContext?.let { ctx ->
+                ensureInitialized(ctx)
+                try {
+                    return FirebaseAuth.getInstance()
+                } catch (e: Exception) {
+                    Log.e(TAG, "FirebaseAuth non disponible: ${e.message}")
+                }
+            }
+            return null
         }
 
     private val firestore: FirebaseFirestore?
-        get() = try {
-            FirebaseFirestore.getInstance()
-        } catch (e: Exception) {
-            Log.w(TAG, "Firestore non initialisé: ${e.message}")
-            null
+        get() {
+            try {
+                return FirebaseFirestore.getInstance()
+            } catch (_: Exception) {}
+
+            appContext?.let { ctx ->
+                ensureInitialized(ctx)
+                try {
+                    return FirebaseFirestore.getInstance()
+                } catch (e: Exception) {
+                    Log.e(TAG, "FirebaseFirestore non disponible: ${e.message}")
+                }
+            }
+            return null
         }
 
     val currentFirebaseUser: FirebaseUser?
         get() = auth?.currentUser
 
-    /**
-     * Vérifie si Firebase est initialisé dans l'application
-     */
     fun isFirebaseReady(context: Context): Boolean {
-        return try {
-            if (FirebaseApp.getApps(context).isEmpty()) {
-                try {
-                    FirebaseApp.initializeApp(context)
-                } catch (_: Throwable) {
-                    val options = com.google.firebase.FirebaseOptions.Builder()
-                        .setProjectId("sam-traduction")
-                        .setApplicationId("1:438563104660:android:adc0f63c861d666ba45181")
-                        .setApiKey("AIzaSyCM2nqPMvLMYxCjHFlLiVXArBbxv1RtPNk")
-                        .setStorageBucket("sam-traduction.firebasestorage.app")
-                        .build()
-                    FirebaseApp.initializeApp(context, options)
-                }
-            }
-            auth != null
-        } catch (e: Throwable) {
-            Log.w(TAG, "Vérification Firebase échouée: ${e.message}")
-            false
-        }
+        return ensureInitialized(context)
     }
 
     /**
@@ -229,7 +290,8 @@ object FirebaseAuthService {
     suspend fun registerWithEmail(
         email: String,
         password: String,
-        displayName: String
+        displayName: String = "",
+        context: Context? = null
     ): Result<UserProfile> {
         val cleanEmail = email.trim().lowercase()
         val validationError = validateEmailWithGoogleRules(cleanEmail)
@@ -237,8 +299,11 @@ object FirebaseAuthService {
             return Result.failure(Exception(validationError))
         }
 
-        val firebaseAuth = auth
-            ?: return Result.failure(Exception("Service Firebase Auth indisponible."))
+        context?.let { initContext(it) }
+        val firebaseAuth = auth ?: run {
+            context?.let { ensureInitialized(it) }
+            auth
+        } ?: return Result.failure(Exception("Service Firebase Auth indisponible."))
         val cleanName = displayName.trim().ifBlank { cleanEmail.substringBefore("@") }
 
         return withContext(Dispatchers.IO) {
@@ -312,7 +377,8 @@ object FirebaseAuthService {
      */
     suspend fun loginWithEmail(
         email: String,
-        password: String
+        password: String,
+        context: Context? = null
     ): Result<UserProfile> {
         val cleanEmail = email.trim().lowercase()
         val validationError = validateEmailWithGoogleRules(cleanEmail)
@@ -320,8 +386,11 @@ object FirebaseAuthService {
             return Result.failure(Exception(validationError))
         }
 
-        val firebaseAuth = auth
-            ?: return Result.failure(Exception("Service Firebase Auth indisponible."))
+        context?.let { initContext(it) }
+        val firebaseAuth = auth ?: run {
+            context?.let { ensureInitialized(it) }
+            auth
+        } ?: return Result.failure(Exception("Service Firebase Auth indisponible."))
 
         return withContext(Dispatchers.IO) {
             try {
@@ -377,9 +446,16 @@ object FirebaseAuthService {
     /**
      * Renvoie un email de vérification d'adresse Google
      */
-    suspend fun resendVerificationEmail(email: String, password: String): Result<Unit> {
-        val firebaseAuth = auth
-            ?: return Result.failure(Exception("Service Firebase Auth indisponible."))
+    suspend fun resendVerificationEmail(
+        email: String,
+        password: String,
+        context: Context? = null
+    ): Result<Unit> {
+        context?.let { initContext(it) }
+        val firebaseAuth = auth ?: run {
+            context?.let { ensureInitialized(it) }
+            auth
+        } ?: return Result.failure(Exception("Service Firebase Auth indisponible."))
         val cleanEmail = email.trim().lowercase()
 
         return withContext(Dispatchers.IO) {
@@ -405,9 +481,15 @@ object FirebaseAuthService {
     /**
      * Envoie un email de réinitialisation de mot de passe via Firebase
      */
-    suspend fun sendPasswordResetEmail(email: String): Result<Unit> {
-        val firebaseAuth = auth
-            ?: return Result.failure(Exception("Service Firebase Auth indisponible."))
+    suspend fun sendPasswordResetEmail(
+        email: String,
+        context: Context? = null
+    ): Result<Unit> {
+        context?.let { initContext(it) }
+        val firebaseAuth = auth ?: run {
+            context?.let { ensureInitialized(it) }
+            auth
+        } ?: return Result.failure(Exception("Service Firebase Auth indisponible."))
         val cleanEmail = email.trim().lowercase()
 
         return withContext(Dispatchers.IO) {
