@@ -2590,42 +2590,34 @@ RÈGLES D'OR DE COMPORTEMENT :
                 )
             }
 
-            // Classification de la requête pour détecter le besoin d'actualités récentes (Faso ou Monde)
-            val searchDecision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
+            // Classification de la requête pour détecter le besoin d'actualités récentes (sauf en appel vocal Mooré direct pour garder une latence minimale)
             var liveContextSummary = ""
             var liveSources = emptyList<com.example.data.local.WebSource>()
 
-            if (searchDecision.isSearchNeeded || searchDecision.level != com.example.util.SearchNeedLevel.NONE) {
-                try {
-                    val newsResult = liveNewsFeedService.fetchLiveNews(searchDecision.cleanSearchQuery.ifBlank { userText })
-                    if (newsResult.hasNews) {
-                        liveContextSummary = newsResult.contextSummary
-                        liveSources = newsResult.sources
+            if (!isMooreVoice) {
+                val searchDecision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
+                if (searchDecision.isSearchNeeded || searchDecision.level != com.example.util.SearchNeedLevel.NONE) {
+                    try {
+                        val newsResult = liveNewsFeedService.fetchLiveNews(searchDecision.cleanSearchQuery.ifBlank { userText })
+                        if (newsResult.hasNews) {
+                            liveContextSummary = newsResult.contextSummary
+                            liveSources = newsResult.sources
+                        }
+                    } catch (e: Throwable) {
+                        android.util.Log.w("SamAiViewModel", "Notice actualités en direct: ${e.message}")
                     }
-                } catch (e: Throwable) {
-                    android.util.Log.w("SamAiViewModel", "Notice actualités en direct: ${e.message}")
                 }
             }
 
-            // Envoi de la requête à l'API officielle OpenAI avec le contexte d'actualité temps réel
-            val effectiveQuestion = if (isMooreVoice) {
-                "Consigne impérative d'appel téléphonique humain 100% en Mooré :\n" +
-                "1. Tu causes en direct au téléphone avec l'utilisateur comme un vrai ami burkinabè à Ouagadougou.\n" +
-                "2. INTERDICTION STRICTE DU FRANÇAIS ET DE L'ANGLAIS : Ne prononce et n'écris AUCUN mot en français (pas de 'bonjour', 'merci', 'oui', 'non', 'mais', 'parce que', 'd'accord') ni AUCUN mot en anglais (pas de 'ok', 'yes', 'no', 'mp'). Tout doit être à 100% en langue Mooré.\n" +
-                "3. Fais une réponse courte, vivante et spontanée (1 à 2 phrases maximum), sans parenthèses, sans liste et sans jamais t'excuser.\n" +
-                "4. Écris directement en Mooré phonétique oral pur : 'Né i béogô', 'Lafi bala', 'Lafi bémé', 'Kibaré', 'Barka ousgô', 'Ya ssida', 'Ouèndé na kô dô lafi', 'Mame oumdamé', 'songô fô', 'mame pousda' (jamais de 'mp' collé, jamais de 'w', jamais de tiret '-', jamais de 'ʋ', 'ɩ' ou '~').\n" +
-                "Parole de l'utilisateur : $userText"
-            } else {
-                userText
-            }
-
+            // Envoi direct à l'API OpenAI avec mode Mooré dédié si applicable
             val openAiResult = openAiBackendService.sendChatMessage(
                 messages = currentHistory,
-                userQuestion = effectiveQuestion,
+                userQuestion = userText,
                 enableWebSearch = liveSources.isNotEmpty(),
-                preferredModel = "",
+                preferredModel = if (isMooreVoice) "gpt-4o-mini" else "",
                 newsContext = liveContextSummary,
-                sources = liveSources
+                sources = liveSources,
+                isMooreVoice = isMooreVoice
             )
 
             var responseText = openAiResult.text

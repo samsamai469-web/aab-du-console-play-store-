@@ -10,7 +10,8 @@ object LanguageDetector {
         val clean = text.trim()
         if (clean.isBlank()) return "Français"
 
-        val lower = clean.lowercase()
+        val deprolonged = DictionaryLookupEngine.normalizeMooreProlongations(clean)
+        val lower = deprolonged.lowercase()
 
         // 1. Specific Phonetic Mooré characters (100% confidence)
         if (lower.any { it in listOf('~', 'ɛ', 'ɩ', 'ʋ', 'ã', 'ẽ', 'ĩ', 'õ', 'ũ') }) {
@@ -38,12 +39,17 @@ object LanguageDetector {
             return "Haoussa"
         }
 
-        // 4. Mooré specific grammatical keywords & numbers
+        // 4. Mooré specific grammatical keywords, greetings & 50 audio lessons
         val mooreKeywords = listOf(
-            "ne yibeogo", "nii yi beogo", "ne yibeoogo", "yibeoogo", "nii windga", "nii zabre",
-            "laafi", "ya sonma", "m data ligdi", "ligdi", "m nan gounsam", "m debda", "zakin",
-            "weefo", "foūgou", "fougou", "rawa", "paga", "biiga", "zaame", "zâamé", "zaamê",
-            "beoogo", "dũndã", "tõndo", "yãmba", "bãmba", "koabga", "tusri", "pisi",
+            "ne yibeogo", "nii yi beogo", "yibeo kibare", "ne yibeoogo", "yibeoogo",
+            "nii windga", "windga kibare", "nii zabre", "zabre kibare", "niyungo", "yungo kibare",
+            "wind da ganeg laafi", "neewôgô", "laafi", "ya sonma", "kibaré", "kibare",
+            "nindaaré", "nindaare", "wënd-na kô-d nindaare", "zom-kom", "sên na be",
+            "m data ligdi", "ligdi", "m nan gounsam", "m debda", "zakin",
+            "nikieman", "poug yaanga", "poug sada", "kakouada", "tandaogo", "m'ma", "m'baaba",
+            "weefo", "foūgou", "fougou", "rawa", "paga", "biiga", "raaga",
+            "monteur", "monbile", "pnous", "nanwoudre", "moncoroni", "son kaam", "bidou", "mougne", "beinga", "touayga", "banga", "yagre",
+            "zaame", "zâamé", "zaamê", "beoogo", "dũndã", "tõndo", "yãmba", "bãmba", "koabga", "tusri", "pisi",
             "pis-naase", "pis-nu", "pis-yoobe", "pis-yopoe", "pis-nii", "pis-wai",
             "a yiibu", "a tãabo", "a naase", "a nu", "a yoobe", "a yopoe", "a nii", "a wai",
             "piiga", "yembre", "zaalem", "wusgo", "masã", "roogo", "koom", "nemdo"

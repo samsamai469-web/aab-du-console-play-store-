@@ -46,7 +46,14 @@ class AudioRecorderHelper(private val context: Context) {
         stopRecordingInternal(deleteFile = true)
         startTimeMillis = System.currentTimeMillis()
 
-        // 1. Essai MediaRecorder (AAC .m4a haute fidélité vocale) avec VOICE_RECOGNITION, VOICE_COMMUNICATION puis MIC
+        // 1. Priorité absolue : Enregistrement PCM WAV 16kHz sans perte avec DSP matériel (NoiseSuppressor + Gain Auto)
+        // Aucun délai d'encodeur AAC au démarrage (ne coupe jamais la 1re syllabe "Ne y...") et fidélité maximale pour le Mooré
+        val wavFile = startPcmWavRecording()
+        if (wavFile != null) {
+            return wavFile
+        }
+
+        // 2. Repli : MediaRecorder (AAC .m4a)
         val sourcesToTry = listOf(
             MediaRecorder.AudioSource.VOICE_RECOGNITION,
             MediaRecorder.AudioSource.VOICE_COMMUNICATION,
@@ -66,9 +73,9 @@ class AudioRecorderHelper(private val context: Context) {
                 recorder.setAudioSource(audioSource)
                 recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
                 recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                recorder.setAudioChannels(1) // Mono dédié à la voix
-                recorder.setAudioSamplingRate(24000) // 24kHz pour capturer finement les voyelles nasales et consonnes du Mooré
-                recorder.setAudioEncodingBitRate(128000) // 128 kbps sans artefacts de compression
+                recorder.setAudioChannels(1)
+                recorder.setAudioSamplingRate(16000)
+                recorder.setAudioEncodingBitRate(64000)
                 recorder.setOutputFile(file.absolutePath)
                 recorder.prepare()
                 recorder.start()
@@ -76,7 +83,7 @@ class AudioRecorderHelper(private val context: Context) {
                 mediaRecorder = recorder
                 activeAudioFile = file
                 isRecording.set(true)
-                Log.d(TAG, "Enregistrement MediaRecorder AAC HD démarré avec source audio $audioSource")
+                Log.d(TAG, "Enregistrement MediaRecorder AAC démarré avec source audio $audioSource")
                 return file
             } catch (e: Exception) {
                 Log.w(TAG, "MediaRecorder source $audioSource échoué: ${e.message}")
@@ -87,50 +94,55 @@ class AudioRecorderHelper(private val context: Context) {
             }
         }
 
-        // 2. Bascule de repli : AudioRecord vers fichier .wav standard avec filtres DSP matériels
-        return startPcmWavRecording()
+        return null
     }
 
     @SuppressLint("MissingPermission")
     private fun startPcmWavRecording(): File? {
-        try {
-            val minBufSize = AudioRecord.getMinBufferSize(
-                SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT
-            )
-            val bufferSize = maxOf(minBufSize, 4096)
+        val sources = listOf(
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.MIC
+        )
+        val minBufSize = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        )
+        if (minBufSize <= 0) return null
+        val bufferSize = maxOf(minBufSize * 2, 8192)
 
-            val record = AudioRecord(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                bufferSize
-            )
+        for (src in sources) {
+            try {
+                val record = AudioRecord(
+                    src,
+                    SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferSize
+                )
 
-            if (record.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e(TAG, "AudioRecord n'a pas pu être initialisé")
-                return null
+                if (record.state == AudioRecord.STATE_INITIALIZED) {
+                    attachHardwareAudioEffects(record.audioSessionId)
+
+                    val wavFile = File(context.cacheDir, "speech_rec_${System.currentTimeMillis()}.wav")
+                    record.startRecording()
+                    audioRecord = record
+                    activeAudioFile = wavFile
+                    isRecording.set(true)
+
+                    recordingThread = thread(start = true, name = "AudioRecordWavThread") {
+                        writeAudioDataToWav(record, wavFile, bufferSize)
+                    }
+                    Log.d(TAG, "Enregistrement AudioRecord WAV 16kHz sans perte démarré (source=$src)")
+                    return wavFile
+                } else {
+                    record.release()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Essai AudioRecord source $src échoué: ${e.message}")
             }
-
-            attachHardwareAudioEffects(record.audioSessionId)
-
-            val wavFile = File(context.cacheDir, "speech_rec_${System.currentTimeMillis()}.wav")
-            record.startRecording()
-            audioRecord = record
-            activeAudioFile = wavFile
-            isRecording.set(true)
-
-            recordingThread = thread(start = true, name = "AudioRecordWavThread") {
-                writeAudioDataToWav(record, wavFile, bufferSize)
-            }
-            Log.d(TAG, "Enregistrement AudioRecord WAV démarré avec DSP")
-            return wavFile
-        } catch (e: Exception) {
-            Log.e(TAG, "Erreur fatale initialisation AudioRecord: ${e.message}", e)
-            return null
         }
+        return null
     }
 
     private fun attachHardwareAudioEffects(audioSessionId: Int) {
@@ -166,12 +178,16 @@ class AudioRecorderHelper(private val context: Context) {
                 if (readShorts > 0) {
                     var maxAmp = 0
                     for (i in 0 until readShorts) {
-                        val sample = audioData[i]
-                        val absSample = kotlin.math.abs(sample.toInt())
-                        if (absSample > maxAmp) maxAmp = absSample
+                        val rawSample = audioData[i].toInt()
+                        val absRaw = kotlin.math.abs(rawSample)
+                        if (absRaw > maxAmp) maxAmp = absRaw
 
-                        byteData[i * 2] = (sample.toInt() and 0xFF).toByte()
-                        byteData[i * 2 + 1] = ((sample.toInt() shr 8) and 0xFF).toByte()
+                        // Amplification numérique vocale (gain 1.75x) avec limiteur doux anti-saturation
+                        // pour que les consonnes et voyelles nasales du Mooré soient captées avec une netteté maximale
+                        val boosted = (rawSample * 7 / 4).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+
+                        byteData[i * 2] = (boosted and 0xFF).toByte()
+                        byteData[i * 2 + 1] = ((boosted shr 8) and 0xFF).toByte()
                     }
                     currentPcmAmplitude = maxAmp
                     val bytesToWrite = readShorts * 2
@@ -206,8 +222,8 @@ class AudioRecorderHelper(private val context: Context) {
         isRecording.set(false)
 
         val elapsed = System.currentTimeMillis() - startTimeMillis
-        if (elapsed < 500) {
-            try { Thread.sleep(500 - elapsed) } catch (_: Exception) {}
+        if (elapsed < 250) {
+            try { Thread.sleep(250 - elapsed) } catch (_: Exception) {}
         }
 
         mediaRecorder?.let { mr ->

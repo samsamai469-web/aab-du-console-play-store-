@@ -243,21 +243,22 @@ class SpeechRecognitionManager(private val context: Context) {
                 val normalized = (amp / 18000f).coerceIn(0f, 1f)
                 val now = System.currentTimeMillis()
 
-                // Calibrage dynamique du bruit ambiant tant que la voix n'a pas commencé
-                if (!speechDetected && (now - recordingStart < 400L)) {
-                    noiseFloor = (noiseFloor * 0.7f) + (amp.coerceAtMost(2200) * 0.3f)
+                // Calibrage dynamique du bruit ambiant sur les 250 premières ms
+                if (!speechDetected && (now - recordingStart < 250L)) {
+                    noiseFloor = (noiseFloor * 0.7f) + (amp.coerceAtMost(1800) * 0.3f)
                 }
 
-                val dynamicThreshold = maxOf(750, (noiseFloor * 2.1f).toInt()).coerceAtMost(2400)
+                // Seuil ultra-sensible pour capter les consonnes nasales douces (m'ma, m'baaba) et les prolongations vocales du Mooré
+                val dynamicThreshold = maxOf(420, (noiseFloor * 1.45f).toInt()).coerceAtMost(1550)
 
                 if (amp > dynamicThreshold) {
                     consecutiveSpeechFrames++
                     lastSoundTime = now
-                    if (!speechDetected && consecutiveSpeechFrames >= 2) {
+                    if (!speechDetected && consecutiveSpeechFrames >= 1) {
                         speechDetected = true
                         speechStartTime = now
                         withContext(Dispatchers.Main) {
-                            _partialText.value = "🎙️ Voix en Mooré captée... continuez de parler."
+                            _partialText.value = "🎙️ Voix et intonations en Mooré captées..."
                         }
                     }
                 } else {
@@ -265,8 +266,8 @@ class SpeechRecognitionManager(private val context: Context) {
                     val silenceDuration = now - lastSoundTime
                     val totalSpeechDuration = if (speechDetected) (now - speechStartTime) else 0L
 
-                    // Fin automatique de phrase après 1.45s de silence (ou plafond de sécurité 18s)
-                    if (speechDetected && ((silenceDuration > 1450L && totalSpeechDuration > 750L) || totalSpeechDuration > 18000L)) {
+                    // Tolérance de 1.45s pour respecter les prolongations de voyelles ("Niiiii... zabre", "Maaaaam") sans couper la phrase
+                    if (speechDetected && ((silenceDuration > 1450L && totalSpeechDuration > 600L) || totalSpeechDuration > 16000L)) {
                         withContext(Dispatchers.Main) {
                             stopListening()
                         }
@@ -283,7 +284,12 @@ class SpeechRecognitionManager(private val context: Context) {
     }
 
     private fun deliverSuccess(text: String) {
-        val clean = text.trim()
+        val rawClean = text.trim()
+        val clean = if (isAfricanLanguage(activeLanguage)) {
+            whisperService.applyMoorePhoneticCorrections(rawClean)
+        } else {
+            rawClean
+        }
         _state.value = State.Success(clean)
         _partialText.value = clean
         _soundLevel.value = 0f

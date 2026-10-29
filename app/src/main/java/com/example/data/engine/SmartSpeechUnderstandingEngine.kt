@@ -50,9 +50,10 @@ object SmartSpeechUnderstandingEngine {
             )
         }
 
-        val lower = clean.lowercase()
+        val deprolonged = DictionaryLookupEngine.normalizeMooreProlongations(clean)
+        val lower = deprolonged.lowercase()
         val detectedLang = when {
-            lower.contains("ne yibeogo") || lower.contains("laafi") || lower.contains("yibeogo") || lower.contains("barka") || lower.contains("wend") -> "Mooré"
+            LanguageDetector.detect(deprolonged) == "Mooré" -> "Mooré"
             lower.contains("i ni sogoma") || lower.contains("ani sogoma") || lower.contains("i ni ce") || lower.contains("kene") || lower.contains("toro") -> "Dioula"
             lower.contains("sannu") || lower.contains("ina kwana") || lower.contains("nagode") -> "Haoussa"
             sourceLangHint != "Auto-détection" && sourceLangHint.isNotBlank() -> sourceLangHint
@@ -67,21 +68,23 @@ object SmartSpeechUnderstandingEngine {
 
         val intent = when {
             lower.contains("bonjour") || lower.contains("salut") || lower.contains("bonsoir") ||
-            lower.contains("ne yibeogo") || lower.contains("i ni sogoma") || lower.contains("sannu") -> IntentType.GREETING
+            lower.contains("nii yi beogo") || lower.contains("ne yibeogo") || lower.contains("nii zabre") ||
+            lower.contains("nii windga") || lower.contains("niyungo") ||
+            lower.contains("i ni sogoma") || lower.contains("sannu") -> IntentType.GREETING
             lower.contains("traduire") || lower.contains("comment on dit") || lower.contains("signifie") -> IntentType.TRANSLATION
             lower.contains("mot") || lower.contains("apprendre") -> IntentType.VOCABULARY
             else -> IntentType.TRANSLATION
         }
 
         return UnderstandingResult(
-            text = clean,
-            understoodCleanText = clean,
+            text = deprolonged,
+            understoodCleanText = deprolonged,
             detectedLanguage = detectedLang,
             targetLanguage = targetLang,
             intent = intent,
             confidence = ConfidenceLevel.HIGH,
-            corrections = emptyList(),
-            correctionsApplied = emptyList(),
+            corrections = if (deprolonged != clean) listOf("Prolongation vocale normalisée : $deprolonged") else emptyList(),
+            correctionsApplied = if (deprolonged != clean) listOf("Prolongation vocale normalisée : $deprolonged") else emptyList(),
             requiresClarification = false,
             clarificationPrompt = null
         )

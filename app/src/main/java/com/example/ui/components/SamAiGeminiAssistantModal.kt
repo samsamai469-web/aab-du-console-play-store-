@@ -1735,7 +1735,7 @@ fun MooreVoiceDialog(
                         contentAlignment = Alignment.CenterStart
                     ) {
                         Text(
-                            text = if (spokenText.isNotBlank()) spokenText else "« Gom-y kãsem... Dites par exemple : Ne y beogo, laafi bala ? »",
+                            text = if (spokenText.isNotBlank()) spokenText else "« Dites par exemple : Nii yi beogo (Bonjour) → Réponse : Yibeo kibare »",
                             style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
                             color = if (spokenText.isNotBlank()) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                         )
@@ -1755,7 +1755,8 @@ fun MooreVoiceDialog(
                 Spacer(modifier = Modifier.height(6.dp))
 
                 val suggestions = listOf(
-                    "Ne y beogo, laafi bala ?" to "Bonjour, comment ça va ?",
+                    "Nii yi beogo" to "Bonjour (Salutation)",
+                    "Yibeo kibare" to "Bonjour, quelles nouvelles ?",
                     "Bôe la SAM AI tõe n maane ?" to "Que peux-tu faire ?",
                     "Kibare bôe n be rũndã ?" to "Quelles sont les nouvelles ?",
                     "Yel-mam kibare ne Burkina Faso" to "Parle-moi du Burkina Faso"
@@ -1978,25 +1979,14 @@ fun SamAiVoiceCallDialog(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            val greeting = "Né i béogo ! Lafi bala ? Mam ya Sam. Boé la mam toé na songo fo rounda ? Gomé, mam oumdamé !"
-            lastAiSentence = greeting
-            callState = VoiceCallState.SAM_SPEAKING
-            ttsManager.speakWithCallback(
-                text = greeting,
-                language = "mooré",
-                onDone = {
-                    if (isCallActive) {
-                        startListeningInCall.value()
-                    }
-                }
-            )
+            startListeningInCall.value()
         } else {
             Toast.makeText(context, "Permission micro requise pour l'appel", Toast.LENGTH_SHORT).show()
             hangUpCall()
         }
     }
 
-    // Déclenchement automatique dès l'ouverture de l'écran d'appel
+    // Déclenchement automatique de l'écoute dès l'ouverture de l'appel pour que l'utilisateur puisse saluer ("Nii yi beogo") et que SAM réponde ("Yibeo kibare")
     LaunchedEffect(Unit) {
         val hasPermission = ContextCompat.checkSelfPermission(
             context,
@@ -2004,18 +1994,7 @@ fun SamAiVoiceCallDialog(
         ) == PackageManager.PERMISSION_GRANTED
 
         if (hasPermission) {
-            val greeting = "Né i béogo ! Lafi bala ? Mam ya Sam. Boé la mam toé na songo fo rounda ? Gomé, mam oumdamé !"
-            lastAiSentence = greeting
-            callState = VoiceCallState.SAM_SPEAKING
-            ttsManager.speakWithCallback(
-                text = greeting,
-                language = "mooré",
-                onDone = {
-                    if (isCallActive) {
-                        startListeningInCall.value()
-                    }
-                }
-            )
+            startListeningInCall.value()
         } else {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }

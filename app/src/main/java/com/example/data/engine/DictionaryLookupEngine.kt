@@ -56,6 +56,83 @@ object DictionaryLookupEngine {
         return input.filter { it.isLetterOrDigit() || it.isWhitespace() }.trim()
     }
 
+    /**
+     * Normalise les prolongations vocales et nasales en Mooré (ex: "Niiiii zabreee" -> "nii zabre",
+     * "Maaaaam" -> "maam", "Fooooo" -> "fo", "Raaaaga" -> "raaga", "Biiiiga" -> "biiga", "Mmmaaa" -> "m'ma")
+     * pour détecter sans erreur la voix de l'utilisateur même lorsqu'il allonge les syllabes.
+     */
+    fun normalizeMooreProlongations(input: String): String {
+        var s = cleanWhitespace(input)
+        if (s.isEmpty()) return s
+
+        // 1. Réduction des consonnes nasales ou labiales allongées (mmm -> m, nnn -> n)
+        s = s.replace(Regex("(?i)m{3,}"), "m")
+            .replace(Regex("(?i)n{3,}"), "n")
+
+        // 2. Réduction des voyelles allongées de 3+ répétitions vers 2 ou 1
+        s = s.replace(Regex("(?i)([aeéèêiîoôuùûãẽĩõũʋɩɛ])\\1{2,}"), "$1$1")
+
+        // 3. Normalisation phonétique des mots avec ou sans double voyelle en Mooré
+        val canonicalRules = listOf(
+            Regex("(?i)\\bnii+\\s*y?i+\\s*be+o+go+\\b") to "Nii yi beogo",
+            Regex("(?i)\\bni+\\s*yibe+o+go+\\b") to "Nii yi beogo",
+            Regex("(?i)\\bne+\\s*y?\\s*be+o+go+\\b") to "Nii yi beogo",
+            Regex("(?i)\\byi+\\s*be+o+g?\\s*ki+ba+r[eé]+\\b") to "Yibeo kibare",
+            Regex("(?i)\\bnii+\\s*za+br[eé]+\\b") to "Nii zabre",
+            Regex("(?i)\\bne+\\s*y?\\s*za+br[eé]+\\b") to "Nii zabre",
+            Regex("(?i)\\bza+br[eé]?\\s*ki+ba+r[eé]+\\b") to "Zabre kibare",
+            Regex("(?i)\\b(nii+|ne+)\\s*y?\\s*(wi+ndga+|ouin+d?ga+|wi+nga+)\\b") to "Nii windga",
+            Regex("(?i)\\b(wi+ndga+|ouin+d?ga+)\\s*ki+ba+r[eé]+\\b") to "Windga kibare",
+            Regex("(?i)\\b(nii+|ne+)?\\s*y?\\s*(yu+ngo+|you+ngo+)\\b") to "Niyungo",
+            Regex("(?i)\\b(yu+ngo+|you+ngo+)\\s*ki+ba+r[eé]+\\b") to "Yungo kibare",
+            Regex("(?i)\\b(wi+nd|we+nd|ouè+nd[ae]?)\\s*(da+|na+)\\s*ga+n[ae]+g\\s*la+fi+\\b") to "Wind da ganeg laafi",
+            Regex("(?i)\\b(ne+w[oô]+g[oô]+|ne+\\s*y?\\s*wa+o+ngo+)\\b") to "Neewôgô",
+            Regex("(?i)\\bya+\\s*s[oõ]+n?ma+\\b") to "Ya sonma",
+            Regex("(?i)\\bla+fi+\\s*be+m[eé]+\\b") to "Laafi beeme",
+            Regex("(?i)\\bla+fi+\\s*ba+la+\\b") to "Laafi bala",
+            Regex("(?i)\\bki+ba+r[eé]+\\b") to "Kibaré",
+            Regex("(?i)\\bni+nda+r[eé]+\\b") to "Nindaaré",
+            Regex("(?i)\\b(we+nd|wë+nd)[-\\s]*na+\\s*k[oôõ]+[-\\s]*d\\s*ni+nda+r[eé]+\\b") to "Wënd-na kô-d nindaare",
+            Regex("(?i)\\bba+rka+\\b") to "Barka",
+            Regex("(?i)\\bz[oô]+m[-\\s]*k[oô]+m\\b") to "Zom-kom",
+            Regex("(?i)\\bs[eêẽ]+n\\s+na+\\s+be+\\b") to "Sên na be",
+            Regex("(?i)\\bru+nda+\\s+ki+ba+ya+\\b") to "Sên na be",
+            Regex("(?i)\\bma+m\\b") to "Maam",
+            Regex("(?i)\\bf[oõô]{2,}\\b") to "Fõ",
+            Regex("(?i)\\bt[oõô]+ndo*\\b") to "Tond",
+            Regex("(?i)\\bm['’\\s]*ma+\\b") to "M'ma",
+            Regex("(?i)\\bm['’\\s]*ba+ba+\\b") to "M'baaba",
+            Regex("(?i)\\b(ni+n?[-\\s]*k[eéèêẽ]+ma+n?|ni+ki+[eéè]+ma+n?)\\b") to "Nikieman",
+            Regex("(?i)\\b(pou*g[-\\s]*ya+nga+|p[uʋ]+g[-\\s]*n?ya+nga+)\\b") to "Poug yaanga",
+            Regex("(?i)\\b(pou*g?k?[-\\s]*sa+da+|p[uʋ]+g[-\\s]*sa+dga+)\\b") to "Poug sada",
+            Regex("(?i)\\b(ra+wa+|ra+o+a+)\\b") to "Rawa",
+            Regex("(?i)\\bpa+ga+\\b") to "Paga",
+            Regex("(?i)\\bbi+ga+\\b") to "Biiga",
+            Regex("(?i)\\bra+ga+\\b") to "Raaga",
+            Regex("(?i)\\bwe+fo+\\b") to "Weefo",
+            Regex("(?i)\\b(fo+u+go+u*|fu+gu+)\\b") to "Foūgou",
+            Regex("(?i)\\b(mo+nte+u*r|m[oõ]+nte+r[eé]*)\\b") to "Monteur",
+            Regex("(?i)\\b(mo+nbi+l[eé]*|m[oõ]+bi+ll?i*)\\b") to "Monbile",
+            Regex("(?i)\\b(pno+u*s?|pi+nou+|pi+nu+)\\b") to "Pnous",
+            Regex("(?i)\\b(na+n?wou*dr[eé]*|na+o+dr[eé]*|ne+o+dr[eé]*)\\b") to "Nanwoudre",
+            Regex("(?i)\\b(mo+nco+ro+ni+|ma+ko+ro+ni+)\\b") to "Moncoroni",
+            Regex("(?i)\\b(so+n[-\\s]*ka+m|sou*n[-\\s]*ka+m|s[uũõ]+m[-\\s]*ka+m)\\b") to "Son kaam",
+            Regex("(?i)\\b(bi+dou+|bi+du+)\\b") to "Bidou",
+            Regex("(?i)\\b(mou+gn[eé]*|moui+|mui+)\\b") to "Mougne",
+            Regex("(?i)\\b(be+i*nga+|b[eẽèé]+nga+)\\b") to "Beinga",
+            Regex("(?i)\\b(tou*a+yga+|twa+yga+)\\b") to "Touayga",
+            Regex("(?i)\\b(ka+kou*a+da+|ka+[-\\s]*ko+a+dga+)\\b") to "Kakouada",
+            Regex("(?i)\\bta+nda+o*go+\\b") to "Tandaogo",
+            Regex("(?i)\\bm['’\\s]*na+n?\\s*gou*n?sa+m\\b") to "M nan gounsam",
+            Regex("(?i)\\bm['’\\s]*da+ta+\\s*li+gdi+\\b") to "M data ligdi",
+            Regex("(?i)\\bm['’\\s]*de+bda+\\s*za+ki*n?\\s*(wa+n?|oua+n?)?\\b") to "M debda zakin wan"
+        )
+        for ((pattern, replacement) in canonicalRules) {
+            s = s.replace(pattern, replacement)
+        }
+        return s
+    }
+
     fun levenshteinDistance(s1: String, s2: String): Int {
         val dp = Array(s1.length + 1) { IntArray(s2.length + 1) }
         for (i in 0..s1.length) dp[i][0] = i
@@ -920,13 +997,26 @@ object DictionaryLookupEngine {
             }
         }
 
-        // 3. Mooré -> Français
+        // 3. Mooré -> Français (avec détection automatique des prolongations vocales)
         if (src.contains("moor") || src.contains("mòoré")) {
             if (tgt.contains("franç") || tgt.contains("franc")) {
                 mooreToFrenchMap[stripped]?.let { return it }
                 mooreToFrenchMap[normStripped]?.let { return it }
+                val deprolonged = normalizeMooreProlongations(clean)
+                val deprolongedStripped = stripPunctuation(deprolonged).lowercase()
+                val deprolongedNorm = normalizeAccents(deprolongedStripped)
+                mooreToFrenchMap[deprolongedStripped]?.let { return it }
+                mooreToFrenchMap[deprolongedNorm]?.let { return it }
+                // Voyelles doublées réduites à une seule voyelle en cas d'allongement vocal libre (ex: "biiiga" -> "biga" -> "biiga")
+                val collapsedVowels = deprolongedNorm.replace(Regex("([aeiou])\\1+"), "$1")
+                mooreToFrenchMap.entries.firstOrNull { (k, _) ->
+                    k.replace(Regex("([aeiou])\\1+"), "$1") == collapsedVowels
+                }?.let { return it.value }
                 DictionaryData.FULL_DICTIONARY.firstOrNull {
-                    it.moore.equals(clean, ignoreCase = true) || isCloseMatch(it.moore, clean)
+                    it.moore.equals(clean, ignoreCase = true) ||
+                        it.moore.equals(deprolonged, ignoreCase = true) ||
+                        isCloseMatch(it.moore, clean) ||
+                        isCloseMatch(it.moore, deprolonged)
                 }?.let { return it.french }
             }
         }

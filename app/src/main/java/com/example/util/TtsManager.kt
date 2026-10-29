@@ -183,7 +183,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     ): Boolean = withContext(Dispatchers.IO) {
         try {
             // Débit normal, fluide et dynamique de vraie personne au téléphone
-            val speed = (rate * 1.05f).coerceIn(0.98f, 1.40f)
+            val speed = (rate * 1.08f).coerceIn(1.0f, 1.45f)
 
             // 1. Essai prioritaire avec gpt-4o-mini-tts et la voix "coral" (claire, humaine, chaleureuse)
             val primaryPayload = buildJsonObject {
@@ -211,16 +211,16 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
             var audioBytes = requestOpenAiAudioBytes(primaryPayload, apiKey)
 
-            // 2. Repli automatique sur tts-1-hd avec la voix "nova" (claire, cristalline et dynamique, sans lourdeur grave)
+            // 2. Repli ultra-rapide basse latence sur tts-1 avec la voix "nova"
             if (audioBytes == null) {
-                val hdPayload = buildJsonObject {
-                    put("model", "tts-1-hd")
+                val fastPayload = buildJsonObject {
+                    put("model", "tts-1")
                     put("input", spokenText.take(2500))
                     put("voice", "nova")
                     put("response_format", "mp3")
                     put("speed", speed)
                 }.toString()
-                audioBytes = requestOpenAiAudioBytes(hdPayload, apiKey)
+                audioBytes = requestOpenAiAudioBytes(fastPayload, apiKey)
             }
 
             if (audioBytes == null || audioBytes.size < 200) {
@@ -417,19 +417,120 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             .replace(Regex("(?i)\\bm['’]?([pbftkszdgvyrl])([aàâeéèêiîoôuùûʋɩɛãẽĩõũ])"), "mame $1$2")
             .replace(Regex("(?i)\\bn['’]?([pbftkszdgvyrl])([aàâeéèêiîoôuùûʋɩɛãẽĩõũ])"), "na $1$2")
 
-        // 2. Dictionnaire phonétique étendu des mots, verbes et expressions du Mooré parlé à Ouagadougou
+        // 2. Dictionnaire phonétique étendu des 50 audios de référence et expressions du Mooré parlé
         // Utilisation de 'ô' et 'î' pour verrouiller la phonologie hors de l'anglais ('do', 'fo', 'to', 'so', 'go', 'round')
         val exactReplacements = listOf(
-            Regex("(?i)\\bne\\s+y\\s+beo+go\\b") to "né i béogô",
-            Regex("(?i)\\bne\\s+y\\s+zaa+bre\\b") to "né i zabré",
+            // A. Salutations & Réponses Obligatoires (Audios 1 à 13)
+            Regex("(?i)\\by[ĩi]?beo+g?o?\\s+kibar[eé]\\b") to "yibéo kibaré",
+            Regex("(?i)\\byi\\s+beo+g?o?\\s+kibar[eé]\\b") to "yibéo kibaré",
+            Regex("(?i)\\by[ĩi]?beo+g?\\b") to "yibéo",
+            Regex("(?i)\\bnii?\\s+y?i?\\s*beo+go\\b") to "nii yibéogô",
+            Regex("(?i)\\bne\\s+y?i?\\s*beo+go\\b") to "nii yibéogô",
+            Regex("(?i)\\bza+br[eé]?\\s+kibar[eé]\\b") to "zaabré kibaré",
+            Regex("(?i)\\bnii?\\s+za+br[eé]?\\b") to "nii zaabré",
+            Regex("(?i)\\bne\\s+y?\\s*za+br[eé]?\\b") to "nii zaabré",
+            Regex("(?i)\\bw[ĩi]nd?ga\\s+kibar[eé]\\b") to "ouin-nga kibaré",
+            Regex("(?i)\\bnii?\\s+w[ĩi]nd?ga\\b") to "nii ouin-nga",
+            Regex("(?i)\\bne\\s+y?\\s*w[ĩi]nd?ga\\b") to "nii ouin-nga",
+            Regex("(?i)\\by[ʋu]ngo\\s+kibar[eé]\\b") to "youn-gô kibaré",
+            Regex("(?i)\\bnii?\\s*y[ʋu]ngo\\b") to "nii youn-gô",
+            Regex("(?i)\\bne\\s+y?\\s*y[ʋu]+ngo\\b") to "nii youn-gô",
             Regex("(?i)\\bne\\s+y\\s+k[ʋu]+ngo\\b") to "né i koungô",
-            Regex("(?i)\\bne\\s+y\\s+y[ʋu]+ngo\\b") to "né i youngô",
-            Regex("(?i)\\bne\\s+y\\s+w[ĩi]ndga\\b") to "né i ouindga",
             Regex("(?i)\\bne\\s+y\\s+t[ʋu]+ma\\b") to "né i touma",
+            Regex("(?i)\\bwind\\s+da\\s+ganeg\\s+laafi\\b") to "ouènda ganag lafi",
+            Regex("(?i)\\bw[ẽe]nd\\s+na\\s+g[ãa]neg\\s+laafi\\b") to "ouènda ganag lafi",
+            Regex("(?i)\\bneew[ôo]g[ôo]\\b") to "né oua-ouon-gô",
+            Regex("(?i)\\bne\\s+y?\\s*wao+ngo\\b") to "né oua-ouon-gô",
+            Regex("(?i)\\bya+\\s+so+n?ma\\b") to "ya sôma",
+            Regex("(?i)\\bya+\\s+s[õo]ama\\b") to "ya sôma",
             Regex("(?i)\\blaafi\\s+bala\\b") to "lafi bala",
-            Regex("(?i)\\blaafi\\s+be+me\\b") to "lafi bémé",
+            Regex("(?i)\\blaafi\\s+be+me\\b") to "lafi béémé",
             Regex("(?i)\\blaafi\\b") to "lafi",
-            Regex("(?i)\\bkibare\\b") to "kibaré",
+            Regex("(?i)\\bkibar[eé]\\b") to "kibaré",
+            Regex("(?i)\\bw[ëẽe]nd[-\\s]*na\\s+k[ôõo][-\\s]*d\\s+ninda+r[eé]\\b") to "ouènda kôd nin-daaré",
+            Regex("(?i)\\bninda+r[eé]\\b") to "nin-daaré",
+            Regex("(?i)\\bzom[-\\s]*ko+m\\b") to "zôm-kôôm",
+            Regex("(?i)\\bs[êẽe]n\\s+na\\s+be\\b") to "sèn na bé",
+            Regex("(?i)\\br[ũu]nd[ãa]\\s+kiba+ya\\b") to "roun-da kibaya",
+
+            // B. Pronoms, Famille, Personnes & Phrases des Audios (Audios 14 à 29)
+            Regex("(?i)\\bm\\s+nan\\s+gounsam\\b") to "m'na goussôm",
+            Regex("(?i)\\bm\\s+na\\s+n\\s+g[ʋu]same\\b") to "m'na goussôm",
+            Regex("(?i)\\bm\\s+data\\s+ligdi\\b") to "m'data lig-di",
+            Regex("(?i)\\bm\\s+debda\\s+zakin\\s+wan\\b") to "m'débda za-kouan",
+            Regex("(?i)\\bm\\s+debda\\s+zak[ẽe]\\s+w[ãa]\\b") to "m'débda za-kouan",
+            Regex("(?i)\\bm\\s+debda\\s+zakin\\b") to "m'débda za-kouan",
+            Regex("(?i)\\bm['’\\s]*ba+ba\\b") to "m'baaba",
+            Regex("(?i)\\bm['’\\s]*ma\\b") to "m'ma",
+            Regex("(?i)\\bnin[-\\s]*k[ẽêe]+ma\\b") to "nin-kééma",
+            Regex("(?i)\\bnikieman\\b") to "nin-kééma",
+            Regex("(?i)\\bpoug\\s+ya+nga\\b") to "pou-gnan-ga",
+            Regex("(?i)\\bp[ʋu]g[-\\s]*y[ãa]+nga\\b") to "pou-gnan-ga",
+            Regex("(?i)\\bpoug\\s+sada\\b") to "pouk-sada",
+            Regex("(?i)\\bp[ʋu]g[-\\s]*sadga\\b") to "pouk-sada",
+            Regex("(?i)\\bp[ùʋu]g[-\\s]*roags[áa]\\b") to "poug-roak-sa",
+            Regex("(?i)\\bkakouada\\b") to "ka-koua-da",
+            Regex("(?i)\\bka[-\\s]*koaadga\\b") to "ka-koua-da",
+            Regex("(?i)\\btandaogo\\b") to "tan-da-ougô",
+            Regex("(?i)\\brawa\\b") to "ra-oua",
+            Regex("(?i)\\braoa\\b") to "ra-oua",
+            Regex("(?i)\\bpaga\\b") to "paga",
+            Regex("(?i)\\bbi+ga\\b") to "bii-ga",
+            Regex("(?i)\\bmaa+m\\b") to "maam",
+            Regex("(?i)\\bf[õoô]+\\b") to "fô",
+            Regex("(?i)\\btond\\b") to "tôn-dô",
+            Regex("(?i)\\bt[õo]ndo?\\b") to "tôn-dô",
+
+            // C. Objets, Transports, Aliments & Verbes des Audios (Audios 30 à 50)
+            Regex("(?i)\\bra+ga\\b") to "raa-ga",
+            Regex("(?i)\\bmonteur\\b") to "mon-tèèr",
+            Regex("(?i)\\bm[õo]nte+re\\b") to "mon-tèèr",
+            Regex("(?i)\\bmonbile\\b") to "mô-bil",
+            Regex("(?i)\\bm[õo]billi\\b") to "mô-bil",
+            Regex("(?i)\\bpnous\\b") to "pii-nou",
+            Regex("(?i)\\bp[ĩi]nu\\b") to "pii-nou",
+            Regex("(?i)\\bnanwoudre\\b") to "na-ou-dr",
+            Regex("(?i)\\bnaoodre\\b") to "na-ou-dr",
+            Regex("(?i)\\bwe+fo\\b") to "ouéé-fô",
+            Regex("(?i)\\bmoncoroni\\b") to "mon-kô-rô-ni",
+            Regex("(?i)\\bfo[ūu]gou\\b") to "fouu-gou",
+            Regex("(?i)\\bfu+gu\\b") to "fouu-gou",
+            Regex("(?i)\\bson\\s+ka+m\\b") to "son-kaam",
+            Regex("(?i)\\bbidou\\b") to "bii-dou",
+            Regex("(?i)\\bb[ĩi]du\\b") to "bii-dou",
+            Regex("(?i)\\bmougne\\b") to "moui",
+            Regex("(?i)\\bmui\\b") to "moui",
+            Regex("(?i)\\bbeinga\\b") to "bén-ga",
+            Regex("(?i)\\bb[ẽe]nga\\b") to "bén-ga",
+            Regex("(?i)\\btouayga\\b") to "touay-ga",
+            Regex("(?i)\\bb[ãa]?nga\\b") to "ban-ga",
+            Regex("(?i)\\bya+gre\\b") to "yaa-gré",
+            Regex("(?i)\\bsa+me\\b") to "saa-mé",
+            Regex("(?i)\\bs[êẽe]n\\s+ka\\s+be\\b") to "sèn ka bé",
+            Regex("(?i)\\bs[ĩi]+fu\\b") to "sii-fou",
+            Regex("(?i)\\bwesbo\\b") to "oués-bô",
+            Regex("(?i)\\bwese\\b") to "oués-bô",
+            Regex("(?i)\\by[ôõo]sgre\\b") to "yôs-gré",
+            Regex("(?i)\\by[âãa]gme\\b") to "nian-gmé",
+            Regex("(?i)\\bsake\\b") to "sa-ké",
+            Regex("(?i)\\bdoge\\b") to "rô-gué",
+            Regex("(?i)\\broge\\b") to "rô-gué",
+            Regex("(?i)\\bmaa?ne\\b") to "maa-né",
+            Regex("(?i)\\blagme\\b") to "lag-mé",
+            Regex("(?i)\\by[âãa]+ge\\b") to "niaa-gué",
+            Regex("(?i)\\br[ôõo]dbo\\b") to "rôd-bô",
+            Regex("(?i)\\br[àa]+da\\b") to "raa-da",
+            Regex("(?i)\\bra+bo\\b") to "raa-bô",
+            Regex("(?i)\\byagle\\b") to "ya-gal",
+            Regex("(?i)\\bsoge\\b") to "sô-gué",
+            Regex("(?i)\\bba+s[èe]\\b") to "baa-sé",
+            Regex("(?i)\\bpao+ngo\\b") to "pa-ouon-gô",
+            Regex("(?i)\\bmanesem\\b") to "man-sôm",
+            Regex("(?i)\\bpa+sga\\b") to "paas-ga",
+            Regex("(?i)\\bpa+se\\b") to "paa-sé",
+            Regex("(?i)\\bk[êẽe]\\b") to "kiè",
+
+            // D. Autres verbes et mots usuels du Mooré
             Regex("(?i)\\bw[ũuʋ]mdame\\b") to "oumdamé",
             Regex("(?i)\\bwoumdam[eé]\\b") to "oumdamé",
             Regex("(?i)\\bw[ũuʋ]m\\b") to "oume",
@@ -476,7 +577,6 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             Regex("(?i)\\broundan?\\b") to "roun-da",
             Regex("(?i)\\by[ãa]mba?\\b") to "yamba",
             Regex("(?i)\\bb[ãa]mba?\\b") to "bamba",
-            Regex("(?i)\\bt[õo]ndo?\\b") to "tondô",
             Regex("(?i)\\bw[ẽe]nde\\b") to "ouèndé",
             Regex("(?i)\\bw[ẽe]nd\\b") to "ouèndé",
             Regex("(?i)\\bnaa+ba\\b") to "naba",
@@ -485,7 +585,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             Regex("(?i)\\bwousgo\\b") to "ousgô",
             Regex("(?i)\\bousgo\\b") to "ousgô",
             Regex("(?i)\\bs[ʋu]ka\\b") to "ssouka",
-            Regex("(?i)\\bs[õo]ama\\b") to "ssoma",
+            Regex("(?i)\\bs[õo]ama\\b") to "sôma",
             Regex("(?i)\\bs[ɩi]da\\b") to "ssida",
             Regex("(?i)\\bt[ʋu]+ma\\b") to "touma",
             Regex("(?i)\\by[ʋu]+re\\b") to "youré",
@@ -512,7 +612,6 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             Regex("(?i)\\basoe\\b") to "assoé",
             Regex("(?i)\\bkaseto\\b") to "kassétô",
             Regex("(?i)\\bnasaara\\b") to "nassara",
-            Regex("(?i)\\bmaane\\b") to "mané",
             Regex("(?i)\\bleokre\\b") to "léokré",
             Regex("(?i)\\bgomde\\b") to "gomdé",
             Regex("(?i)\\bmam\\b") to "mame",
