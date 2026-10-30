@@ -189,7 +189,21 @@ class OpenAiBackendService {
             return null
         }
 
-        // 1. SALUTATIONS ET DIALOGUES EXACTS DES AUDIOS DE RÉFÉRENCE (réponse instantanée 0 ms uniquement sur correspondance exacte)
+        // 1. SALUTATIONS COMPOSÉES + QUESTIONS (ex: "Nii yi beogo, fo be laafi ?")
+        if (norm.startsWith("nii yi beogo") && (norm.contains("laafi") || norm.contains("kibare") || norm.contains("kibaré"))) {
+            return "Yibeo kibare ! Laafi bala, ya sonma. Fo data bõe tɩ m sõng-fo ?"
+        }
+        if (norm.startsWith("nii zabre") && (norm.contains("laafi") || norm.contains("kibare") || norm.contains("kibaré"))) {
+            return "Zabre kibare ! Laafi bala, ya sonma. Fo data bõe tɩ m sõng-fo ?"
+        }
+        if (norm.startsWith("nii windga") && (norm.contains("laafi") || norm.contains("kibare") || norm.contains("kibaré"))) {
+            return "Windga kibare ! Laafi bala, ya sonma. Fo data bõe tɩ m sõng-fo ?"
+        }
+        if ((norm.startsWith("niyungo") || norm.startsWith("nii yungo")) && (norm.contains("laafi") || norm.contains("kibare") || norm.contains("kibaré"))) {
+            return "Yungo kibare ! Laafi bala, ya sonma. Fo data bõe tɩ m sõng-fo ?"
+        }
+
+        // 2. SALUTATIONS, QUESTIONS ET DIALOGUES EXACTS DES 50 AUDIOS DE RÉFÉRENCE (0% d'erreur)
         when {
             // Audio #1 (Matin) : "Nii yi beogo" (= Bonjour) -> Réponse obligatoire : "Yibeo kibare"
             norm in setOf(
@@ -224,21 +238,21 @@ class OpenAiBackendService {
 
             // Audio #6 (Bienvenue) : "Neewôgô" / "Ne waongo"
             norm in setOf("neewôgô", "neewogo", "ne waongo", "ne waogo", "ne y waoongo", "waoongo", "newogo") ->
-                return "Barka ! Laafi bala ?"
+                return if (isMooreVoice) "Barka ! Laafi bala ? Fo data bõe tɩ m sõng-fo ?" else "Barka ! Laafi bala ?"
 
             // Audio #7 (Réponse aux nouvelles) : "Kibare" / "Yibeo kibare" / "Zabre kibare" / "Windga kibare" / "Yungo kibare"
             norm in setOf(
                 "kibare", "kibaré", "kibaare", "yibeo kibare", "yibéo kibaré", "zabre kibare", "zaabre kibare",
                 "windga kibare", "yungo kibare", "fo laafi", "fo be laafi", "laafi beeme", "lafi beme", "lafi bémé"
-            ) -> return "Laafi bala ! Ya sonma."
+            ) -> return if (isMooreVoice) "Laafi bala ! Ya sonma. Fo data bõe tɩ m sõng-fo ?" else "Laafi bala ! Ya sonma."
 
             // Audio #9 (Ça va bien) : "Ya sonma" / "Laafi bala"
             norm in setOf("ya sonma", "ya soma", "yaa sõama", "yaa soama", "laafi bala", "lafi bala", "mam be laafi") ->
-                return "Wẽnd na kõ-d laafi !"
+                return if (isMooreVoice) "Wẽnd na kõ-d laafi ! Fo data bõe tɩ m sõng-fo ?" else "Wẽnd na kõ-d laafi !"
 
             // Audio #10 (Merci) : "Barka" / "Barka wʋsgo"
             norm in setOf("barka", "barka wusgo", "barka wʋsgo", "barka woto", "barka ousgo") ->
-                return "Kaseto ka be ye ! Mam pʋsda fo."
+                return if (isMooreVoice) "Kaseto ka be ye ! Mam pʋsda fo. Fo me data bõe ?" else "Kaseto ka be ye ! Mam pʋsda fo."
 
             // Audio #11 (Au revoir) : "Nindaaré"
             norm in setOf("nindaare", "nindaaré", "bilmãse", "bilmase", "nindare") ->
@@ -258,14 +272,91 @@ class OpenAiBackendService {
 
             // Audio #15 (Je veux l'argent) : "M data ligdi"
             norm in setOf("m data ligdi", "mam data ligdi", "mam rata ligdi", "m'data ligdi") ->
-                return "Wẽnd na kõ-f ligdi la laafi !"
+                return "Wẽnd na kõ-f ligdi la laafi ! Fo data bõe yɛsa ?"
 
             // Audio #16 (L'actualité du jour / Nouvelles) : "Sên na be" / "Rũndã kibaaya"
-            norm in setOf("sên na be", "sen na be", "rũndã kibaaya", "runda kibaya") ->
-                return "Rũndã kibaaya yaa sõama Burkina Faso pʋgẽ ! Laafi beeme."
+            norm in setOf("sên na be", "sen na be", "rũndã kibaaya", "runda kibaya", "kibare boe n be runda", "kibare bôe n be rũndã") ->
+                return "Rũndã kibaaya yaa sõama Burkina Faso pʋgẽ ! Laafi beeme. Fo data bõe ?"
+
+            // Questions courantes en Mooré : Comment tu t'appelles / Qui es-tu / Qui t'a créé / Que peux-tu faire / Parle-moi du Burkina
+            norm in setOf("fo yʋʋre la bõe", "fo yuure la boe", "fo yʋʋre la boe", "fo yuure la bõe") ->
+                return "Mam yʋʋre la SAM AI ! Abdoul Mohamine Sawadogo n naan maam. Fo data bõe tɩ m sõng-fo ?"
+
+            norm in setOf("fo yaa anda", "fo yaa ãnda", "anda n naan fo", "ãnda n naan fo", "anda n naan-fo", "ãnda n naan-fo") ->
+                return "Maam yaa SAM AI, Abdoul Mohamine Sawadogo n naan maam Burkina Faso pʋgẽ. Fo data bõe tɩ m sõng-fo ?"
+
+            norm in setOf("boe la sam ai toe n maane", "bôe la sam ai tõe n maane", "bõe la fo tõe n maane", "boe la fo toe n maane") ->
+                return "Maam tõe n leoka fo sokdsã fãa ne Mooré, n sõng-fo ne Burkina Faso kibaya la gom-biisi ! Fo data bõe tɩ m sõng-fo ?"
+
+            norm in setOf("fo data bõe", "fo data boe", "bõe la fo data", "boe la fo data") ->
+                return "Maam data n sõng-fo ! Sok-m fo sokrã tɩ m leok-fo sân-sân."
+
+            norm in setOf("yel-mam kibare ne burkina faso", "yel mam kibare ne burkina faso", "burkina faso teng-zugu la ye", "burkina faso tẽng-zugu la yɛ") ->
+                return "Burkina Faso yaa nin-tɩrs tẽnga ! A tẽng-zugu yaa Ouagadougou, la Bobo-Dioulasso yaa tẽng-kãsenga. Tond nongda Burkina Faso wʋsgo !"
+
+            // Vocabulaire des 50 leçons audio du créateur (réponses exactes en Mooré lors de l'appel vocal)
+            norm in setOf("maam", "mam") -> return "N-ye, maam la fo zoodo SAM AI ! Fo data bõe ?"
+            norm in setOf("fõ", "fo") -> return "N-ye, fõ yaa mam zoodo ! Fo data bõe tɩ m sõng-fo ?"
+            norm in setOf("tond", "tondo") -> return "N-ye, tond be laafi bala ! Fo data bõe ?"
+            norm in setOf("m'ma", "mma", "m ma") -> return "Wẽnd na kõ m'ma laafi la nindaaré !"
+            norm in setOf("m'baaba", "mbaaba", "m baaba") -> return "Wẽnd na kõ m'baaba laafi !"
+            norm in setOf("nikiemam", "nikieman", "nin-kẽema") -> return "Tond pʋʋsda nikieman ne waoogre !"
+            norm in setOf("poug yaanga", "pug yaanga") -> return "Wẽnd na kõ poug yaanga laafi !"
+            norm in setOf("paga", "pagba") -> return "Burkina Faso paga tʋmda tʋʋm-sõama wʋsgo !"
+            norm in setOf("rawa", "raoa") -> return "Rawa yaa nin-tɩrga ! Laafi bala ?"
+            norm in setOf("biiga", "biga") -> return "Wẽnd na gũ biiga la a kõ-a laafi !"
+            norm in setOf("poug sada", "pug sada") -> return "Poug sada be laafi bala !"
+            norm in setOf("kakouada", "kakuada") -> return "Kakouada yaa sõama !"
+            norm in setOf("tandaogo", "tãndaogo") -> return "Tandaogo pãnga yaa kãsenga !"
+            norm in setOf("raaga", "raga") -> return "Fo debda raaga pʋgẽ bɩ ? Wẽnd na kõ-f raab sõama !"
+            norm in setOf("zom-kom", "zom kom") -> return "Zom-kom noomame wʋsgo ! Neewôgô."
+            norm in setOf("monteur", "monter") -> return "Monteur wã tʋmda sõama !"
+            norm in setOf("monbile", "mobili") -> return "Monbile wã kẽnda sõama !"
+            norm in setOf("pnous", "pinou") -> return "Pnous wã yaa sõama !"
+            norm in setOf("nanwoudre", "naodr") -> return "Nanwoudre be laafi !"
+            norm in setOf("weefo", "wefo") -> return "Weefo wã zoeta tao-tao !"
+            norm in setOf("moncoroni", "makoroni") -> return "Moncoroni rɩɩbo noomame !"
+            norm in setOf("foūgou", "fougou", "fugu") -> return "Foūgou Faso Dan Fani yaa neere wʋsgo !"
+            norm in setOf("son kaam", "soun kaam") -> return "Son kaam yaa sõama !"
+            norm in setOf("bidou", "bidu") -> return "Bidou be zakẽ wã !"
+            norm in setOf("mougne", "munyu") -> return "Mougne yaa sõama wʋsgo !"
+            norm in setOf("beinga", "benga") -> return "Beinga rɩɩbo noomame wʋsgo !"
+            norm in setOf("touayga", "toega") -> return "Touayga tɩɩga yaa kãsenga !"
+            norm in setOf("banga") -> return "Banga be laafi !"
+            norm in setOf("yagre", "yakre") -> return "Yagre yaa sõama !"
         }
 
         return null
+    }
+
+    /**
+     * Nettoie la réponse vocale Mooré en retirant toute note entre parenthèses/crochets
+     * sans jamais supprimer ni tronquer la réponse à la question posée par l'utilisateur.
+     */
+    private fun cleanMooreVoiceFormatting(raw: String): String {
+        var text = raw.trim()
+        if (text.isBlank()) return "Laafi bala ! Fo data bõe tɩ m sõng-fo ?"
+
+        // 1. Supprimer uniquement les traductions entre parenthèses ou crochets (ex: "(Bonjour...)")
+        text = text.replace(Regex("\\([^)]*\\)"), " ")
+            .replace(Regex("\\[[^]]*\\]"), " ")
+            .replace(Regex("(?i)\\b(traduction|en français|signification)\\s*:\\s*.*$"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        return text.ifBlank { raw.trim() }
+    }
+
+    private fun containsFrenchPhrases(text: String): Boolean {
+        val lower = text.lowercase(java.util.Locale.ROOT)
+        val frenchMarkers = listOf(
+            "je suis ", "je peux ", "comment puis-je", "que veux-tu", "que voulez-vous",
+            "bonjour ", "bonsoir ", "bienvenue ", "merci beaucoup", "avec plaisir",
+            "désolé", "desole", "je ne comprends pas", "en français",
+            "cela signifie", "ça veut dire", "voici ", "aujourd'hui",
+            "c'est une ", "c'est un ", "vous pouvez", "tu peux", "pour vous aider"
+        )
+        return frenchMarkers.any { lower.contains(it) }
     }
 
     /**
@@ -292,29 +383,27 @@ class OpenAiBackendService {
         val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
         val systemPrompt = if (isMooreVoice) {
             buildString {
-                append("Tu es SAM AI, l'assistant vocal intelligent de haut niveau conçu par Abdoul Mohamine Sawadogo au Burkina Faso.\n")
+                append("Tu es SAM AI en mode APPEL VOCAL DIRECT EN LANGUE MOORÉ (Burkina Faso), conçu par Abdoul Mohamine Sawadogo.\n")
                 append("Aujourd'hui nous sommes le $dateStr.\n")
-                if (newsContext.isNotBlank()) {
-                    append("\n--- ACTUALITÉS EN DIRECT ---\n")
-                    append(newsContext)
-                    append("\n----------------------------\n")
-                }
-                append("RÈGLES ABSOLUES DE PRÉCISION ET DE COMPRÉHENSION VOCALE :\n")
-                append("1. RÉPONDS EXACTEMENT À LA QUESTION POSÉE : Analyse avec rigueur la question exacte que l'utilisateur vient de poser. Ne réponds JAMAIS au hasard, ne change jamais de sujet, et ne récite jamais de mots hors contexte. Donne une réponse exacte, pertinente, intelligente et professionnelle à la question posée.\n")
-                append("2. ADAPTATION DE LANGUE INTELLIGENTE :\n")
-                append("   - Si l'utilisateur parle ou pose une question en FRANÇAIS, réponds-lui en FRANÇAIS de façon claire, juste, directe et naturelle pour l'oral (1 à 3 phrases précises).\n")
-                append("   - Si l'utilisateur parle ou pose une question en MOORÉ, réponds-lui en MOORÉ authentique sans erreur.\n")
+                append("RÈGLES ABSOLUES ET OBLIGATOIRES :\n")
+                append("1. RÉPONDRE EXACTEMENT À LA QUESTION POSÉE SANS AUCUNE ERREUR :\n")
+                append("   - Écoute et analyse attentivement la question ou la phrase de l'utilisateur (qu'elle soit transcrite en Mooré ou en Français).\n")
+                append("   - Réponds TOUJOURS directement, exactement et sans erreur à la question précise que l'utilisateur vient de poser (1 à 3 phrases claires).\n")
+                append("   - Ne réponds JAMAIS au hasard et ne remplace JAMAIS la réponse à une question par une simple salutation.\n")
+                append("2. 100% MOORÉ AUTHENTIQUE UNIQUEMENT :\n")
+                append("   - Formule toute ta réponse EXCLUSIVEMENT en langue Mooré authentique du Burkina Faso.\n")
+                append("   - N'ajoute JAMAIS de traduction en français ni de texte entre parenthèses.\n")
+                append("   - Après avoir répondu avec précision à la question de l'utilisateur, tu peux terminer poliment par « Fo me data bõe ? » ou « Fo data bõe tɩ m sõng-fo ? ».\n")
                 append("3. SALUTATIONS ET VOCABULAIRE MOORÉ CERTIFIÉS (50 LEÇONS AUDIO) :\n")
-                append("   - 'Nii yi beogo' (Bonjour) -> 'Yibeo kibare'\n")
-                append("   - 'Nii zabre' (Bonsoir) -> 'Zabre kibare'\n")
-                append("   - 'Nii windga' (Midi / Bon après-midi) -> 'Windga kibare'\n")
-                append("   - 'Niyungo' (Bonsoir de nuit) -> 'Yungo kibare'\n")
-                append("   - 'Wind da ganeg laafi' (Bonne nuit) -> 'Amiina ! Wind da ganeg laafi.'\n")
-                append("   - 'Neewôgô' (Bienvenue) -> 'Barka ! Laafi bala ?'\n")
-                append("   - 'Kibare' / 'Laafi beeme' -> 'Laafi bala ! Ya sonma.'\n")
-                append("   - 'Nindaaré' (Au revoir) -> 'Wënd-na kô-d nindaare !'\n")
-                append("   - Vocabulaire Mooré : Maam (Moi), Fõ (Toi), Tond (Nous), M'ma (Maman), M'baaba (Papa), Nikieman (Vieux), Poug yaanga (Vieille), Paga (Femme), Rawa (Homme), Biiga (Enfant), Poug sada (Fille), Kakouada (Cultivateur), Tandaogo (Orpailleur), M nan gounsam (Je vais dormir), M data ligdi (Je veux l'argent), M debda zakin wan (Je vais à la maison), Sên na be (Actualité du jour), Raaga (Marché), Monteur (Moto), Monbile (Voiture), Pnous (Pneu), Nanwoudre (Chaussure), Weefo (Vélo), Moncoroni (Spaghetti), Foūgou (Habit), Son kaam (Arachide), Bidou (Bidon), Mougne (Riz), Beinga (Haricot), Touayga (Gombo), Zom-kom (Boisson de bienvenue), Banga (Fer), Yagre (Caillou).\n")
-                append("4. IDENTITÉ : Tu es SAM AI, créé par Abdoul Mohamine Sawadogo. Ne mentionne jamais OpenAI ou ChatGPT.\n")
+                append("   - 'Nii yi beogo' -> 'Yibeo kibare'\n")
+                append("   - 'Nii zabre' -> 'Zabre kibare'\n")
+                append("   - 'Nii windga' -> 'Windga kibare'\n")
+                append("   - 'Niyungo' -> 'Yungo kibare'\n")
+                append("   - 'Wind da ganeg laafi' -> 'Amiina ! Wind da ganeg laafi.'\n")
+                append("   - 'Neewôgô' -> 'Barka ! Laafi bala ? Fo data bõe ?'\n")
+                append("   - 'Kibare' / 'Laafi beeme' -> 'Laafi bala ! Ya sonma. Fo data bõe tɩ m sõng-fo ?'\n")
+                append("   - 'Nindaaré' -> 'Wënd-na kô-d nindaare !'\n")
+                append("   - Vocabulaire Mooré : Maam, Fõ, Tond, M'ma, M'baaba, Nikieman, Poug yaanga, Paga, Rawa, Biiga, Poug sada, Kakouada, Tandaogo, M nan gounsam, M data ligdi, M debda zakin wan, Sên na be, Raaga, Monteur, Monbile, Pnous, Nanwoudre, Weefo, Moncoroni, Foūgou, Son kaam, Bidou, Mougne, Beinga, Touayga, Zom-kom, Banga, Yagre.\n")
             }
         } else {
             buildString {
@@ -326,8 +415,8 @@ class OpenAiBackendService {
                     append("\n---------------------------------------------------------------\n")
                 }
                 append("\nConsignes impératives de qualité :\n")
-                append("1. COMPRÉHENSION EXACTE ET RÉPONSE DIRECTE EN FRANÇAIS : Lorsque l'utilisateur écrit une question ou un message en français (sur n'importe quel sujet : santé, douleur/mal, science, actualité, vie pratique, histoire, etc.), réponds-lui UNIQUEMENT en français de façon claire, directe, complète et professionnelle.\n")
-                append("2. INTERDICTION DE TRADUIRE SANS DEMANDE EXPLICITE : En discussion écrite dans SAM AI, NE TRADUIS JAMAIS ce que l'utilisateur écrit en Mooré (ni dans une autre langue) si l'utilisateur ne t'a pas explicitement demandé de traduire (ex: « Traduis en mooré... », « Comment dit-on ... en mooré ? »). Réponds simplement à sa question dans la langue où il t'écrit.\n")
+                append("1. COMPRÉHENSION EXACTE ET RÉPONSE DIRECTE EN FRANÇAIS SANS ERREUR : Réponds toujours directement, exactement et sans erreur à la question posée par l'utilisateur.\n")
+                append("2. INTERDICTION DE TRADUIRE SANS DEMANDE EXPLICITE : En discussion écrite dans SAM AI, NE TRADUIS JAMAIS ce que l'utilisateur écrit en Mooré (ni dans une autre langue) si l'utilisateur ne t'a pas explicitement demandé de traduire. Réponds simplement à sa question dans la langue où il t'écrit.\n")
                 append("3. INFORMATIONS D'ACTUALITÉ : Exploite immédiatement et pleinement les faits, dépêches et articles récents fournis pour répondre aux questions sur le Burkina Faso et le monde.\n")
                 append("4. IDENTITÉ EXCLUSIVE SAM AI : Tu es uniquement et exclusivement SAM AI, conçu par Abdoul Mohamine Sawadogo. Ne mentionne JAMAIS OpenAI, ChatGPT, GPT-4 ou GPT.\n")
                 append("5. SI ET SEULEMENT SI L'UTILISATEUR DEMANDE EXPLICITEMENT DU MOORÉ : Utilise alors le vocabulaire certifié (Nii yi beogo -> Yibeo kibare, Nii zabre -> Zabre kibare, Nii windga -> Windga kibare, Niyungo -> Yungo kibare, Wind da ganeg laafi, Neewôgô, Ya sonma, Laafi beeme, Kibaré, Nindaaré, Wënd-na kô-d nindaare, Barka, Zom-kom, Sên na be, Maam, Fõ, Tond, M'ma, M'baaba, Nikieman, Poug yaanga, Paga, Rawa, Biiga, Poug sada, Kakouada, Tandaogo, M nan gounsam, M data ligdi, M debda zakin wan, Raaga, Monteur, Monbile, Pnous, Nanwoudre, Weefo, Moncoroni, Foūgou, Son kaam, Bidou, Mougne, Beinga, Touayga, Banga, Yagre).\n")
@@ -338,8 +427,17 @@ class OpenAiBackendService {
             val isReasoningModel = model.startsWith("o1") || model.startsWith("o3")
             val systemRole = if (isReasoningModel) "developer" else "system"
 
-            val historyLimit = if (isMooreVoice) 8 else 14
-            val safeHistory = messages.takeLast(historyLimit).map {
+            val historyLimit = if (isMooreVoice) 6 else 14
+            // En mode appel vocal Mooré, on ne garde dans l'historique que les échanges en Mooré pour éviter toute contamination par d'anciens messages en français
+            val filteredMessages = if (isMooreVoice) {
+                messages.filter { msg ->
+                    val lowerMsg = msg.content.lowercase(java.util.Locale.ROOT)
+                    !lowerMsg.contains("je suis sam ai") && !lowerMsg.contains("bonjour !")
+                }
+            } else {
+                messages
+            }
+            val safeHistory = filteredMessages.takeLast(historyLimit).map {
                 buildJsonObject {
                     put("role", if (it.role == "assistant" || it.role == "model" || it.role == "ai") "assistant" else "user")
                     put("content", it.content.take(4000))
@@ -364,8 +462,8 @@ class OpenAiBackendService {
                 put("model", model)
                 put("messages", messagesArray)
                 if (isMooreVoice) {
-                    put("max_completion_tokens", 350)
-                    put("temperature", 0.2)
+                    put("max_completion_tokens", 260)
+                    put("temperature", 0.1)
                 } else {
                     put("max_completion_tokens", 3000)
                 }
@@ -411,9 +509,22 @@ class OpenAiBackendService {
                 val content = (messageObj?.get("content") as? kotlinx.serialization.json.JsonPrimitive)?.content
 
                 if (!content.isNullOrBlank()) {
+                    val sanitized = sanitizeSamAiText(content)
+                    val finalText = if (isMooreVoice) {
+                        val cleanedMoore = cleanMooreVoiceFormatting(sanitized)
+                        if (containsFrenchPhrases(cleanedMoore)) {
+                            // Traduit fidèlement la vraie réponse en Mooré sans jamais perdre le sens de la réponse
+                            val translatedMoore = translateWithOpenAi(cleanedMoore, "Français", "Mooré")
+                            if (translatedMoore.isNotBlank()) cleanMooreVoiceFormatting(translatedMoore) else cleanedMoore
+                        } else {
+                            cleanedMoore
+                        }
+                    } else {
+                        sanitized
+                    }
                     return OpenAiChatResult(
                         success = true,
-                        text = sanitizeSamAiText(content),
+                        text = finalText,
                         sources = sources,
                         model = "",
                         searchPerformed = sources.isNotEmpty(),

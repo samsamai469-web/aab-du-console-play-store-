@@ -50,35 +50,85 @@ class OpenAiWhisperService(private val context: Context) {
 
         // Prompt court et propre pour éviter toute hallucination de mots aléatoires par Whisper
         private const val MOORE_WHISPER_PROMPT =
-            "Bonjour, bonsoir, comment ça va ? Nii yi beogo, Yibeo kibare, Nii zabre, Zabre kibare, Nii windga, Windga kibare, Niyungo, Yungo kibare, Kibare, Laafi bala, Ya sonma, Barka, Nindaaré."
+            "Nii yi beogo, Yibeo kibare, Nii zabre, Zabre kibare, Nii windga, Windga kibare, Niyungo, Yungo kibare, Kibare, Laafi bala, Laafi beeme, Ya sonma, Barka, Nindaaré, Fo data bõe, M data ligdi, M nan gounsam, M debda zakin wan, Sên na be."
 
         private const val MOORE_GPT4O_PROMPT =
-            "Transcris exactement et fidèlement les paroles prononcées par l'utilisateur (en français ou en Mooré du Burkina Faso) sans jamais inventer ni remplacer de mots."
+            "Transcris exactement la question ou la phrase prononcée en Mooré du Burkina Faso ou en Français. Vocabulaire Mooré : Nii yi beogo, Yibeo kibare, Nii zabre, Zabre kibare, Nii windga, Windga kibare, Niyungo, Yungo kibare, Wind da ganeg laafi, Neewôgô, Kibare, Laafi bala, Laafi beeme, Ya sonma, Barka, Nindaaré, Fo yʋʋre la bõe, Fo yaa ãnda, Fo data bõe, Bõe la fo tõe n maane, M nan gounsam, M data ligdi, M debda zakin wan, Sên na be, Zom-kom."
 
-        // Expressions de salutation et phrases clés Mooré avec leurs variantes phonétiques directes
+        private const val FRENCH_GPT4O_PROMPT =
+            "Transcris exactement et fidèlement les paroles prononcées par l'utilisateur sans jamais inventer ni remplacer de mots."
+
+        private val QUESTION_PROTECTED_WORDS = setOf(
+            "bõe", "boe", "bôe", "yɛ", "ãnda", "anda", "wãn", "wan", "yʋʋre", "yuure",
+            "tẽng", "teng", "tõe", "toe", "maane", "sõng", "song", "sokre", "leokre",
+            "qui", "que", "quoi", "quel", "quelle", "quels", "quelles", "pourquoi", "quand", "combien",
+            "ou", "où", "comment", "explique", "dis", "raconte", "parle", "capitale", "president",
+            "président", "burkina", "faso", "ouagadougou", "histoire", "signifie", "veut", "traduis",
+            "question", "réponse", "reponse", "créé", "cree", "créateur", "createur", "appelle", "appelles"
+        )
+
+        // Expressions de salutation et phrases clés Mooré avec leurs variantes phonétiques directes (y compris homophones français de Whisper)
         private val CANONICAL_MOORE_PHRASES: List<Pair<String, List<String>>> = listOf(
-            "Nii yi beogo" to listOf("nii yi beogo", "ni yibeogo", "nii yibeogo", "ni ibeogo", "ni beogo", "ne y beogo", "ne beogo", "ni i bogo", "ni yibéogô", "ni hibéogo"),
-            "Yibeo kibare" to listOf("yibeo kibare", "yibéo kibaré", "yi beogo kibare", "ibeo kibare", "yibeo kibar"),
-            "Nii zabre" to listOf("nii zabre", "ni zabre", "nii zaabre", "ni zaabre", "ne zabre", "ne y zaabre", "ni sabre", "ni jabre", "ni zabré"),
-            "Zabre kibare" to listOf("zabre kibare", "zaabre kibare", "zabré kibaré", "sabre kibare"),
-            "Nii windga" to listOf("nii windga", "ni windga", "nii ouindga", "ni ouindga", "ni winga", "ni ouinga", "ne y windga", "nii ouin-nga"),
-            "Windga kibare" to listOf("windga kibare", "ouindga kibare", "winga kibare", "ouin-nga kibaré"),
-            "Niyungo" to listOf("niyungo", "nii yungo", "ni yungo", "nii youngo", "ni youngo", "ni yougo", "ne y yungo", "nii youngô"),
-            "Yungo kibare" to listOf("yungo kibare", "youngo kibare", "yougo kibare", "youngô kibaré"),
-            "Wind da ganeg laafi" to listOf("wind da ganeg laafi", "wend na ganeg laafi", "ouenda ganag lafi", "winda ganeg lafi", "ganeg laafi"),
-            "Neewôgô" to listOf("neewogo", "neewôgô", "ne waongo", "ne y waoongo", "né oua ouongo", "newogo", "ni waongo"),
-            "Ya sonma" to listOf("ya sonma", "ya soma", "yaa soama", "ya choma", "ya sôma"),
-            "Laafi beeme" to listOf("laafi beeme", "lafi beme", "lafi bémé", "la fi beme"),
-            "Laafi bala" to listOf("laafi bala", "lafi bala", "la fi bala"),
-            "Kibare" to listOf("kibare", "kibaré", "ki bare", "kibari"),
-            "Nindaaré" to listOf("nindaare", "nindaaré", "nindare", "nin dare"),
-            "Wënd-na kô-d nindaare" to listOf("wend na kod nindaare", "ouenda kod nindare", "wenda kod nindaare"),
+            "Nii yi beogo" to listOf(
+                "nii yi beogo", "ni yibeogo", "nii yibeogo", "ni ibeogo", "ni beogo", "ne y beogo",
+                "ne beogo", "ni i bogo", "ni yibéogô", "ni hibéogo", "ni il beogo", "mais il beogo",
+                "ni y beogo", "ni il bogo", "nuit beogo", "ni bio go", "ni biogo"
+            ),
+            "Yibeo kibare" to listOf(
+                "yibeo kibare", "yibéo kibaré", "yi beogo kibare", "ibeo kibare", "yibeo kibar",
+                "il beo kibare", "hi beo kibare", "yibeo qui barre"
+            ),
+            "Nii zabre" to listOf(
+                "nii zabre", "ni zabre", "nii zaabre", "ni zaabre", "ne zabre", "ne y zaabre",
+                "ni sabre", "ni jabre", "ni zabré", "ni sabré", "nuit zabre", "mais zabre"
+            ),
+            "Zabre kibare" to listOf(
+                "zabre kibare", "zaabre kibare", "zabré kibaré", "sabre kibare", "sabré qui barre"
+            ),
+            "Nii windga" to listOf(
+                "nii windga", "ni windga", "nii ouindga", "ni ouindga", "ni winga", "ni ouinga",
+                "ne y windga", "nii ouin-nga", "ni ouin ga"
+            ),
+            "Windga kibare" to listOf(
+                "windga kibare", "ouindga kibare", "winga kibare", "ouin-nga kibaré"
+            ),
+            "Niyungo" to listOf(
+                "niyungo", "nii yungo", "ni yungo", "nii youngo", "ni youngo", "ni yougo",
+                "ne y yungo", "nii youngô", "ni hugo", "ni yougô"
+            ),
+            "Yungo kibare" to listOf(
+                "yungo kibare", "youngo kibare", "yougo kibare", "youngô kibaré"
+            ),
+            "Wind da ganeg laafi" to listOf(
+                "wind da ganeg laafi", "wend na ganeg laafi", "ouenda ganag lafi", "winda ganeg lafi", "ganeg laafi"
+            ),
+            "Neewôgô" to listOf(
+                "neewogo", "neewôgô", "ne waongo", "ne y waoongo", "né oua ouongo", "newogo", "ni waongo"
+            ),
+            "Ya sonma" to listOf(
+                "ya sonma", "ya soma", "yaa soama", "ya choma", "ya sôma", "il y a soma", "il y a sonma", "ya chômage"
+            ),
+            "Laafi beeme" to listOf(
+                "laafi beeme", "lafi beme", "lafi bémé", "la fi beme", "la fille bémé", "la fille beme", "la fi bémé"
+            ),
+            "Laafi bala" to listOf(
+                "laafi bala", "lafi bala", "la fi bala", "la fille bala", "l'affiche bala"
+            ),
+            "Kibare" to listOf(
+                "kibare", "kibaré", "ki bare", "kibari", "qui barre", "qui barré", "ki bar"
+            ),
+            "Nindaaré" to listOf(
+                "nindaare", "nindaaré", "nindare", "nin dare", "ni daré"
+            ),
+            "Wënd-na kô-d nindaare" to listOf(
+                "wend na kod nindaare", "ouenda kod nindare", "wenda kod nindaare"
+            ),
             "Barka" to listOf("barka", "barca"),
             "Barka wʋsgo" to listOf("barka wusgo", "barka ousgo", "barka wousgo", "barca ousgo"),
             "Zom-kom" to listOf("zom kom", "zom-kom", "zome kome", "zôm kôôm"),
-            "Sên na be" to listOf("sen na be", "sèn na bé"),
+            "Sên na be" to listOf("sen na be", "sèn na bé", "c'est na bé"),
             "M nan gounsam" to listOf("m nan gounsam", "m na goussom", "m na goussam", "m'na goussôm"),
-            "M data ligdi" to listOf("m data ligdi", "m'data ligdi", "mam data ligdi", "mam rata ligdi"),
+            "M data ligdi" to listOf("m data ligdi", "m'data ligdi", "mam data ligdi", "mam rata ligdi", "on date a ligdi"),
             "M debda zakin wan" to listOf("m debda zakin wan", "m debda zakin", "m'debda zakouan")
         )
 
@@ -97,8 +147,10 @@ class OpenAiWhisperService(private val context: Context) {
         private val HALLUCINATION_PATTERNS = listOf(
             "sous-titres réalisés",
             "sous-titrage",
+            "sous-titres",
             "amara.org",
             "merci d'avoir regardé",
+            "merci d'avoir écouté",
             "abonnez-vous",
             "thank you for watching",
             "subtitles by",
@@ -110,14 +162,14 @@ class OpenAiWhisperService(private val context: Context) {
             "Субтитры",
             "www.",
             "transcris exactement",
-            "transcris fidèlement"
+            "transcris fidèlement",
+            "transcription vocale en langue"
         )
     }
 
     /**
      * Transcrit un fichier audio enregistré avec une précision maximale et une latence minimale :
-     * Utilise `gpt-4o-mini-transcribe` en priorité (reconnaissance vocale neuronale haute précision
-     * sans hallucination) avec repli immédiat sur `whisper-1`.
+     * Utilise `gpt-4o-transcribe` en priorité avec repli immédiat sur `gpt-4o-mini-transcribe` et `whisper-1`.
      */
     suspend fun transcribeAudio(
         audioFile: File,
@@ -212,7 +264,8 @@ class OpenAiWhisperService(private val context: Context) {
         }
 
         val contextPrompt = when {
-            model == GPT4O_FLAGSHIP_TRANSCRIBE_MODEL || model == GPT4O_MINI_TRANSCRIBE_MODEL -> MOORE_GPT4O_PROMPT
+            isMooreHint && (model == GPT4O_FLAGSHIP_TRANSCRIBE_MODEL || model == GPT4O_MINI_TRANSCRIBE_MODEL) -> MOORE_GPT4O_PROMPT
+            model == GPT4O_FLAGSHIP_TRANSCRIBE_MODEL || model == GPT4O_MINI_TRANSCRIBE_MODEL -> FRENCH_GPT4O_PROMPT
             isMooreHint -> MOORE_WHISPER_PROMPT
             whisperLangCode == "en" -> "Accurate speech-to-text transcription."
             else -> "Bonjour, bonsoir, SAM AI, Burkina Faso, Ouagadougou, Nii yi beogo, Yibeo kibare, Nii zabre, Zabre kibare."
@@ -270,6 +323,7 @@ class OpenAiWhisperService(private val context: Context) {
         if (HALLUCINATION_PATTERNS.any { lower.contains(it) }) return true
         if (lower.contains("nii yi beogo, yibeo kibare, nii zabre")) return true
         if (lower.contains("ne y beogo, ne y zaabre, ne y windga")) return true
+        if (lower.contains("transcris exactement la question")) return true
         return false
     }
 
@@ -283,19 +337,19 @@ class OpenAiWhisperService(private val context: Context) {
         // 0. Normalisation des prolongations vocaliques excessives (ex: "Niiiii yi beoooogo" -> "Nii yi beogo")
         s = com.example.data.engine.DictionaryLookupEngine.normalizeMooreProlongations(s)
 
-        // Uniquement les vraies variantes phonétiques Mooré (aucun mot français courant n'est remplacé !)
+        // Uniquement les vraies variantes phonétiques Mooré (aucun mot français courant n'est remplacé hors mode Mooré !)
         val replacements = listOf(
             // 1. Leçon Audio n°1 : "Nii yi beogo" (Bonjour) & "Yibeo kibare"
-            Regex("(?i)\\b(nii+\\s*y?i?\\s*beo+go+|ni\\s*y?i?\\s*beo+go+|nii?\\s*y?i?\\s*béogo+|ne\\s*y?i?\\s*beo+go+|né\\s*y?i?\\s*béogo+|ney\\s*beo+go+|nyi\\s*beo+go+|n'i\\s*beo+go+|n'yibeo+go+|ni\\s*yéogo|ne\\s*yéogo|nei\\s*beogo|nay beogo|n'aie beogo|ni bio go|ni ibeogo|ni ibéogo|ni i bogo|ni bogo|ni hibéogo|ni yé béogo|mi ibéogo)\\b") to "Nii yi beogo",
-            Regex("(?i)\\b(yibeo+g?\\s*kibar[eé]+|yibéo+g?\\s*kibar[eé]+|yi\\s*beo+g?\\s*kibar[eé]+|yi\\s*béo+g?\\s*kibar[eé]+|ibeo\\s*kibar[eé]+|ibéo\\s*kibar[eé]+|hibéo\\s*kibar[eé]+)\\b") to "Yibeo kibare",
+            Regex("(?i)\\b(nii+\\s*y?i?\\s*beo+go+|ni\\s*y?i?\\s*beo+go+|nii?\\s*y?i?\\s*béogo+|ne\\s*y?i?\\s*beo+go+|né\\s*y?i?\\s*béogo+|ney\\s*beo+go+|nyi\\s*beo+go+|n'i\\s*beo+go+|n'yibeo+go+|ni\\s*yéogo|ne\\s*yéogo|nei\\s*beogo|nay beogo|n'aie beogo|ni bio go|ni biogo|ni ibeogo|ni ibéogo|ni i bogo|ni bogo|ni hibéogo|ni yé béogo|mi ibéogo|ni il beogo|ni il bogo|mais il beogo|nuit beogo)\\b") to "Nii yi beogo",
+            Regex("(?i)\\b(yibeo+g?\\s*kibar[eé]+|yibéo+g?\\s*kibar[eé]+|yi\\s*beo+g?\\s*kibar[eé]+|yi\\s*béo+g?\\s*kibar[eé]+|ibeo\\s*kibar[eé]+|ibéo\\s*kibar[eé]+|hibéo\\s*kibar[eé]+|il\\s*beo\\s*kibar[eé]+|yibeo\\s*qui\\s*barr[eé]*)\\b") to "Yibeo kibare",
             // 2. Leçon Audio n°2 : "Nii zabre" (Bonsoir) & "Zabre kibare"
-            Regex("(?i)\\b(nii+\\s*za+br[eé]*|ni\\s*za+br[eé]*|ne\\s*za+br[eé]*|ney\\s*za+br[eé]*|ne\\s*i\\s*za+br[eé]*|né\\s*i\\s*za+br[eé]*|ne\\s*y\\s*za+br[eé]*|ni sabre|ni sabré|ni z'abre|ni jabré|ni zablé|mi zabré)\\b") to "Nii zabre",
-            Regex("(?i)\\b(za+br[eé]?\\s*kibar[eé]+|sabré\\s*kibar[eé]+|z'abre\\s*kibar[eé]+)\\b") to "Zabre kibare",
+            Regex("(?i)\\b(nii+\\s*za+br[eé]*|ni\\s*za+br[eé]*|ne\\s*za+br[eé]*|ney\\s*za+br[eé]*|ne\\s*i\\s*za+br[eé]*|né\\s*i\\s*za+br[eé]*|ne\\s*y\\s*za+br[eé]*|ni sabre|ni sabré|ni z'abre|ni jabré|ni zablé|mi zabré|nuit zabre|nuit sabre)\\b") to "Nii zabre",
+            Regex("(?i)\\b(za+br[eé]?\\s*kibar[eé]+|sabré\\s*kibar[eé]+|z'abre\\s*kibar[eé]+|sabré\\s*qui\\s*barr[eé]*)\\b") to "Zabre kibare",
             // 3. Leçon Audio n°3 : "Nii windga" (Midi / Après-midi) & "Windga kibare"
             Regex("(?i)\\b(nii+\\s*wi+nd?ga+|ni\\s*wi+nd?ga+|ne\\s*wi+nd?ga+|ney\\s*wi+nd?ga+|ne\\s*i\\s*wi+nd?ga+|né\\s*i\\s*wi+nd?ga+|ne\\s*ouind?ga+|ni\\s*ouind?ga+|ne\\s*y\\s*w[ĩi]nd?ga+|ni\\s*ouin\\s*ga|ne\\s*ouin\\s*ga|ni\\s*winga|nii\\s*winga|ni\\s*ouinga|ni\\s*wendga)\\b") to "Nii windga",
             Regex("(?i)\\b(wi+nd?ga+\\s*kibar[eé]+|ouind?ga+\\s*kibar[eé]+|winga\\s*kibar[eé]+|ouinga\\s*kibar[eé]+)\\b") to "Windga kibare",
             // 4. Leçon Audio n°4 : "Niyungo" (Nuit) & "Yungo kibare"
-            Regex("(?i)\\b(nii+\\s*yu+ngo+|ni\\s*yu+ngo+|niyungo+|ne\\s*yu+ngo+|ney\\s*you+ngo+|ni\\s*you+ngo+|ne\\s*you+ngo+|ne\\s*i\\s*you+ngo+|ne\\s*y\\s*y[ʋu]ngo+|ni\\s*yougo|ni\\s*yongo|nii\\s*yougo)\\b") to "Niyungo",
+            Regex("(?i)\\b(nii+\\s*yu+ngo+|ni\\s*yu+ngo+|niyungo+|ne\\s*yu+ngo+|ney\\s*you+ngo+|ni\\s*you+ngo+|ne\\s*you+ngo+|ne\\s*i\\s*you+ngo+|ne\\s*y\\s*y[ʋu]ngo+|ni\\s*yougo|ni\\s*yongo|nii\\s*yougo|ni\\s*hugo)\\b") to "Niyungo",
             Regex("(?i)\\b(yu+ngo+\\s*kibar[eé]+|you+ngo+\\s*kibar[eé]+|yougo\\s*kibar[eé]+)\\b") to "Yungo kibare",
             // 5. Souhait de bonne nuit "Wind da ganeg laafi"
             Regex("(?i)\\b(wi+nd\\s*da+\\s*ga+n[ae]g\\s*la+fi+|we+nd\\s*na+\\s*ga+n[ae]g\\s*la+fi+|ouènda\\s*ganag\\s*lafi|ouinda\\s*ganag\\s*lafi|wenda\\s*ganag\\s*laafi|winda\\s*ganeg\\s*lafi|ganeg\\s*laafi)\\b") to "Wind da ganeg laafi",
@@ -304,13 +358,13 @@ class OpenAiWhisperService(private val context: Context) {
             // Salutations au travail (Ne y tʋʋma)
             Regex("(?i)\\b(ne tuuma|ney touma|ne touma|ni touma|ne i touma|ni tuuma|ne tuma|né touma|ne y tuuma)\\b") to "Ne y tʋʋma",
             // Ça va bien : "Ya sonma" / "Laafi bala" / "Laafi beeme"
-            Regex("(?i)\\b(ya+\\s*so+n?ma+|ya+\\s*sõ+a*ma+|ya+\\s*ssoma+|ya\\s*choma)\\b") to "Ya sonma",
-            Regex("(?i)\\b(lafi bala|la fi bala|laafi ba la|laafi bala)\\b") to "Laafi bala",
-            Regex("(?i)\\b(lafi bémé|lafi beme|laafi beme|la fi bémé|lafi bème)\\b") to "Laafi beeme",
-            Regex("(?i)\\b(fo bé lafi|fo be lafi)\\b") to "Fo be laafi",
+            Regex("(?i)\\b(ya+\\s*so+n?ma+|ya+\\s*sõ+a*ma+|ya+\\s*ssoma+|ya\\s*choma|il\\s*y\\s*a\\s*so+n?ma+|ya\\s*chômage)\\b") to "Ya sonma",
+            Regex("(?i)\\b(lafi bala|la fi bala|laafi ba la|laafi bala|la fille bala|l'affiche bala)\\b") to "Laafi bala",
+            Regex("(?i)\\b(lafi bémé|lafi beme|laafi beme|la fi bémé|lafi bème|la fille bémé|la fille beme)\\b") to "Laafi beeme",
+            Regex("(?i)\\b(fo bé lafi|fo be lafi|faut la fille)\\b") to "Fo be laafi",
             Regex("(?i)\\b(mam bé lafi|mame bé lafi|mam be lafi)\\b") to "Mam be laafi",
             // Kibare (Comment ça va ?)
-            Regex("(?i)\\b(kibaré|ki baré|kibari)\\b") to "Kibare",
+            Regex("(?i)\\b(kibaré|ki baré|kibari|qui barre|qui barré|ki bar)\\b") to "Kibare",
             // Au revoir & Adieu : "Nindaaré" / "Wënd-na kô-d nindaare"
             Regex("(?i)\\b(ni+nda+r[eé]+|nin\\s*daré|nindaré)\\b") to "Nindaaré",
             Regex("(?i)\\b(ouènda\\s*kôd\\s*nindaré|wenda\\s*kod\\s*nindaare|wend\\s*na\\s*kod\\s*nindaare)\\b") to "Wënd-na kô-d nindaare",
@@ -319,11 +373,16 @@ class OpenAiWhisperService(private val context: Context) {
             // Boisson de bienvenue : "Zom-kom"
             Regex("(?i)\\b(z[oô]+m\\s*k[oô]+m|zome\\s*kome|zom\\s*kom)\\b") to "Zom-kom",
             // L'actualité du jour : "Sên na be" / "Rũndã kibaaya"
-            Regex("(?i)\\b(s[eèêẽ]+n\\s*na+\\s*b[eé]+|sèn\\s*na\\s*bé)\\b") to "Sên na be",
+            Regex("(?i)\\b(s[eèêẽ]+n\\s*na+\\s*b[eé]+|sèn\\s*na\\s*bé|c'est\\s*na\\s*bé)\\b") to "Sên na be",
             Regex("(?i)\\b(rou+nda+\\s*kiba+ya+|ru+nda+\\s*kiba+ya+)\\b") to "Rũndã kibaaya",
+            // Questions fréquentes en Mooré (Comment tu t'appelles / Qui es-tu / Que veux-tu / Que peux-tu faire)
+            Regex("(?i)\\b(fo\\s*y[uʋ]+r[eé]?\\s*la\\s*b[oõô]e|faut\\s*you\\s*ré\\s*la\\s*boé|fo\\s*youre\\s*la\\s*boe)\\b") to "Fo yʋʋre la bõe",
+            Regex("(?i)\\b(fo\\s*ya+\\s*[aã]nda+|faut\\s*ya\\s*anda)\\b") to "Fo yaa ãnda",
+            Regex("(?i)\\b(fo\\s*da+ta+\\s*b[oõô]e|faut\\s*data\\s*boé|b[oõô]e\\s*la\\s*fo\\s*da+ta+)\\b") to "Fo data bõe",
+            Regex("(?i)\\b(b[oõô]e\\s*la\\s*fo\\s*t[oõô]e\\s*n\\s*ma+n[eé]?|boé\\s*la\\s*faut\\s*toé\\s*mane)\\b") to "Bõe la fo tõe n maane",
             // Phrases courantes des audios
             Regex("(?i)\\b(m['’\\s]*na+n?\\s*gou*n?sa+m|m['’\\s]*na+\\s*gou*sso+m|m['’\\s]*na+\\s*gousse+m)\\b") to "M nan gounsam",
-            Regex("(?i)\\b(m['’\\s]*da+ta+\\s*li+gdi+|mam\\s*data\\s*ligdi|mam\\s*rata\\s*ligdi)\\b") to "M data ligdi",
+            Regex("(?i)\\b(m['’\\s]*da+ta+\\s*li+gdi+|mam\\s*data\\s*ligdi|mam\\s*rata\\s*ligdi|on\\s*date\\s*a\\s*ligdi)\\b") to "M data ligdi",
             Regex("(?i)\\b(m['’\\s]*de+bda+\\s*za+ki*n?\\s*wa*n?|m['’\\s]*de+bda+\\s*za+koua+n?)\\b") to "M debda zakin wan",
             // Wẽnd na kõ-d laafi
             Regex("(?i)\\b(wend na kod lafi|ouind na kod lafi|wendé na kod lafi|wend na ko lafi|wend na kod laafi)\\b") to "Wẽnd na kõ-d laafi"
@@ -334,7 +393,7 @@ class OpenAiWhisperService(private val context: Context) {
         }
 
         if (isMooreHint) {
-            val fuzzyMatched = matchClosestMooreCanonicalPhrase(s)
+            val fuzzyMatched = matchClosestMooreCanonicalPhrase(s, isMooreHint = true)
             if (fuzzyMatched != null) {
                 return fuzzyMatched
             }
@@ -344,10 +403,13 @@ class OpenAiWhisperService(private val context: Context) {
     }
 
     /**
-     * Compare uniquement les salutations courtes (1 à 3 mots) qui ne contiennent aucun mot français courant
-     * avec un seuil de fidélité strict (>= 0.88) afin de ne jamais altérer une question de l'utilisateur.
+     * Compare les salutations Mooré courtes avec le squelette phonétique UNIQUEMENT si l'énoncé
+     * n'est PAS une question (ne remplace jamais une question posée par l'utilisateur).
      */
-    fun matchClosestMooreCanonicalPhrase(input: String): String? {
+    fun matchClosestMooreCanonicalPhrase(input: String, isMooreHint: Boolean = true): String? {
+        // Si l'utilisateur pose une question (contient '?'), on ne remplace JAMAIS sa question par une salutation
+        if (input.contains("?")) return null
+
         val cleaned = input.trim().lowercase(Locale.ROOT)
             .replace(Regex("[^a-zàâäéèêëîïôöùûüçñãẽĩõũʋɩɛ'\\s-]"), " ")
             .replace(Regex("\\s+"), " ")
@@ -356,9 +418,13 @@ class OpenAiWhisperService(private val context: Context) {
 
         val words = cleaned.split(" ")
         if (words.size > 4) return null
-        // Si la phrase contient le moindre mot français courant ou mot interrogatif, on ne la remplace JAMAIS
-        if (words.any { it in FRENCH_PROTECTED_WORDS }) return null
 
+        // Ne jamais écraser une question contenant un mot interrogatif Mooré ou Français
+        if (words.any { it in QUESTION_PROTECTED_WORDS }) return null
+        if (!isMooreHint && words.any { it in FRENCH_PROTECTED_WORDS }) return null
+        if (isMooreHint && words.count { it in FRENCH_PROTECTED_WORDS } >= 2) return null
+
+        val inputSkeleton = toPhoneticSkeleton(cleaned)
         var bestCanonical: String? = null
         var bestScore = 0.0
 
@@ -368,18 +434,33 @@ class OpenAiWhisperService(private val context: Context) {
                 if (cleaned == varNorm) return canonical
 
                 val maxLen = maxOf(cleaned.length, varNorm.length)
-                if (maxLen >= 5) {
+                if (maxLen >= 4) {
                     val dist = levenshteinDistance(cleaned, varNorm)
-                    val score = 1.0 - (dist.toDouble() / maxLen.toDouble())
-                    if (score > bestScore) {
-                        bestScore = score
+                    val textScore = 1.0 - (dist.toDouble() / maxLen.toDouble())
+                    if (textScore > bestScore) {
+                        bestScore = textScore
                         bestCanonical = canonical
+                    }
+                }
+
+                if (isMooreHint && inputSkeleton.length >= 5) {
+                    val varSkeleton = toPhoneticSkeleton(varNorm)
+                    if (inputSkeleton == varSkeleton) return canonical
+                    val skelMax = maxOf(inputSkeleton.length, varSkeleton.length)
+                    if (skelMax >= 6) {
+                        val skelDist = levenshteinDistance(inputSkeleton, varSkeleton)
+                        val skelScore = 1.0 - (skelDist.toDouble() / skelMax.toDouble())
+                        if (skelScore > bestScore) {
+                            bestScore = skelScore
+                            bestCanonical = canonical
+                        }
                     }
                 }
             }
         }
 
-        return if (bestScore >= 0.88) bestCanonical else null
+        val threshold = 0.90
+        return if (bestScore >= threshold) bestCanonical else null
     }
 
     private fun toPhoneticSkeleton(text: String): String {

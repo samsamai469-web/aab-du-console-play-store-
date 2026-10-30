@@ -1920,32 +1920,44 @@ fun SamAiVoiceCallDialog(
                 if (clean.isNotBlank() && isCallActive) {
                     lastUserSentence = clean
                     callState = VoiceCallState.THINKING
+                    val turnStartMs = System.currentTimeMillis()
                     viewModel.askSamAiGemini(
                         userQuestion = clean,
                         isMooreVoice = true,
                         onReply = { botReply ->
                             if (isCallActive) {
-                                lastAiSentence = botReply
-                                callState = VoiceCallState.SAM_SPEAKING
-                                ttsManager.speakWithCallback(
-                                    text = botReply,
-                                    language = "mooré",
-                                    onStart = {
+                                val elapsed = System.currentTimeMillis() - turnStartMs
+                                // Pause naturelle d'environ ~0.75s après que l'utilisateur a parlé avant que SAM AI ne prenne la parole
+                                val naturalPauseMs = (750L - elapsed).coerceAtLeast(0L)
+                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                    if (isCallActive) {
+                                        lastAiSentence = botReply
                                         callState = VoiceCallState.SAM_SPEAKING
-                                    },
-                                    onDone = {
-                                        if (isCallActive && !isMicMuted) {
-                                            speechManager.reset()
-                                            listenTurn()
-                                        }
-                                    },
-                                    onError = {
-                                        if (isCallActive && !isMicMuted) {
-                                            speechManager.reset()
-                                            listenTurn()
-                                        }
+                                        ttsManager.speakWithCallback(
+                                            text = botReply,
+                                            language = "mooré",
+                                            onStart = {
+                                                callState = VoiceCallState.SAM_SPEAKING
+                                            },
+                                            onDone = {
+                                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                                    if (isCallActive && !isMicMuted) {
+                                                        speechManager.reset()
+                                                        listenTurn()
+                                                    }
+                                                }, 300L)
+                                            },
+                                            onError = {
+                                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                                    if (isCallActive && !isMicMuted) {
+                                                        speechManager.reset()
+                                                        listenTurn()
+                                                    }
+                                                }, 300L)
+                                            }
+                                        )
                                     }
-                                )
+                                }, naturalPauseMs)
                             }
                         }
                     )
@@ -1955,7 +1967,7 @@ fun SamAiVoiceCallDialog(
                         if (isCallActive && !isMicMuted && callState == VoiceCallState.USER_SPEAKING) {
                             listenTurn()
                         }
-                    }, 150L)
+                    }, 180L)
                 }
             },
             onError = { _ ->
@@ -1964,7 +1976,7 @@ fun SamAiVoiceCallDialog(
                         if (isCallActive && !isMicMuted && callState == VoiceCallState.USER_SPEAKING) {
                             listenTurn()
                         }
-                    }, 180L)
+                    }, 200L)
                 }
             }
         )

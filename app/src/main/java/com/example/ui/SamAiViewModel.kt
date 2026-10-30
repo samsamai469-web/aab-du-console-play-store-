@@ -2570,7 +2570,11 @@ RÈGLES D'OR DE COMPORTEMENT :
             )
 
             if (isExplicitCreatorQuestion || isExplicitModelOrOpenAiQuestion) {
-                val directAnswer = "Je suis SAM AI, une intelligence artificielle créée par Abdoul Mohamine Sawadogo, un jeune Burkinabè, pour faciliter l’apprentissage, la communication multilingue et l'accès à l'information."
+                val directAnswer = if (isMooreVoice) {
+                    "Maam yaa SAM AI, Abdoul Mohamine Sawadogo n naan maam Burkina Faso pʋgẽ. Fo data bõe tɩ m sõng-fo ?"
+                } else {
+                    "Je suis SAM AI, une intelligence artificielle créée par Abdoul Mohamine Sawadogo, un jeune Burkinabè, pour faciliter l’apprentissage, la communication multilingue et l'accès à l'information."
+                }
                 _isSamAiGeminiThinking.value = false
                 val botMsg = SamAiChatMessage(
                     sender = "sam_ai",
@@ -2578,7 +2582,8 @@ RÈGLES D'OR DE COMPORTEMENT :
                     timestamp = System.currentTimeMillis(),
                     isError = false,
                     sources = emptyList(),
-                    model = null
+                    model = null,
+                    language = if (isMooreVoice) "mooré" else null
                 )
                 _samAiChatMessages.value = _samAiChatMessages.value + botMsg
                 if (onReply != null) {
@@ -2588,7 +2593,11 @@ RÈGLES D'OR DE COMPORTEMENT :
             }
 
             if (isExplicitWhyCreatedQuestion) {
-                val directAnswer = "Mon objectif est d’aider les personnes dans leurs besoins quotidiens, de promouvoir l’apprentissage des langues burkinabè et de valoriser la culture, l’histoire et l’actualité du Burkina Faso."
+                val directAnswer = if (isMooreVoice) {
+                    "Maam sõngda fõ ne Mooré la Burkina Faso kibaya. Fo data bõe tɩ m sõng-fo ?"
+                } else {
+                    "Mon objectif est d’aider les personnes dans leurs besoins quotidiens, de promouvoir l’apprentissage des langues burkinabè et de valoriser la culture, l’histoire et l’actualité du Burkina Faso."
+                }
                 _isSamAiGeminiThinking.value = false
                 val botMsg = SamAiChatMessage(
                     sender = "sam_ai",
@@ -2596,7 +2605,8 @@ RÈGLES D'OR DE COMPORTEMENT :
                     timestamp = System.currentTimeMillis(),
                     isError = false,
                     sources = emptyList(),
-                    model = null
+                    model = null,
+                    language = if (isMooreVoice) "mooré" else null
                 )
                 _samAiChatMessages.value = _samAiChatMessages.value + botMsg
                 if (onReply != null) {

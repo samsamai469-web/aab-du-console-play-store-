@@ -57,6 +57,10 @@ class SpeechRecognitionManager(private val context: Context) {
     private var activeOnResult: ((String) -> Unit)? = null
     private var activeOnError: ((String) -> Unit)? = null
     private var activeLanguage: String = "Français"
+    @Volatile
+    private var hasDetectedSpeechInSession: Boolean = false
+    @Volatile
+    private var maxSpeechAmpInSession: Int = 0
 
     companion object {
         private const val TAG = "SpeechRecognitionMgr"
@@ -97,6 +101,8 @@ class SpeechRecognitionManager(private val context: Context) {
         activeOnResult = onResult
         activeOnError = onError
         activeLanguage = language
+        hasDetectedSpeechInSession = false
+        maxSpeechAmpInSession = 0
         _partialText.value = ""
         _soundLevel.value = 0f
         _state.value = State.Listening
@@ -108,6 +114,8 @@ class SpeechRecognitionManager(private val context: Context) {
     private fun startWhisperRecognition(language: String) {
         isUsingNativeRecognizer = false
         _partialText.value = ""
+        hasDetectedSpeechInSession = false
+        maxSpeechAmpInSession = 0
 
         val audioFile = audioRecorder.startRecording()
         if (audioFile == null) {
@@ -123,7 +131,7 @@ class SpeechRecognitionManager(private val context: Context) {
             var speechStartTime = 0L
             var lastSoundTime = System.currentTimeMillis()
             val recordingStart = lastSoundTime
-            var noiseFloor = 450f
+            var noiseFloor = 300f
             var peakSpeechAmp = 0
 
             while (isActive && _state.value is State.Listening) {
@@ -134,15 +142,15 @@ class SpeechRecognitionManager(private val context: Context) {
 
                 // Calibrage dynamique du bruit ambiant sur les 150 premières ms
                 if (!speechDetected && elapsedSinceStart < 150L && amp > 0) {
-                    noiseFloor = (noiseFloor * 0.65f) + (amp.coerceAtMost(2200) * 0.35f)
+                    noiseFloor = (noiseFloor * 0.65f) + (amp.coerceAtMost(1800) * 0.35f)
                 } else if (!speechDetected && amp in 1..noiseFloor.toInt()) {
                     noiseFloor = (noiseFloor * 0.85f) + (amp * 0.15f)
                 }
 
-                val onsetThreshold = maxOf(560, (noiseFloor * 1.55f).toInt()).coerceAtMost(2600)
-                // Seuil de maintien souple (20% du pic, plafonné à 1800) pour ne jamais couper une phrase ou question au milieu d'un mot plus doux
+                val onsetThreshold = maxOf(380, (noiseFloor * 1.50f).toInt()).coerceAtMost(2200)
+                // Seuil de maintien souple (18% du pic, plafonné à 1400) pour ne jamais couper une question au milieu d'un mot
                 val activeThreshold = if (speechDetected) {
-                    maxOf(460, (noiseFloor * 1.30f).toInt(), (peakSpeechAmp * 0.20f).toInt().coerceAtMost(1800))
+                    maxOf(280, (noiseFloor * 1.25f).toInt(), (peakSpeechAmp * 0.18f).toInt().coerceAtMost(1400))
                 } else {
                     onsetThreshold
                 }
@@ -153,9 +161,11 @@ class SpeechRecognitionManager(private val context: Context) {
                         lastSoundTime = now
                         if (amp > peakSpeechAmp) {
                             peakSpeechAmp = amp
+                            maxSpeechAmpInSession = amp
                         }
                         if (!speechDetected) {
                             speechDetected = true
+                            hasDetectedSpeechInSession = true
                             speechStartTime = now
                         }
                     }
@@ -164,10 +174,17 @@ class SpeechRecognitionManager(private val context: Context) {
                     val silenceDuration = now - lastSoundTime
                     val totalSpeechDuration = if (speechDetected) (now - speechStartTime) else 0L
 
-                    // Fin de phrase détectée après 480 ms de vrai silence (permet les respirations naturelles entre les mots d'une question jusqu'à 10s)
-                    if ((speechDetected && silenceDuration >= 480L && totalSpeechDuration >= 260L) ||
-                        (speechDetected && totalSpeechDuration >= 10000L) ||
-                        (!speechDetected && elapsedSinceStart >= 3800L)
+                    // Si aucune parole n'a été détectée après 4.0s, on annule proprement SANS envoyer le silence à Whisper (évite toute parole au hasard)
+                    if (!speechDetected && elapsedSinceStart >= 4000L) {
+                        withContext(Dispatchers.Main) {
+                            cancelSilenceRecording()
+                        }
+                        break
+                    }
+
+                    // Pause naturelle (~0.9s de silence après la voix) pour laisser l'utilisateur finir toute sa question avant que SAM AI ne lui réponde
+                    if ((speechDetected && silenceDuration >= 900L && totalSpeechDuration >= 250L) ||
+                        (speechDetected && totalSpeechDuration >= 12000L)
                     ) {
                         withContext(Dispatchers.Main) {
                             stopListening()
@@ -182,6 +199,17 @@ class SpeechRecognitionManager(private val context: Context) {
                 delay(25L)
             }
         }
+    }
+
+    private fun cancelSilenceRecording() {
+        amplitudeJob?.cancel()
+        amplitudeJob = null
+        audioRecorder.cancel()
+        _soundLevel.value = 0f
+        _partialText.value = ""
+        val err = "Aucune parole détectée."
+        _state.value = State.Error(err)
+        activeOnError?.invoke(err)
     }
 
     private fun deliverSuccess(text: String, onFinished: ((String) -> Unit)? = null) {
@@ -241,23 +269,28 @@ class SpeechRecognitionManager(private val context: Context) {
         amplitudeJob?.cancel()
         amplitudeJob = null
         _soundLevel.value = 0f
+
+        val voiceDetected = hasDetectedSpeechInSession && maxSpeechAmpInSession >= 320
+        val audioFile = audioRecorder.stopRecording()
+
+        if (!voiceDetected || audioFile == null || !audioFile.exists() || audioFile.length() < 600) {
+            try {
+                audioFile?.delete()
+            } catch (_: Exception) {}
+            val err = "Aucune parole détectée. Veuillez parler plus près du micro."
+            _state.value = State.Error(err)
+            _partialText.value = ""
+            activeOnError?.invoke(err)
+            onFinished?.invoke("")
+            return
+        }
+
         _state.value = State.Processing
         if (onFinished != null) {
             activeOnResult = onFinished
         }
 
-        val audioFile = audioRecorder.stopRecording()
-
         transcriptionJob = scope.launch {
-            if (audioFile == null || !audioFile.exists() || audioFile.length() < 300) {
-                val err = "Aucune parole détectée. Veuillez parler plus près du micro."
-                _state.value = State.Error(err)
-                _partialText.value = ""
-                activeOnError?.invoke(err)
-                onFinished?.invoke("")
-                return@launch
-            }
-
             val result = whisperService.transcribeAudio(audioFile, activeLanguage)
             result.onSuccess { transcribed ->
                 val clean = transcribed.trim()
