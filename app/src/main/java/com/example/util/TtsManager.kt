@@ -242,17 +242,17 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         isMoore: Boolean,
         speed: Float
     ): ByteArray? = withContext(Dispatchers.IO) {
-        // Priorité absolue : Modèle temps réel ultra-rapide `tts-1` (~350 ms) lisant directement
-        // notre transcription phonétique ouest-africaine (`toMooreSpokenPhonetics`) sans délai LLM
-        val fastPayload = buildJsonObject {
-            put("model", "tts-1")
+        // Priorité absolue : Modèle vocal Haute Définition d'élite d'OpenAI `tts-1-hd`
+        // lisant directement notre transcription phonétique ouest-africaine (`toMooreSpokenPhonetics`)
+        val hdPayload = buildJsonObject {
+            put("model", "tts-1-hd")
             put("input", spokenText.take(2500))
             put("voice", "nova")
             put("response_format", "mp3")
             put("speed", speed)
         }.toString()
 
-        var audioBytes = requestOpenAiAudioBytes(fastPayload, apiKey)
+        var audioBytes = requestOpenAiAudioBytes(hdPayload, apiKey)
 
         if (audioBytes == null) {
             val fallbackPayload = buildJsonObject {
@@ -284,9 +284,8 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             val cachedFile = getCachedVoiceFile(spokenText, isMoore)
 
             if (!cachedFile.exists() || cachedFile.length() < 200) {
-                // Délai strict de 1.35s max : si le réseau est lent, on bascule immédiatement sur la voix locale (0 ms)
-                // tout en téléchargeant l'audio neuronal en arrière-plan pour la prochaine fois !
-                val audioBytes = kotlinx.coroutines.withTimeoutOrNull(1350L) {
+                // Délai de 2.4s pour laisser le modèle Haute Définition `tts-1-hd` générer l'audio studio
+                val audioBytes = kotlinx.coroutines.withTimeoutOrNull(2400L) {
                     synthesizeNeuralBytes(spokenText, apiKey, isMoore, speed)
                 }
                 if (audioBytes == null || audioBytes.size < 200) {

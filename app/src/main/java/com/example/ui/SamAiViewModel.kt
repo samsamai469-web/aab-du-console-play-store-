@@ -2438,12 +2438,11 @@ class SamAiViewModel(
         val cleanQuestion = userQuestion.trim()
         if (cleanQuestion.isBlank() || (_isSamAiGeminiThinking.value && !isMooreVoice)) return
 
-        val isMooreDetected = isMooreVoice || cleanQuestion.contains("mooré", ignoreCase = true)
         val userMsg = SamAiChatMessage(
             sender = "user",
             text = cleanQuestion,
             timestamp = System.currentTimeMillis(),
-            language = if (isMooreDetected) "mooré" else null
+            language = if (isMooreVoice) "mooré" else null
         )
         val currentList = if (_samAiChatMessages.value.size == 1 && _samAiChatMessages.value.first().id == "welcome_msg") {
             listOf(userMsg)
@@ -2636,12 +2635,12 @@ RÈGLES D'OR DE COMPORTEMENT :
                 }
             }
 
-            // Envoi direct à l'API OpenAI avec mode Mooré dédié si applicable
+            // Envoi direct à l'API OpenAI avec le modèle flagship gpt-4o haute précision
             val openAiResult = openAiBackendService.sendChatMessage(
                 messages = currentHistory,
                 userQuestion = userText,
                 enableWebSearch = liveSources.isNotEmpty(),
-                preferredModel = if (isMooreVoice || onReply != null) "gpt-4o-mini" else "",
+                preferredModel = "gpt-4o",
                 newsContext = liveContextSummary,
                 sources = liveSources,
                 isMooreVoice = isMooreVoice
@@ -2659,9 +2658,6 @@ RÈGLES D'OR DE COMPORTEMENT :
             }
 
             _isSamAiGeminiThinking.value = false
-            val isMooreResponse = isMooreVoice ||
-                cleanQuestion.contains("mooré", ignoreCase = true) ||
-                cleanQuestion.contains("moore", ignoreCase = true)
 
             val botMsg = SamAiChatMessage(
                 sender = "sam_ai",
@@ -2670,7 +2666,7 @@ RÈGLES D'OR DE COMPORTEMENT :
                 isError = isError,
                 sources = responseSources,
                 model = null,
-                language = if (isMooreResponse) "mooré" else null
+                language = if (isMooreVoice) "mooré" else null
             )
             _samAiChatMessages.value = _samAiChatMessages.value + botMsg
 

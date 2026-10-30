@@ -85,7 +85,7 @@ class SpeechRecognitionManager(private val context: Context) {
     }
 
     /**
-     * Démarre la reconnaissance vocale avec affichage instantané mot par mot.
+     * Démarre la reconnaissance vocale haute précision avec capture PCM 16kHz instantanée (0 ms de délai).
      */
     fun startListening(
         language: String = "fr-FR",
@@ -101,127 +101,14 @@ class SpeechRecognitionManager(private val context: Context) {
         _soundLevel.value = 0f
         _state.value = State.Listening
 
-        val isNativeAvailable = try {
-            SpeechRecognizer.isRecognitionAvailable(context)
-        } catch (_: Exception) {
-            false
-        }
-
-        // Pour les langues nationales (Mooré, Dioula), on privilégie Whisper
-        // Pour les langues standards (Français, Anglais, etc.), Google SpeechRecognizer écrit en temps réel
-        if (isNativeAvailable && !isAfricanLanguage(language)) {
-            startNativeRecognition(language)
-        } else {
-            startWhisperRecognition(language)
-        }
-    }
-
-    private fun startNativeRecognition(language: String) {
-        isUsingNativeRecognizer = true
-        mainHandler.post {
-            try {
-                destroyNativeRecognizer()
-                var silenceRetryCount = 0
-                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, getLanguageTag(language))
-                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
-                    putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1200L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 750L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 550L)
-                    putExtra("android.speech.extra.DICTATION_MODE", true)
-                }
-
-                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
-                    setRecognitionListener(object : RecognitionListener {
-                        override fun onReadyForSpeech(params: Bundle?) {
-                            _state.value = State.Listening
-                        }
-
-                        override fun onBeginningOfSpeech() {
-                            _state.value = State.Listening
-                        }
-
-                        override fun onRmsChanged(rmsdB: Float) {
-                            val normalized = (rmsdB.coerceIn(0f, 10f) / 10f)
-                            _soundLevel.value = normalized
-                        }
-
-                        override fun onBufferReceived(buffer: ByteArray?) {}
-
-                        override fun onEndOfSpeech() {
-                            _soundLevel.value = 0f
-                        }
-
-                        override fun onError(error: Int) {
-                            Log.d(TAG, "SpeechRecognizer notice [code $error]")
-                            val currentText = _partialText.value.trim()
-                            if (currentText.isNotBlank()) {
-                                deliverSuccess(currentText)
-                                return
-                            }
-
-                            if ((error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) && silenceRetryCount < 1) {
-                                silenceRetryCount++
-                                Log.d(TAG, "Relance de l'écoute après silence initial")
-                                try {
-                                    startListening(intent)
-                                    return
-                                } catch (_: Exception) {}
-                            }
-
-                            if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
-                                val msg = "Aucune parole détectée. Veuillez parler plus fort."
-                                _state.value = State.Error(msg)
-                                activeOnError?.invoke(msg)
-                            } else {
-                                // En cas d'erreur de reconnaissance vocale native (service indisponible ou permissions), bascule vers Whisper
-                                Log.w(TAG, "Bascule vers enregistreur audio Whisper")
-                                startWhisperRecognition(activeLanguage)
-                            }
-                        }
-
-                        override fun onResults(results: Bundle?) {
-                            val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            val recognized = matches?.firstOrNull()?.trim().orEmpty()
-                            val fallback = _partialText.value.trim()
-                            val finalText = if (recognized.isNotBlank()) recognized else fallback
-
-                            if (finalText.isNotBlank()) {
-                                deliverSuccess(finalText)
-                            } else {
-                                val err = "Aucune parole détectée."
-                                _state.value = State.Error(err)
-                                activeOnError?.invoke(err)
-                            }
-                        }
-
-                        override fun onPartialResults(partialResults: Bundle?) {
-                            val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                            val liveWord = matches?.firstOrNull()?.trim().orEmpty()
-                            if (liveWord.isNotBlank()) {
-                                _partialText.value = liveWord
-                            }
-                        }
-
-                        override fun onEvent(eventType: Int, params: Bundle?) {}
-                    })
-                }
-
-                speechRecognizer?.startListening(intent)
-            } catch (e: Exception) {
-                Log.w(TAG, "Échec démarrage SpeechRecognizer, bascule vers Whisper: ${e.message}")
-                startWhisperRecognition(language)
-            }
-        }
+        // Capture directe PCM 16kHz sans perte + transcription neuronale OpenAI (comprend Français + Mooré sans délai ni échec natif)
+        startWhisperRecognition(language)
     }
 
     private fun startWhisperRecognition(language: String) {
         isUsingNativeRecognizer = false
         _partialText.value = ""
-        
+
         val audioFile = audioRecorder.startRecording()
         if (audioFile == null) {
             val msg = "Impossible d'accéder au microphone de l'appareil."
@@ -236,7 +123,7 @@ class SpeechRecognitionManager(private val context: Context) {
             var speechStartTime = 0L
             var lastSoundTime = System.currentTimeMillis()
             val recordingStart = lastSoundTime
-            var noiseFloor = 520f
+            var noiseFloor = 450f
             var peakSpeechAmp = 0
 
             while (isActive && _state.value is State.Listening) {
@@ -245,18 +132,17 @@ class SpeechRecognitionManager(private val context: Context) {
                 val now = System.currentTimeMillis()
                 val elapsedSinceStart = now - recordingStart
 
-                // Calibrage dynamique du bruit ambiant sur les 180 premières ms (6 trames de 30 ms)
-                if (!speechDetected && elapsedSinceStart < 180L && amp > 0) {
-                    noiseFloor = (noiseFloor * 0.65f) + (amp.coerceAtMost(2400) * 0.35f)
+                // Calibrage dynamique du bruit ambiant sur les 150 premières ms
+                if (!speechDetected && elapsedSinceStart < 150L && amp > 0) {
+                    noiseFloor = (noiseFloor * 0.65f) + (amp.coerceAtMost(2200) * 0.35f)
                 } else if (!speechDetected && amp in 1..noiseFloor.toInt()) {
                     noiseFloor = (noiseFloor * 0.85f) + (amp * 0.15f)
                 }
 
-                val onsetThreshold = maxOf(820, (noiseFloor * 1.75f).toInt()).coerceAtMost(3600)
-                // Dès que la voix est captée, le seuil de maintien monte à 42% du pic vocal de l'utilisateur
-                // afin que la fin de phrase soit détectée en 360 ms même dans une pièce bruyante
+                val onsetThreshold = maxOf(560, (noiseFloor * 1.55f).toInt()).coerceAtMost(2600)
+                // Seuil de maintien souple (20% du pic, plafonné à 1800) pour ne jamais couper une phrase ou question au milieu d'un mot plus doux
                 val activeThreshold = if (speechDetected) {
-                    maxOf(onsetThreshold, (peakSpeechAmp * 0.42f).toInt().coerceAtMost(5200))
+                    maxOf(460, (noiseFloor * 1.30f).toInt(), (peakSpeechAmp * 0.20f).toInt().coerceAtMost(1800))
                 } else {
                     onsetThreshold
                 }
@@ -271,9 +157,6 @@ class SpeechRecognitionManager(private val context: Context) {
                         if (!speechDetected) {
                             speechDetected = true
                             speechStartTime = now
-                            withContext(Dispatchers.Main) {
-                                _partialText.value = "🎙️ Voix captée, SAM AI vous écoute..."
-                            }
                         }
                     }
                 } else {
@@ -281,10 +164,10 @@ class SpeechRecognitionManager(private val context: Context) {
                     val silenceDuration = now - lastSoundTime
                     val totalSpeechDuration = if (speechDetected) (now - speechStartTime) else 0L
 
-                    // Détection ultra-rapide : dès 360 ms de pause après une parole (ou max 3.2s par phrase)
-                    if ((speechDetected && silenceDuration >= 360L && totalSpeechDuration >= 220L) ||
-                        (speechDetected && totalSpeechDuration >= 3200L) ||
-                        (!speechDetected && elapsedSinceStart >= 3200L)
+                    // Fin de phrase détectée après 480 ms de vrai silence (permet les respirations naturelles entre les mots d'une question jusqu'à 10s)
+                    if ((speechDetected && silenceDuration >= 480L && totalSpeechDuration >= 260L) ||
+                        (speechDetected && totalSpeechDuration >= 10000L) ||
+                        (!speechDetected && elapsedSinceStart >= 3800L)
                     ) {
                         withContext(Dispatchers.Main) {
                             stopListening()
@@ -303,7 +186,8 @@ class SpeechRecognitionManager(private val context: Context) {
 
     private fun deliverSuccess(text: String, onFinished: ((String) -> Unit)? = null) {
         val rawClean = text.trim()
-        val clean = whisperService.applyMoorePhoneticCorrections(rawClean)
+        val isMoore = isAfricanLanguage(activeLanguage)
+        val clean = whisperService.applyMoorePhoneticCorrections(rawClean, isMooreHint = isMoore)
         _state.value = State.Success(clean)
         _partialText.value = clean
         _soundLevel.value = 0f
@@ -320,10 +204,22 @@ class SpeechRecognitionManager(private val context: Context) {
      * Arrête l'écoute et finalise la transcription.
      */
     fun stopListening(onFinished: ((String) -> Unit)? = null) {
-        if (_state.value !is State.Listening) {
-            val existing = _partialText.value.trim()
-            onFinished?.invoke(existing)
-            return
+        when (val currentState = _state.value) {
+            is State.Processing -> {
+                if (onFinished != null) {
+                    activeOnResult = onFinished
+                }
+                return
+            }
+            is State.Success -> {
+                onFinished?.invoke(currentState.text.trim())
+                return
+            }
+            !is State.Listening -> {
+                onFinished?.invoke("")
+                return
+            }
+            else -> {}
         }
 
         if (isUsingNativeRecognizer) {
@@ -346,11 +242,8 @@ class SpeechRecognitionManager(private val context: Context) {
         amplitudeJob = null
         _soundLevel.value = 0f
         _state.value = State.Processing
-        val isMoore = isAfricanLanguage(activeLanguage)
-        _partialText.value = if (isMoore) {
-            "⚡ Réponse immédiate SAM AI..."
-        } else {
-            "Transcription..."
+        if (onFinished != null) {
+            activeOnResult = onFinished
         }
 
         val audioFile = audioRecorder.stopRecording()

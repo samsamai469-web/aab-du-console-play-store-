@@ -170,7 +170,7 @@ class AudioRecorderHelper(private val context: Context) {
         // Écriture de l'en-tête WAV factice (44 octets)
         writeWavHeader(fos, 0, 0, SAMPLE_RATE, 1, 16)
 
-        val preRollFrames = ArrayDeque<ByteArray>(8) // 240 ms de pré-roll pour ne jamais couper la 1re syllabe
+        val preRollFrames = ArrayDeque<ByteArray>(16) // 480 ms de pré-roll pour ne jamais couper la 1re syllabe
         var voiceStartedInFile = false
         var totalAudioLen = 0L
 
@@ -188,8 +188,8 @@ class AudioRecorderHelper(private val context: Context) {
                         if (absRaw > peakSample) peakSample = absRaw
                         sumSquares += (rawSample.toDouble() * rawSample.toDouble())
 
-                        // Amplification vocale douce uniquement au-dessus du plancher de bruit
-                        val boosted = if (absRaw > 380) {
+                        // Amplification vocale douce et linéaire pour une clarté maximale sans distorsion
+                        val boosted = if (absRaw > 180) {
                             (rawSample * 3 / 2).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
                         } else {
                             rawSample
@@ -200,12 +200,11 @@ class AudioRecorderHelper(private val context: Context) {
                     }
 
                     val rms = kotlin.math.sqrt(sumSquares / readShorts).toInt()
-                    // Combinaison RMS + Pic pondéré : insensible aux clics isolés d'1 ms mais ultra-réactif à la voix
                     val effectiveAmp = ((rms * 1.85f).toInt() + (peakSample / 3)).coerceAtMost(32767)
                     currentPcmAmplitude = effectiveAmp
 
                     if (!voiceStartedInFile) {
-                        if (effectiveAmp > 680) {
+                        if (effectiveAmp > 160) {
                             voiceStartedInFile = true
                             while (preRollFrames.isNotEmpty()) {
                                 val oldFrame = preRollFrames.removeFirst()
@@ -215,7 +214,7 @@ class AudioRecorderHelper(private val context: Context) {
                             fos.write(frameBytes)
                             totalAudioLen += frameBytes.size
                         } else {
-                            if (preRollFrames.size >= 8) {
+                            if (preRollFrames.size >= 16) {
                                 preRollFrames.removeFirst()
                             }
                             preRollFrames.addLast(frameBytes)
@@ -227,7 +226,6 @@ class AudioRecorderHelper(private val context: Context) {
                 }
             }
 
-            // Si l'utilisateur a parlé très bas, on vide quand même le pré-roll pour ne pas avoir un fichier vide
             if (!voiceStartedInFile && preRollFrames.isNotEmpty()) {
                 while (preRollFrames.isNotEmpty()) {
                     val oldFrame = preRollFrames.removeFirst()

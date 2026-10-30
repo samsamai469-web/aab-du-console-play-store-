@@ -122,12 +122,7 @@ fun SamAiGeminiAssistantModal(
                         inputText = transcript
                         isListeningVoice = false
                         hideKeyboard()
-                        viewModel.askSamAiGemini(
-                            userQuestion = transcript,
-                            onReply = { botReply ->
-                                ttsManager.speak(botReply, "mooré")
-                            }
-                        )
+                        viewModel.askSamAiGemini(userQuestion = transcript)
                         inputText = ""
                     }
                 },
@@ -551,12 +546,7 @@ fun SamAiGeminiAssistantModal(
                                             if (transcript.isNotBlank()) {
                                                 inputText = transcript
                                                 hideKeyboard()
-                                                viewModel.askSamAiGemini(
-                                                    userQuestion = transcript,
-                                                    onReply = { botReply ->
-                                                        ttsManager.speak(botReply, "mooré")
-                                                    }
-                                                )
+                                                viewModel.askSamAiGemini(userQuestion = transcript)
                                                 inputText = ""
                                             }
                                         }
@@ -569,18 +559,13 @@ fun SamAiGeminiAssistantModal(
                                         if (hasPermission) {
                                             isListeningVoice = true
                                             speechManager.startListening(
-                                                language = "Mooré",
+                                                language = "Français",
                                                 onResult = { transcript ->
                                                     if (transcript.isNotBlank()) {
                                                         inputText = transcript
                                                         isListeningVoice = false
                                                         hideKeyboard()
-                                                        viewModel.askSamAiGemini(
-                                                            userQuestion = transcript,
-                                                            onReply = { botReply ->
-                                                                ttsManager.speak(botReply, "mooré")
-                                                            }
-                                                        )
+                                                        viewModel.askSamAiGemini(userQuestion = transcript)
                                                         inputText = ""
                                                     }
                                                 },
@@ -1836,12 +1821,13 @@ fun MooreVoiceDialog(
                         onClick = {
                             if (isRecording) {
                                 stopRecording()
-                            }
-                            val textToSend = spokenText.trim()
-                            if (textToSend.isNotBlank()) {
-                                onSendQuery(textToSend)
                             } else {
-                                Toast.makeText(context, "Veuillez parler ou choisir une phrase", Toast.LENGTH_SHORT).show()
+                                val textToSend = spokenText.trim()
+                                if (textToSend.isNotBlank()) {
+                                    onSendQuery(textToSend)
+                                } else {
+                                    Toast.makeText(context, "Veuillez parler ou choisir une phrase", Toast.LENGTH_SHORT).show()
+                                }
                             }
                         },
                         modifier = Modifier
