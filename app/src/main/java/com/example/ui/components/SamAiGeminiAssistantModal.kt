@@ -122,7 +122,12 @@ fun SamAiGeminiAssistantModal(
                         inputText = transcript
                         isListeningVoice = false
                         hideKeyboard()
-                        viewModel.askSamAiGemini(transcript)
+                        viewModel.askSamAiGemini(
+                            userQuestion = transcript,
+                            onReply = { botReply ->
+                                ttsManager.speak(botReply, "mooré")
+                            }
+                        )
                         inputText = ""
                     }
                 },
@@ -546,7 +551,12 @@ fun SamAiGeminiAssistantModal(
                                             if (transcript.isNotBlank()) {
                                                 inputText = transcript
                                                 hideKeyboard()
-                                                viewModel.askSamAiGemini(transcript)
+                                                viewModel.askSamAiGemini(
+                                                    userQuestion = transcript,
+                                                    onReply = { botReply ->
+                                                        ttsManager.speak(botReply, "mooré")
+                                                    }
+                                                )
                                                 inputText = ""
                                             }
                                         }
@@ -559,13 +569,18 @@ fun SamAiGeminiAssistantModal(
                                         if (hasPermission) {
                                             isListeningVoice = true
                                             speechManager.startListening(
-                                                language = "Français",
+                                                language = "Mooré",
                                                 onResult = { transcript ->
                                                     if (transcript.isNotBlank()) {
                                                         inputText = transcript
                                                         isListeningVoice = false
                                                         hideKeyboard()
-                                                        viewModel.askSamAiGemini(transcript)
+                                                        viewModel.askSamAiGemini(
+                                                            userQuestion = transcript,
+                                                            onReply = { botReply ->
+                                                                ttsManager.speak(botReply, "mooré")
+                                                            }
+                                                        )
                                                         inputText = ""
                                                     }
                                                 },
@@ -1517,10 +1532,12 @@ fun MooreVoiceDialog(
         speechManager.startListening(
             language = "Mooré",
             onResult = { result ->
-                if (result.isNotBlank()) {
-                    spokenText = result
-                }
+                val clean = result.trim()
                 isRecording = false
+                if (clean.isNotBlank()) {
+                    spokenText = clean
+                    onSendQuery(clean)
+                }
             },
             onError = { err ->
                 isRecording = false
@@ -1532,8 +1549,10 @@ fun MooreVoiceDialog(
     val stopRecording = {
         isRecording = false
         speechManager.stopListening { finalResult ->
-            if (finalResult.isNotBlank()) {
-                spokenText = finalResult
+            val clean = finalResult.trim()
+            if (clean.isNotBlank()) {
+                spokenText = clean
+                onSendQuery(clean)
             }
         }
     }
@@ -1770,9 +1789,9 @@ fun MooreVoiceDialog(
                         Surface(
                             onClick = {
                                 spokenText = moorePhrase
-                                if (isRecording) {
-                                    stopRecording()
-                                }
+                                speechManager.reset()
+                                isRecording = false
+                                onSendQuery(moorePhrase)
                             },
                             shape = RoundedCornerShape(14.dp),
                             color = MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -1945,12 +1964,12 @@ fun SamAiVoiceCallDialog(
                         }
                     )
                 } else if (isCallActive && !isMicMuted) {
-                    // Aucune parole captée sur ce créneau : on relance l'écoute automatiquement
+                    // Aucune parole captée sur ce créneau : on relance l'écoute immédiatement
                     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                         if (isCallActive && !isMicMuted && callState == VoiceCallState.USER_SPEAKING) {
                             listenTurn()
                         }
-                    }, 400L)
+                    }, 150L)
                 }
             },
             onError = { _ ->
@@ -1959,7 +1978,7 @@ fun SamAiVoiceCallDialog(
                         if (isCallActive && !isMicMuted && callState == VoiceCallState.USER_SPEAKING) {
                             listenTurn()
                         }
-                    }, 500L)
+                    }, 180L)
                 }
             }
         )

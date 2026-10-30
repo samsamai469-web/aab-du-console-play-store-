@@ -2436,14 +2436,14 @@ class SamAiViewModel(
         onReply: ((String) -> Unit)? = null
     ) {
         val cleanQuestion = userQuestion.trim()
-        if (cleanQuestion.isBlank() || _isSamAiGeminiThinking.value) return
+        if (cleanQuestion.isBlank() || (_isSamAiGeminiThinking.value && !isMooreVoice)) return
 
-        val targetUserId = getEffectiveSamAiUserId()
+        val isMooreDetected = isMooreVoice || cleanQuestion.contains("mooré", ignoreCase = true)
         val userMsg = SamAiChatMessage(
             sender = "user",
             text = cleanQuestion,
             timestamp = System.currentTimeMillis(),
-            language = if (isMooreVoice || cleanQuestion.contains("mooré", ignoreCase = true)) "mooré" else null
+            language = if (isMooreDetected) "mooré" else null
         )
         val currentList = if (_samAiChatMessages.value.size == 1 && _samAiChatMessages.value.first().id == "welcome_msg") {
             listOf(userMsg)
@@ -2451,6 +2451,25 @@ class SamAiViewModel(
             _samAiChatMessages.value + userMsg
         }
         _samAiChatMessages.value = currentList
+
+        // 0. RÉPONSE INSTANTANÉE SYNCHRONE (0 ms) pour toutes les salutations, phrases et mots des 50 leçons audio Mooré
+        val instantDeterministicReply = openAiBackendService.resolveDeterministicMooreLessonReply(cleanQuestion, isMooreVoice)
+        if (instantDeterministicReply != null) {
+            _isSamAiGeminiThinking.value = false
+            val botMsg = SamAiChatMessage(
+                sender = "sam_ai",
+                text = instantDeterministicReply,
+                timestamp = System.currentTimeMillis(),
+                isError = false,
+                sources = emptyList(),
+                model = null,
+                language = "mooré"
+            )
+            _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+            onReply?.invoke(instantDeterministicReply)
+            return
+        }
+
         _isSamAiGeminiThinking.value = true
 
         viewModelScope.launch(Dispatchers.IO) {
@@ -2563,6 +2582,9 @@ RÈGLES D'OR DE COMPORTEMENT :
                     model = null
                 )
                 _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+                if (onReply != null) {
+                    withContext(Dispatchers.Main) { onReply(directAnswer) }
+                }
                 return@launch
             }
 
@@ -2578,6 +2600,9 @@ RÈGLES D'OR DE COMPORTEMENT :
                     model = null
                 )
                 _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+                if (onReply != null) {
+                    withContext(Dispatchers.Main) { onReply(directAnswer) }
+                }
                 return@launch
             }
 
@@ -2594,12 +2619,14 @@ RÈGLES D'OR DE COMPORTEMENT :
             var liveContextSummary = ""
             var liveSources = emptyList<com.example.data.local.WebSource>()
 
-            if (!isMooreVoice) {
+            if (!isMooreVoice && onReply == null) {
                 val searchDecision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
-                if (searchDecision.isSearchNeeded || searchDecision.level != com.example.util.SearchNeedLevel.NONE) {
+                if (searchDecision.isSearchNeeded) {
                     try {
-                        val newsResult = liveNewsFeedService.fetchLiveNews(searchDecision.cleanSearchQuery.ifBlank { userText })
-                        if (newsResult.hasNews) {
+                        val newsResult = kotlinx.coroutines.withTimeoutOrNull(1300L) {
+                            liveNewsFeedService.fetchLiveNews(searchDecision.cleanSearchQuery.ifBlank { userText })
+                        }
+                        if (newsResult != null && newsResult.hasNews) {
                             liveContextSummary = newsResult.contextSummary
                             liveSources = newsResult.sources
                         }
@@ -2614,7 +2641,7 @@ RÈGLES D'OR DE COMPORTEMENT :
                 messages = currentHistory,
                 userQuestion = userText,
                 enableWebSearch = liveSources.isNotEmpty(),
-                preferredModel = if (isMooreVoice) "gpt-4o-mini" else "",
+                preferredModel = if (isMooreVoice || onReply != null) "gpt-4o-mini" else "",
                 newsContext = liveContextSummary,
                 sources = liveSources,
                 isMooreVoice = isMooreVoice

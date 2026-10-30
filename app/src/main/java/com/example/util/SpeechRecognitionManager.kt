@@ -128,9 +128,9 @@ class SpeechRecognitionManager(private val context: Context) {
                     putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                     putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
                     putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 5000L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 3000L)
-                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 2500L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 1200L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 750L)
+                    putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 550L)
                     putExtra("android.speech.extra.DICTATION_MODE", true)
                 }
 
@@ -232,42 +232,60 @@ class SpeechRecognitionManager(private val context: Context) {
 
         amplitudeJob = scope.launch(Dispatchers.Default) {
             var speechDetected = false
+            var consecutiveVoiceFrames = 0
             var speechStartTime = 0L
             var lastSoundTime = System.currentTimeMillis()
             val recordingStart = lastSoundTime
-            var noiseFloor = 450f
-            var consecutiveSpeechFrames = 0
+            var noiseFloor = 520f
+            var peakSpeechAmp = 0
 
             while (isActive && _state.value is State.Listening) {
                 val amp = audioRecorder.getMaxAmplitude()
-                val normalized = (amp / 18000f).coerceIn(0f, 1f)
+                val normalized = (amp / 14000f).coerceIn(0f, 1f)
                 val now = System.currentTimeMillis()
+                val elapsedSinceStart = now - recordingStart
 
-                // Calibrage dynamique du bruit ambiant sur les 250 premières ms
-                if (!speechDetected && (now - recordingStart < 250L)) {
-                    noiseFloor = (noiseFloor * 0.7f) + (amp.coerceAtMost(1800) * 0.3f)
+                // Calibrage dynamique du bruit ambiant sur les 180 premières ms (6 trames de 30 ms)
+                if (!speechDetected && elapsedSinceStart < 180L && amp > 0) {
+                    noiseFloor = (noiseFloor * 0.65f) + (amp.coerceAtMost(2400) * 0.35f)
+                } else if (!speechDetected && amp in 1..noiseFloor.toInt()) {
+                    noiseFloor = (noiseFloor * 0.85f) + (amp * 0.15f)
                 }
 
-                // Seuil ultra-sensible pour capter les consonnes nasales douces (m'ma, m'baaba) et les prolongations vocales du Mooré
-                val dynamicThreshold = maxOf(420, (noiseFloor * 1.45f).toInt()).coerceAtMost(1550)
+                val onsetThreshold = maxOf(820, (noiseFloor * 1.75f).toInt()).coerceAtMost(3600)
+                // Dès que la voix est captée, le seuil de maintien monte à 42% du pic vocal de l'utilisateur
+                // afin que la fin de phrase soit détectée en 360 ms même dans une pièce bruyante
+                val activeThreshold = if (speechDetected) {
+                    maxOf(onsetThreshold, (peakSpeechAmp * 0.42f).toInt().coerceAtMost(5200))
+                } else {
+                    onsetThreshold
+                }
 
-                if (amp > dynamicThreshold) {
-                    consecutiveSpeechFrames++
-                    lastSoundTime = now
-                    if (!speechDetected && consecutiveSpeechFrames >= 1) {
-                        speechDetected = true
-                        speechStartTime = now
-                        withContext(Dispatchers.Main) {
-                            _partialText.value = "🎙️ Voix et intonations en Mooré captées..."
+                if (amp > activeThreshold) {
+                    consecutiveVoiceFrames++
+                    if (speechDetected || consecutiveVoiceFrames >= 2) {
+                        lastSoundTime = now
+                        if (amp > peakSpeechAmp) {
+                            peakSpeechAmp = amp
+                        }
+                        if (!speechDetected) {
+                            speechDetected = true
+                            speechStartTime = now
+                            withContext(Dispatchers.Main) {
+                                _partialText.value = "🎙️ Voix captée, SAM AI vous écoute..."
+                            }
                         }
                     }
                 } else {
-                    consecutiveSpeechFrames = 0
+                    consecutiveVoiceFrames = 0
                     val silenceDuration = now - lastSoundTime
                     val totalSpeechDuration = if (speechDetected) (now - speechStartTime) else 0L
 
-                    // Tolérance de 1.45s pour respecter les prolongations de voyelles ("Niiiii... zabre", "Maaaaam") sans couper la phrase
-                    if (speechDetected && ((silenceDuration > 1450L && totalSpeechDuration > 600L) || totalSpeechDuration > 16000L)) {
+                    // Détection ultra-rapide : dès 360 ms de pause après une parole (ou max 3.2s par phrase)
+                    if ((speechDetected && silenceDuration >= 360L && totalSpeechDuration >= 220L) ||
+                        (speechDetected && totalSpeechDuration >= 3200L) ||
+                        (!speechDetected && elapsedSinceStart >= 3200L)
+                    ) {
                         withContext(Dispatchers.Main) {
                             stopListening()
                         }
@@ -278,22 +296,24 @@ class SpeechRecognitionManager(private val context: Context) {
                 withContext(Dispatchers.Main) {
                     _soundLevel.value = normalized
                 }
-                delay(50)
+                delay(25L)
             }
         }
     }
 
-    private fun deliverSuccess(text: String) {
+    private fun deliverSuccess(text: String, onFinished: ((String) -> Unit)? = null) {
         val rawClean = text.trim()
-        val clean = if (isAfricanLanguage(activeLanguage)) {
-            whisperService.applyMoorePhoneticCorrections(rawClean)
-        } else {
-            rawClean
-        }
+        val clean = whisperService.applyMoorePhoneticCorrections(rawClean)
         _state.value = State.Success(clean)
         _partialText.value = clean
         _soundLevel.value = 0f
-        activeOnResult?.invoke(clean)
+        val resultCallback = activeOnResult
+        activeOnResult = null
+        if (onFinished != null) {
+            onFinished.invoke(clean)
+        } else {
+            resultCallback?.invoke(clean)
+        }
     }
 
     /**
@@ -314,8 +334,7 @@ class SpeechRecognitionManager(private val context: Context) {
             }
             val current = _partialText.value.trim()
             if (current.isNotBlank()) {
-                deliverSuccess(current)
-                onFinished?.invoke(current)
+                deliverSuccess(current, onFinished)
             }
         } else {
             stopWhisperRecognition(onFinished)
@@ -329,9 +348,9 @@ class SpeechRecognitionManager(private val context: Context) {
         _state.value = State.Processing
         val isMoore = isAfricanLanguage(activeLanguage)
         _partialText.value = if (isMoore) {
-            "⚡ Décodage phonétique Mooré (Whisper IA)..."
+            "⚡ Réponse immédiate SAM AI..."
         } else {
-            "Transcription en cours..."
+            "Transcription..."
         }
 
         val audioFile = audioRecorder.stopRecording()
@@ -350,8 +369,7 @@ class SpeechRecognitionManager(private val context: Context) {
             result.onSuccess { transcribed ->
                 val clean = transcribed.trim()
                 if (clean.isNotBlank()) {
-                    deliverSuccess(clean)
-                    onFinished?.invoke(clean)
+                    deliverSuccess(clean, onFinished)
                 } else {
                     val err = "Aucune parole détectée."
                     _state.value = State.Error(err)

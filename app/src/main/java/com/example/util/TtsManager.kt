@@ -43,8 +43,9 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     private val httpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(22, TimeUnit.SECONDS)
+            .connectTimeout(2200, TimeUnit.MILLISECONDS)
+            .readTimeout(2500, TimeUnit.MILLISECONDS)
+            .callTimeout(2800, TimeUnit.MILLISECONDS)
             .build()
     }
 
@@ -58,6 +59,66 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             tts = TextToSpeech(appContext, this)
         } catch (_: Exception) {
             isReady = false
+        }
+        prewarmEssentialMooreAudioCache()
+    }
+
+    private fun getCachedVoiceFile(spokenText: String, isMoore: Boolean): File {
+        val dir = File(appContext.cacheDir, "tts_voice_cache").apply { if (!exists()) mkdirs() }
+        val key = "${isMoore}_${spokenText.lowercase(Locale.ROOT).trim()}".hashCode().toUInt().toString(16)
+        return File(dir, "sam_tts_v4_$key.mp3")
+    }
+
+    private fun prewarmEssentialMooreAudioCache() {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val apiKey = apiKeyManager.getActiveOpenAiApiKey()
+                if (apiKey.isBlank() || apiKey == "MY_OPENAI_API_KEY") return@launch
+                val essentialReplies = listOf(
+                    "Yibeo kibare",
+                    "Zabre kibare",
+                    "Windga kibare",
+                    "Yungo kibare",
+                    "Laafi bala ! Ya sonma.",
+                    "Wẽnd na kõ-d laafi !",
+                    "Barka ! Laafi bala ?",
+                    "Wënd-na kô-d nindaare !",
+                    "Amiina ! Wind da ganeg laafi.",
+                    "Kaseto ka be ye ! Mam pʋsda fo.",
+                    "Amiina ! Nindaaré.",
+                    "Wind da ganeg laafi !",
+                    "Wẽnd na taase laafi ! Nindaaré.",
+                    "Wẽnd na kõ-f ligdi la laafi !",
+                    "Rũndã kibaaya yaa sõama Burkina Faso pʋgẽ ! Laafi beeme.",
+                    "Mam yʋʋre la Same ! Maam la fo zoodo.",
+                    "Maam sõngda fõ ne Mooré la Burkina Faso kibaya !",
+                    "Burkina Faso yaa tẽng sõama ! Tond nongda Burkina Faso wʋsgo.",
+                    "N-ye, maam la fo zoodo Same.",
+                    "N-ye, fõ yaa mam zoodo !",
+                    "N-ye, tond be laafi bala !",
+                    "Wẽnd na kõ m'ma laafi !",
+                    "Wẽnd na kõ m'baaba laafi !",
+                    "Zom-kom noomame wʋsgo !"
+                )
+                for (batch in essentialReplies.chunked(6)) {
+                    kotlinx.coroutines.coroutineScope {
+                        batch.map { phrase ->
+                            launch(Dispatchers.IO) {
+                                try {
+                                    val spoken = toMooreSpokenPhonetics(phrase)
+                                    val cached = getCachedVoiceFile(spoken, true)
+                                    if (!cached.exists() || cached.length() < 200) {
+                                        val bytes = synthesizeNeuralBytes(spoken, apiKey, true, 1.08f)
+                                        if (bytes != null && bytes.size >= 200) {
+                                            FileOutputStream(cached).use { it.write(bytes) }
+                                        }
+                                    }
+                                } catch (_: Exception) {}
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {}
         }
     }
 
@@ -175,18 +236,26 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         }
     }
 
-    private suspend fun trySpeakWithNeuralVoice(
+    private suspend fun synthesizeNeuralBytes(
         spokenText: String,
         apiKey: String,
         isMoore: Boolean,
-        rate: Float
-    ): Boolean = withContext(Dispatchers.IO) {
-        try {
-            // Débit normal, fluide et dynamique de vraie personne au téléphone
-            val speed = (rate * 1.08f).coerceIn(1.0f, 1.45f)
+        speed: Float
+    ): ByteArray? = withContext(Dispatchers.IO) {
+        // Priorité absolue : Modèle temps réel ultra-rapide `tts-1` (~350 ms) lisant directement
+        // notre transcription phonétique ouest-africaine (`toMooreSpokenPhonetics`) sans délai LLM
+        val fastPayload = buildJsonObject {
+            put("model", "tts-1")
+            put("input", spokenText.take(2500))
+            put("voice", "nova")
+            put("response_format", "mp3")
+            put("speed", speed)
+        }.toString()
 
-            // 1. Essai prioritaire avec gpt-4o-mini-tts et la voix "coral" (claire, humaine, chaleureuse)
-            val primaryPayload = buildJsonObject {
+        var audioBytes = requestOpenAiAudioBytes(fastPayload, apiKey)
+
+        if (audioBytes == null) {
+            val fallbackPayload = buildJsonObject {
                 put("model", "gpt-4o-mini-tts")
                 put("input", spokenText.take(2500))
                 put("voice", "coral")
@@ -195,40 +264,44 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 if (isMoore) {
                     put(
                         "instructions",
-                        "Tu es un vrai Burkinabè natif de Ouagadougou qui parle en langue MOORÉ au téléphone avec un ami. " +
-                        "INTERDICTION ABSOLUE DE PARLER EN ANGLAIS OU EN FRANÇAIS : " +
-                        "1. Ne prononce JAMAIS un seul mot ni une seule syllabe avec un accent anglais (ne dis jamais 'do' comme 'dou', ni 'fo' comme 'fow', ni 'rounda' comme 'raounda', et n'épelle JAMAIS de lettres en anglais comme 'em-pee'). " +
-                        "2. Ne prends JAMAIS un accent français parisien et ne fais aucun son 'euh' muet. " +
-                        "3. Prononce chaque voyelle de façon pure, franche et ouest-africaine : 'a' ouvert, 'é' franc, 'è' ouvert, 'ô/o' fermé franc, 'ou' franc, avec une voix 100% humaine, chaleureuse et naturelle."
-                    )
-                } else {
-                    put(
-                        "instructions",
-                        "Parle exactement comme une vraie personne bienveillante au téléphone : voix claire, chaleureuse, vivante, avec des intonations humaines naturelles et un rythme fluide."
+                        "Locuteur burkinabè natif parlant en langue Mooré. Prononciation ouest-africaine franche, zéro anglais, zéro français."
                     )
                 }
             }.toString()
+            audioBytes = requestOpenAiAudioBytes(fallbackPayload, apiKey)
+        }
+        audioBytes
+    }
 
-            var audioBytes = requestOpenAiAudioBytes(primaryPayload, apiKey)
+    private suspend fun trySpeakWithNeuralVoice(
+        spokenText: String,
+        apiKey: String,
+        isMoore: Boolean,
+        rate: Float
+    ): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val speed = (rate * 1.08f).coerceIn(1.0f, 1.45f)
+            val cachedFile = getCachedVoiceFile(spokenText, isMoore)
 
-            // 2. Repli ultra-rapide basse latence sur tts-1 avec la voix "nova"
-            if (audioBytes == null) {
-                val fastPayload = buildJsonObject {
-                    put("model", "tts-1")
-                    put("input", spokenText.take(2500))
-                    put("voice", "nova")
-                    put("response_format", "mp3")
-                    put("speed", speed)
-                }.toString()
-                audioBytes = requestOpenAiAudioBytes(fastPayload, apiKey)
+            if (!cachedFile.exists() || cachedFile.length() < 200) {
+                // Délai strict de 1.35s max : si le réseau est lent, on bascule immédiatement sur la voix locale (0 ms)
+                // tout en téléchargeant l'audio neuronal en arrière-plan pour la prochaine fois !
+                val audioBytes = kotlinx.coroutines.withTimeoutOrNull(1350L) {
+                    synthesizeNeuralBytes(spokenText, apiKey, isMoore, speed)
+                }
+                if (audioBytes == null || audioBytes.size < 200) {
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            val bgBytes = synthesizeNeuralBytes(spokenText, apiKey, isMoore, speed)
+                            if (bgBytes != null && bgBytes.size >= 200) {
+                                FileOutputStream(cachedFile).use { it.write(bgBytes) }
+                            }
+                        } catch (_: Exception) {}
+                    }
+                    return@withContext false
+                }
+                FileOutputStream(cachedFile).use { it.write(audioBytes) }
             }
-
-            if (audioBytes == null || audioBytes.size < 200) {
-                return@withContext false
-            }
-
-            val tempFile = File(appContext.cacheDir, "sam_ai_voice_${System.currentTimeMillis()}.mp3")
-            FileOutputStream(tempFile).use { it.write(audioBytes) }
 
             withContext(Dispatchers.Main) {
                 try {
@@ -241,10 +314,9 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                                 .build()
                         )
-                        setDataSource(tempFile.absolutePath)
+                        setDataSource(cachedFile.absolutePath)
                         setVolume(1.0f, 1.0f)
                         setOnPreparedListener { mp ->
-                            // Amplification équilibrée (+4.5 dB) pour une clarté vocale optimale sans saturation des basses
                             try {
                                 loudnessEnhancer = LoudnessEnhancer(mp.audioSessionId).apply {
                                     setTargetGain(450)
@@ -257,7 +329,6 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                         setOnCompletionListener {
                             isNeuralPlaying = false
                             releaseMediaPlayer()
-                            tempFile.delete()
                             val cb = activeOnDoneCallback
                             activeOnDoneCallback = null
                             cb?.invoke()
@@ -265,7 +336,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                         setOnErrorListener { _, _, _ ->
                             isNeuralPlaying = false
                             releaseMediaPlayer()
-                            tempFile.delete()
+                            cachedFile.delete()
                             val errCb = activeOnErrorCallback
                             activeOnErrorCallback = null
                             errCb?.invoke()
@@ -275,7 +346,6 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                     }
                 } catch (e: Exception) {
                     isNeuralPlaying = false
-                    tempFile.delete()
                     speakWithLocalAndroidTts(spokenText, if (isMoore) "mooré" else "Français", rate)
                 }
             }
@@ -405,8 +475,8 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             text = text.replace(pattern, replacement)
         }
 
-        // 1c. Blocage total des groupes de consonnes initiaux ('mp', 'mb', 'nd', 'nk', 'nt', 'ng')
-        // qui faisaient épeler "M P" en anglais au synthétiseur vocal (ex: m'pʋsda / mpousda -> mame pousda)
+        // 1c. Blocage des groupes de consonnes isolés ('mp', 'mb', 'nd', 'nk', 'nt', 'ng')
+        // tout en préservant M'ma, M'baaba, M nan gounsam, M data ligdi, M debda zakin wan
         text = text
             .replace(Regex("(?i)\\bmp\\b"), "mame pa")
             .replace(Regex("(?i)\\bmb\\b"), "mame ba")
@@ -414,8 +484,8 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             .replace(Regex("(?i)\\bnk\\b"), "na kô")
             .replace(Regex("(?i)\\bnt\\b"), "na tô")
             .replace(Regex("(?i)\\bng\\b"), "na gô")
-            .replace(Regex("(?i)\\bm['’]?([pbftkszdgvyrl])([aàâeéèêiîoôuùûʋɩɛãẽĩõũ])"), "mame $1$2")
-            .replace(Regex("(?i)\\bn['’]?([pbftkszdgvyrl])([aàâeéèêiîoôuùûʋɩɛãẽĩõũ])"), "na $1$2")
+            .replace(Regex("(?i)\\bm['’]?(?!ma\\b|ba+ba\\b|na\\b|data\\b|d[eé]bda\\b)([pbftkszdgvyrl])([aàâeéèêiîoôuùûʋɩɛãẽĩõũ])"), "mame $1$2")
+            .replace(Regex("(?i)\\bn['’]?(?!ye\\b)([pbftkszdgvyrl])([aàâeéèêiîoôuùûʋɩɛãẽĩõũ])"), "na $1$2")
 
         // 2. Dictionnaire phonétique étendu des 50 audios de référence et expressions du Mooré parlé
         // Utilisation de 'ô' et 'î' pour verrouiller la phonologie hors de l'anglais ('do', 'fo', 'to', 'so', 'go', 'round')

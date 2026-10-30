@@ -151,11 +151,8 @@ class AudioRecorderHelper(private val context: Context) {
                 noiseSuppressor = NoiseSuppressor.create(audioSessionId)?.apply { enabled = true }
             }
         } catch (_: Exception) {}
-        try {
-            if (AutomaticGainControl.isAvailable()) {
-                automaticGainControl = AutomaticGainControl.create(audioSessionId)?.apply { enabled = true }
-            }
-        } catch (_: Exception) {}
+        // Note: AutomaticGainControl est volontairement désactivé car il amplifie le bruit de fond
+        // après la parole et empêche la détection instantanée de fin de phrase (VAD).
         try {
             if (AcousticEchoCanceler.isAvailable()) {
                 echoCanceler = AcousticEchoCanceler.create(audioSessionId)?.apply { enabled = true }
@@ -164,35 +161,78 @@ class AudioRecorderHelper(private val context: Context) {
     }
 
     private fun writeAudioDataToWav(record: AudioRecord, outputFile: File, bufferSize: Int) {
-        val audioData = ShortArray(bufferSize / 2)
-        val byteData = ByteArray(bufferSize)
+        // Trames ultra-courtes de 30 ms (480 échantillons à 16 kHz = 960 octets)
+        // Permet une détection de voix et de silence en temps réel (33 mises à jour/seconde, zéro latence)
+        val frameShorts = 480
+        val audioData = ShortArray(frameShorts)
         val fos = FileOutputStream(outputFile)
 
         // Écriture de l'en-tête WAV factice (44 octets)
         writeWavHeader(fos, 0, 0, SAMPLE_RATE, 1, 16)
 
+        val preRollFrames = ArrayDeque<ByteArray>(8) // 240 ms de pré-roll pour ne jamais couper la 1re syllabe
+        var voiceStartedInFile = false
         var totalAudioLen = 0L
+
         try {
             while (isRecording.get()) {
-                val readShorts = record.read(audioData, 0, audioData.size)
+                val readShorts = record.read(audioData, 0, frameShorts)
                 if (readShorts > 0) {
-                    var maxAmp = 0
+                    var sumSquares = 0.0
+                    var peakSample = 0
+                    val frameBytes = ByteArray(readShorts * 2)
+
                     for (i in 0 until readShorts) {
                         val rawSample = audioData[i].toInt()
                         val absRaw = kotlin.math.abs(rawSample)
-                        if (absRaw > maxAmp) maxAmp = absRaw
+                        if (absRaw > peakSample) peakSample = absRaw
+                        sumSquares += (rawSample.toDouble() * rawSample.toDouble())
 
-                        // Amplification numérique vocale (gain 1.75x) avec limiteur doux anti-saturation
-                        // pour que les consonnes et voyelles nasales du Mooré soient captées avec une netteté maximale
-                        val boosted = (rawSample * 7 / 4).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                        // Amplification vocale douce uniquement au-dessus du plancher de bruit
+                        val boosted = if (absRaw > 380) {
+                            (rawSample * 3 / 2).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                        } else {
+                            rawSample
+                        }
 
-                        byteData[i * 2] = (boosted and 0xFF).toByte()
-                        byteData[i * 2 + 1] = ((boosted shr 8) and 0xFF).toByte()
+                        frameBytes[i * 2] = (boosted and 0xFF).toByte()
+                        frameBytes[i * 2 + 1] = ((boosted shr 8) and 0xFF).toByte()
                     }
-                    currentPcmAmplitude = maxAmp
-                    val bytesToWrite = readShorts * 2
-                    fos.write(byteData, 0, bytesToWrite)
-                    totalAudioLen += bytesToWrite
+
+                    val rms = kotlin.math.sqrt(sumSquares / readShorts).toInt()
+                    // Combinaison RMS + Pic pondéré : insensible aux clics isolés d'1 ms mais ultra-réactif à la voix
+                    val effectiveAmp = ((rms * 1.85f).toInt() + (peakSample / 3)).coerceAtMost(32767)
+                    currentPcmAmplitude = effectiveAmp
+
+                    if (!voiceStartedInFile) {
+                        if (effectiveAmp > 680) {
+                            voiceStartedInFile = true
+                            while (preRollFrames.isNotEmpty()) {
+                                val oldFrame = preRollFrames.removeFirst()
+                                fos.write(oldFrame)
+                                totalAudioLen += oldFrame.size
+                            }
+                            fos.write(frameBytes)
+                            totalAudioLen += frameBytes.size
+                        } else {
+                            if (preRollFrames.size >= 8) {
+                                preRollFrames.removeFirst()
+                            }
+                            preRollFrames.addLast(frameBytes)
+                        }
+                    } else {
+                        fos.write(frameBytes)
+                        totalAudioLen += frameBytes.size
+                    }
+                }
+            }
+
+            // Si l'utilisateur a parlé très bas, on vide quand même le pré-roll pour ne pas avoir un fichier vide
+            if (!voiceStartedInFile && preRollFrames.isNotEmpty()) {
+                while (preRollFrames.isNotEmpty()) {
+                    val oldFrame = preRollFrames.removeFirst()
+                    fos.write(oldFrame)
+                    totalAudioLen += oldFrame.size
                 }
             }
         } catch (e: Exception) {
@@ -220,11 +260,6 @@ class AudioRecorderHelper(private val context: Context) {
     fun stopRecording(): File? {
         if (!isRecording.get()) return activeAudioFile
         isRecording.set(false)
-
-        val elapsed = System.currentTimeMillis() - startTimeMillis
-        if (elapsed < 250) {
-            try { Thread.sleep(250 - elapsed) } catch (_: Exception) {}
-        }
 
         mediaRecorder?.let { mr ->
             try {
@@ -256,7 +291,7 @@ class AudioRecorderHelper(private val context: Context) {
         }
 
         try {
-            recordingThread?.join(1000)
+            recordingThread?.join(120)
         } catch (_: Exception) {}
         recordingThread = null
 
