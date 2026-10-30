@@ -174,17 +174,20 @@ class SpeechRecognitionManager(private val context: Context) {
                     val silenceDuration = now - lastSoundTime
                     val totalSpeechDuration = if (speechDetected) (now - speechStartTime) else 0L
 
-                    // Si aucune parole n'a été détectée après 4.0s, on annule proprement SANS envoyer le silence à Whisper (évite toute parole au hasard)
-                    if (!speechDetected && elapsedSinceStart >= 4000L) {
+                    // Si aucune parole n'a été détectée après 4.5s, on annule proprement SANS envoyer le silence à Whisper
+                    if (!speechDetected && elapsedSinceStart >= 4500L) {
                         withContext(Dispatchers.Main) {
                             cancelSilenceRecording()
                         }
                         break
                     }
 
-                    // Pause naturelle (~0.9s de silence après la voix) pour laisser l'utilisateur finir toute sa question avant que SAM AI ne lui réponde
-                    if ((speechDetected && silenceDuration >= 900L && totalSpeechDuration >= 250L) ||
-                        (speechDetected && totalSpeechDuration >= 12000L)
+                    // Fenêtre de silence adaptative style ChatGPT Voice :
+                    // - Salutation courte (< 1.65s de parole) : 850 ms de silence suffisent pour répondre vite
+                    // - Question complète (> 1.65s de parole) : 1300 ms de respiration permise entre deux parties de phrase sans jamais couper la question !
+                    val requiredSilenceMs = if (totalSpeechDuration <= 1650L) 850L else 1300L
+                    if ((speechDetected && silenceDuration >= requiredSilenceMs && totalSpeechDuration >= 240L) ||
+                        (speechDetected && totalSpeechDuration >= 16000L)
                     ) {
                         withContext(Dispatchers.Main) {
                             stopListening()

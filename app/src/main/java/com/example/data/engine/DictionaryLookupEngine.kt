@@ -72,8 +72,21 @@ object DictionaryLookupEngine {
         // 2. Réduction des voyelles allongées de 3+ répétitions vers 2 ou 1
         s = s.replace(Regex("(?i)([aeéèêiîoôuùûãẽĩõũʋɩɛ])\\1{2,}"), "$1$1")
 
-        // 3. Normalisation phonétique des mots avec ou sans double voyelle en Mooré
-        val canonicalRules = listOf(
+        // Si la phrase est clairement une question ou une phrase en Français (au moins 2 mots français courants),
+        // on ne remplace JAMAIS les mots isolés (comme "mobile", "monteur", "m'a") par des mots Mooré.
+        val lowerWords = s.lowercase().replace("’", "'").split(Regex("[^a-zàâäéèêëîïôöùûüç']"))
+            .filter { it.isNotBlank() }
+        val frenchIndicatorWords = setOf(
+            "le", "la", "les", "un", "une", "des", "du", "de", "dans", "pour", "avec", "sur",
+            "est", "sont", "suis", "es", "c'est", "qu'est", "quel", "quelle", "quels", "quelles",
+            "qui", "que", "quoi", "pourquoi", "comment", "combien", "quand", "bonjour", "bonsoir",
+            "salut", "merci", "explique", "raconte", "donne", "peux", "peut", "veux", "veut",
+            "téléphone", "telephone", "application", "question", "réponse", "reponse", "histoire"
+        )
+        val isFrenchSentence = lowerWords.count { it in frenchIndicatorWords } >= 2
+
+        // 3. Normalisation phonétique des salutations et expressions Mooré certifiées
+        val greetingRules = listOf(
             Regex("(?i)\\bnii+\\s*y?i+\\s*be+o+go+\\b") to "Nii yi beogo",
             Regex("(?i)\\bni+\\s*yibe+o+go+\\b") to "Nii yi beogo",
             Regex("(?i)\\bne+\\s*y?\\s*be+o+go+\\b") to "Nii yi beogo",
@@ -83,7 +96,8 @@ object DictionaryLookupEngine {
             Regex("(?i)\\bza+br[eé]?\\s*ki+ba+r[eé]+\\b") to "Zabre kibare",
             Regex("(?i)\\b(nii+|ne+)\\s*y?\\s*(wi+ndga+|ouin+d?ga+|wi+nga+)\\b") to "Nii windga",
             Regex("(?i)\\b(wi+ndga+|ouin+d?ga+)\\s*ki+ba+r[eé]+\\b") to "Windga kibare",
-            Regex("(?i)\\b(nii+|ne+)?\\s*y?\\s*(yu+ngo+|you+ngo+)\\b") to "Niyungo",
+            Regex("(?i)\\b(nii+|ne+)\\s*y?\\s*(yu+ngo+|you+ngo+)\\b") to "Niyungo",
+            Regex("(?i)\\bniyungo+\\b") to "Niyungo",
             Regex("(?i)\\b(yu+ngo+|you+ngo+)\\s*ki+ba+r[eé]+\\b") to "Yungo kibare",
             Regex("(?i)\\b(wi+nd|we+nd|ouè+nd[ae]?)\\s*(da+|na+)\\s*ga+n[ae]+g\\s*la+fi+\\b") to "Wind da ganeg laafi",
             Regex("(?i)\\b(ne+w[oô]+g[oô]+|ne+\\s*y?\\s*wa+o+ngo+)\\b") to "Neewôgô",
@@ -97,38 +111,45 @@ object DictionaryLookupEngine {
             Regex("(?i)\\bz[oô]+m[-\\s]*k[oô]+m\\b") to "Zom-kom",
             Regex("(?i)\\bs[eêẽ]+n\\s+na+\\s+be+\\b") to "Sên na be",
             Regex("(?i)\\bru+nda+\\s+ki+ba+ya+\\b") to "Sên na be",
-            Regex("(?i)\\bma+m\\b") to "Maam",
-            Regex("(?i)\\bf[oõô]{2,}\\b") to "Fõ",
-            Regex("(?i)\\bt[oõô]+ndo*\\b") to "Tond",
-            Regex("(?i)\\bm['’\\s]*ma+\\b") to "M'ma",
-            Regex("(?i)\\bm['’\\s]*ba+ba+\\b") to "M'baaba",
-            Regex("(?i)\\b(ni+n?[-\\s]*k[eéèêẽ]+ma+n?|ni+ki+[eéè]+ma+n?)\\b") to "Nikieman",
-            Regex("(?i)\\b(pou*g[-\\s]*ya+nga+|p[uʋ]+g[-\\s]*n?ya+nga+)\\b") to "Poug yaanga",
-            Regex("(?i)\\b(pou*g?k?[-\\s]*sa+da+|p[uʋ]+g[-\\s]*sa+dga+)\\b") to "Poug sada",
-            Regex("(?i)\\b(ra+wa+|ra+o+a+)\\b") to "Rawa",
-            Regex("(?i)\\bpa+ga+\\b") to "Paga",
-            Regex("(?i)\\bbi+ga+\\b") to "Biiga",
-            Regex("(?i)\\bra+ga+\\b") to "Raaga",
-            Regex("(?i)\\bwe+fo+\\b") to "Weefo",
-            Regex("(?i)\\b(fo+u+go+u*|fu+gu+)\\b") to "Foūgou",
-            Regex("(?i)\\b(mo+nte+u*r|m[oõ]+nte+r[eé]*)\\b") to "Monteur",
-            Regex("(?i)\\b(mo+nbi+l[eé]*|m[oõ]+bi+ll?i*)\\b") to "Monbile",
-            Regex("(?i)\\b(pno+u*s?|pi+nou+|pi+nu+)\\b") to "Pnous",
-            Regex("(?i)\\b(na+n?wou*dr[eé]*|na+o+dr[eé]*|ne+o+dr[eé]*)\\b") to "Nanwoudre",
-            Regex("(?i)\\b(mo+nco+ro+ni+|ma+ko+ro+ni+)\\b") to "Moncoroni",
-            Regex("(?i)\\b(so+n[-\\s]*ka+m|sou*n[-\\s]*ka+m|s[uũõ]+m[-\\s]*ka+m)\\b") to "Son kaam",
-            Regex("(?i)\\b(bi+dou+|bi+du+)\\b") to "Bidou",
-            Regex("(?i)\\b(mou+gn[eé]*|moui+|mui+)\\b") to "Mougne",
-            Regex("(?i)\\b(be+i*nga+|b[eẽèé]+nga+)\\b") to "Beinga",
-            Regex("(?i)\\b(tou*a+yga+|twa+yga+)\\b") to "Touayga",
-            Regex("(?i)\\b(ka+kou*a+da+|ka+[-\\s]*ko+a+dga+)\\b") to "Kakouada",
-            Regex("(?i)\\bta+nda+o*go+\\b") to "Tandaogo",
             Regex("(?i)\\bm['’\\s]*na+n?\\s*gou*n?sa+m\\b") to "M nan gounsam",
             Regex("(?i)\\bm['’\\s]*da+ta+\\s*li+gdi+\\b") to "M data ligdi",
             Regex("(?i)\\bm['’\\s]*de+bda+\\s*za+ki*n?\\s*(wa+n?|oua+n?)?\\b") to "M debda zakin wan"
         )
-        for ((pattern, replacement) in canonicalRules) {
+        for ((pattern, replacement) in greetingRules) {
             s = s.replace(pattern, replacement)
+        }
+
+        if (!isFrenchSentence) {
+            val vocabRules = listOf(
+                Regex("(?i)\\bma+m\\b") to "Maam",
+                Regex("(?i)\\bf[oõô]{2,}\\b") to "Fõ",
+                Regex("(?i)\\bt[oõô]+ndo*\\b") to "Tond",
+                Regex("(?i)\\bm['’\\s]*ma+\\b") to "M'ma",
+                Regex("(?i)\\bm['’\\s]*ba+ba+\\b") to "M'baaba",
+                Regex("(?i)\\b(ni+n?[-\\s]*k[eéèêẽ]+ma+n?|ni+ki+[eéè]+ma+n?)\\b") to "Nikieman",
+                Regex("(?i)\\b(pou*g[-\\s]*ya+nga+|p[uʋ]+g[-\\s]*n?ya+nga+)\\b") to "Poug yaanga",
+                Regex("(?i)\\b(pou*g?k?[-\\s]*sa+da+|p[uʋ]+g[-\\s]*sa+dga+)\\b") to "Poug sada",
+                Regex("(?i)\\b(ra+wa+|ra+o+a+)\\b") to "Rawa",
+                Regex("(?i)\\bpa+ga+\\b") to "Paga",
+                Regex("(?i)\\bbi+ga+\\b") to "Biiga",
+                Regex("(?i)\\bra+ga+\\b") to "Raaga",
+                Regex("(?i)\\bwe+fo+\\b") to "Weefo",
+                Regex("(?i)\\b(fo+u+go+u*|fu+gu+)\\b") to "Foūgou",
+                Regex("(?i)\\b(mo+nbi+l[eé]*|m[oõ]+bi+ll?i*)\\b") to "Monbile",
+                Regex("(?i)\\b(pno+u*s?|pi+nou+|pi+nu+)\\b") to "Pnous",
+                Regex("(?i)\\b(na+n?wou*dr[eé]*|na+o+dr[eé]*|ne+o+dr[eé]*)\\b") to "Nanwoudre",
+                Regex("(?i)\\b(mo+nco+ro+ni+|ma+ko+ro+ni+)\\b") to "Moncoroni",
+                Regex("(?i)\\b(so+n[-\\s]*ka+m|sou*n[-\\s]*ka+m|s[uũõ]+m[-\\s]*ka+m)\\b") to "Son kaam",
+                Regex("(?i)\\b(bi+dou+|bi+du+)\\b") to "Bidou",
+                Regex("(?i)\\b(mou+gn[eé]*|moui+|mui+)\\b") to "Mougne",
+                Regex("(?i)\\b(be+i*nga+|b[eẽèé]+nga+)\\b") to "Beinga",
+                Regex("(?i)\\b(tou*a+yga+|twa+yga+)\\b") to "Touayga",
+                Regex("(?i)\\b(ka+kou*a+da+|ka+[-\\s]*ko+a+dga+)\\b") to "Kakouada",
+                Regex("(?i)\\bta+nda+o*go+\\b") to "Tandaogo"
+            )
+            for ((pattern, replacement) in vocabRules) {
+                s = s.replace(pattern, replacement)
+            }
         }
         return s
     }

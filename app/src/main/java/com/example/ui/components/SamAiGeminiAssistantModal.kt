@@ -1889,6 +1889,9 @@ fun SamAiVoiceCallDialog(
 
     var lastUserSentence by remember { mutableStateOf("") }
     var lastAiSentence by remember { mutableStateOf("") }
+    // Mode linguistique de l'appel : "AUTO" (détecte Mooré ou Français), "MOORE" (100% Mooré), "FR" (100% Français)
+    var callLangMode by remember { mutableStateOf("AUTO") }
+    var lastDetectedLang by remember { mutableStateOf("mooré") }
 
     val soundLevel by speechManager.soundLevel.collectAsState()
     val partialTranscript by speechManager.partialText.collectAsState()
@@ -1912,8 +1915,9 @@ fun SamAiVoiceCallDialog(
     fun listenTurn() {
         if (!isCallActive || isMicMuted) return
         callState = VoiceCallState.USER_SPEAKING
+        val listenLangHint = if (callLangMode == "FR") "Français" else "Mooré"
         speechManager.startListening(
-            language = "Mooré",
+            language = listenLangHint,
             continuousMode = true,
             onResult = { recognizedText ->
                 val clean = recognizedText.trim()
@@ -1921,9 +1925,17 @@ fun SamAiVoiceCallDialog(
                     lastUserSentence = clean
                     callState = VoiceCallState.THINKING
                     val turnStartMs = System.currentTimeMillis()
+                    val useMooreForThisTurn = when (callLangMode) {
+                        "MOORE" -> true
+                        "FR" -> false
+                        else -> com.example.data.remote.OpenAiWhisperService.isLikelyMooreUtterance(clean)
+                    }
+                    val targetTtsLang = if (useMooreForThisTurn) "mooré" else "Français"
+                    lastDetectedLang = targetTtsLang
+
                     viewModel.askSamAiGemini(
                         userQuestion = clean,
-                        isMooreVoice = true,
+                        isMooreVoice = useMooreForThisTurn,
                         onReply = { botReply ->
                             if (isCallActive) {
                                 val elapsed = System.currentTimeMillis() - turnStartMs
@@ -1935,7 +1947,7 @@ fun SamAiVoiceCallDialog(
                                         callState = VoiceCallState.SAM_SPEAKING
                                         ttsManager.speakWithCallback(
                                             text = botReply,
-                                            language = "mooré",
+                                            language = targetTtsLang,
                                             onStart = {
                                                 callState = VoiceCallState.SAM_SPEAKING
                                             },
@@ -2066,6 +2078,13 @@ fun SamAiVoiceCallDialog(
                     modifier = Modifier.fillMaxWidth().padding(top = 16.dp)
                 ) {
                     Surface(
+                        onClick = {
+                            callLangMode = when (callLangMode) {
+                                "AUTO" -> "MOORE"
+                                "MOORE" -> "FR"
+                                else -> "AUTO"
+                            }
+                        },
                         shape = RoundedCornerShape(20.dp),
                         color = Color(0xFF1E222B),
                         border = BorderStroke(1.dp, Color(0xFF009639).copy(alpha = 0.5f))
@@ -2074,10 +2093,14 @@ fun SamAiVoiceCallDialog(
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text("🇧🇫", fontSize = 14.sp)
+                            Text(if (callLangMode == "FR") "🇫🇷" else "🇧🇫", fontSize = 14.sp)
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Appel en direct • Mooré (Gom-biiga)",
+                                text = when (callLangMode) {
+                                    "MOORE" -> "Appel en direct • 100% Mooré"
+                                    "FR" -> "Appel en direct • 100% Français"
+                                    else -> "Appel en direct • Mooré & Français (Auto)"
+                                },
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White
@@ -2202,7 +2225,7 @@ fun SamAiVoiceCallDialog(
                     ) {
                         Text(
                             text = when (callState) {
-                                VoiceCallState.SAM_SPEAKING -> "🔊 SAM AI vous parle en Mooré..."
+                                VoiceCallState.SAM_SPEAKING -> if (lastDetectedLang == "mooré") "🔊 SAM AI vous répond en Mooré..." else "🔊 SAM AI vous répond en Français..."
                                 VoiceCallState.USER_SPEAKING -> "🎙️ À vous de parler, SAM AI écoute..."
                                 VoiceCallState.THINKING -> "⏳ SAM AI réfléchit..."
                                 VoiceCallState.CONNECTING -> "Connexion de l'appel..."

@@ -48,15 +48,15 @@ class OpenAiWhisperService(private val context: Context) {
         private const val GPT4O_MINI_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe"
         private const val WHISPER_FAST_MODEL = "whisper-1"
 
-        // Prompt court et propre pour éviter toute hallucination de mots aléatoires par Whisper
+        // Prompt concis sans biais pour éviter toute hallucination de salutations sur des questions ouvertes
         private const val MOORE_WHISPER_PROMPT =
-            "Nii yi beogo, Yibeo kibare, Nii zabre, Zabre kibare, Nii windga, Windga kibare, Niyungo, Yungo kibare, Kibare, Laafi bala, Laafi beeme, Ya sonma, Barka, Nindaaré, Fo data bõe, M data ligdi, M nan gounsam, M debda zakin wan, Sên na be."
+            "Transcription fidèle en Français et Mooré (Burkina Faso) : Nii yi beogo, Yibeo kibare, Nii zabre, Zabre kibare, Nii windga, Niyungo, Kibare, Laafi bala, Barka."
 
         private const val MOORE_GPT4O_PROMPT =
-            "Transcris exactement la question ou la phrase prononcée en Mooré du Burkina Faso ou en Français. Vocabulaire Mooré : Nii yi beogo, Yibeo kibare, Nii zabre, Zabre kibare, Nii windga, Windga kibare, Niyungo, Yungo kibare, Wind da ganeg laafi, Neewôgô, Kibare, Laafi bala, Laafi beeme, Ya sonma, Barka, Nindaaré, Fo yʋʋre la bõe, Fo yaa ãnda, Fo data bõe, Bõe la fo tõe n maane, M nan gounsam, M data ligdi, M debda zakin wan, Sên na be, Zom-kom."
+            "Transcris mot pour mot et avec une fidélité absolue la question ou la phrase prononcée par l'utilisateur (qu'elle soit en Français ou en Mooré du Burkina Faso). Ne remplace jamais une question par une salutation."
 
         private const val FRENCH_GPT4O_PROMPT =
-            "Transcris exactement et fidèlement les paroles prononcées par l'utilisateur sans jamais inventer ni remplacer de mots."
+            "Transcris mot pour mot et avec une fidélité absolue la question ou la phrase prononcée par l'utilisateur sans jamais inventer ni remplacer de mots."
 
         private val QUESTION_PROTECTED_WORDS = setOf(
             "bõe", "boe", "bôe", "yɛ", "ãnda", "anda", "wãn", "wan", "yʋʋre", "yuure",
@@ -64,8 +64,50 @@ class OpenAiWhisperService(private val context: Context) {
             "qui", "que", "quoi", "quel", "quelle", "quels", "quelles", "pourquoi", "quand", "combien",
             "ou", "où", "comment", "explique", "dis", "raconte", "parle", "capitale", "president",
             "président", "burkina", "faso", "ouagadougou", "histoire", "signifie", "veut", "traduis",
-            "question", "réponse", "reponse", "créé", "cree", "créateur", "createur", "appelle", "appelles"
+            "question", "réponse", "reponse", "créé", "cree", "créateur", "createur", "appelle", "appelles",
+            "est-ce", "qu'est-ce", "peux-tu", "peut-on", "donne", "aide", "cherche", "calcul", "calcule"
         )
+
+        private val MOORE_SIGNATURE_WORDS = setOf(
+            "nii", "beogo", "yibeogo", "yibeo", "kibare", "kibaré", "zabre", "zaabre",
+            "windga", "niyungo", "yungo", "laafi", "lafi", "beeme", "bala", "sonma", "soma",
+            "barka", "wʋsgo", "wusgo", "nindaaré", "nindaare", "neewôgô", "neewogo", "ganeg",
+            "bõe", "boe", "bôe", "yʋʋre", "yuure", "ãnda", "tõe", "maane", "sõng", "maam",
+            "fõ", "tond", "m'ma", "m'baaba", "nikiem", "nikieman", "poug", "yaanga", "sada",
+            "paga", "rawa", "biiga", "raaga", "weefo", "foūgou", "monbile", "pnous", "nanwoudre",
+            "moncoroni", "kaam", "bidou", "mougne", "beinga", "touayga", "kakouada", "tandaogo",
+            "gounsam", "ligdi", "debda", "zakin", "zom-kom", "kibaaya", "rũndã", "runda", "wẽnd", "wend"
+        )
+
+        /**
+         * Détecte intelligemment si l'énoncé transcrit est en langue Mooré (true) ou en Français/autre (false).
+         * Permet à l'Appel Vocal en Direct de répondre en Mooré quand on lui parle en Mooré,
+         * et en Français précis (comme ChatGPT / Claude) quand on lui pose une question en Français !
+         */
+        fun isLikelyMooreUtterance(text: String): Boolean {
+            val cleaned = com.example.data.engine.DictionaryLookupEngine.normalizeMooreProlongations(text.trim())
+            val lower = cleaned.lowercase(Locale.ROOT)
+                .replace("’", "'")
+                .replace(Regex("[^a-zàâäéèêëîïôöùûüçñãẽĩõũʋɩɛ'\\s-]"), " ")
+                .replace(Regex("\\s+"), " ")
+                .trim()
+            if (lower.isEmpty()) return false
+
+            val words = lower.split(" ").filter { it.isNotBlank() }
+            val mooreHits = words.count { it in MOORE_SIGNATURE_WORDS }
+            val frenchHits = words.count { it in FRENCH_PROTECTED_WORDS }
+
+            if (mooreHits >= 1 && frenchHits == 0) return true
+            if (mooreHits > frenchHits) return true
+            if (lower.startsWith("nii ") || lower.startsWith("ne y ") || lower.startsWith("fo ") ||
+                lower.startsWith("m data") || lower.startsWith("m nan") || lower.startsWith("m debda") ||
+                lower.contains("kibare") || lower.contains("laafi") || lower.contains("beogo") ||
+                lower.contains("zabre") || lower.contains("windga") || lower.contains("yungo")
+            ) {
+                return true
+            }
+            return false
+        }
 
         // Expressions de salutation et phrases clés Mooré avec leurs variantes phonétiques directes (y compris homophones français de Whisper)
         private val CANONICAL_MOORE_PHRASES: List<Pair<String, List<String>>> = listOf(

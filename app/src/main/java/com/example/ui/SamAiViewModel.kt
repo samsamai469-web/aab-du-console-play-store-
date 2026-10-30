@@ -2628,11 +2628,11 @@ RÈGLES D'OR DE COMPORTEMENT :
             var liveContextSummary = ""
             var liveSources = emptyList<com.example.data.local.WebSource>()
 
-            if (!isMooreVoice && onReply == null) {
+            if (!isMooreVoice) {
                 val searchDecision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
                 if (searchDecision.isSearchNeeded) {
                     try {
-                        val newsResult = kotlinx.coroutines.withTimeoutOrNull(1300L) {
+                        val newsResult = kotlinx.coroutines.withTimeoutOrNull(2400L) {
                             liveNewsFeedService.fetchLiveNews(searchDecision.cleanSearchQuery.ifBlank { userText })
                         }
                         if (newsResult != null && newsResult.hasNews) {
