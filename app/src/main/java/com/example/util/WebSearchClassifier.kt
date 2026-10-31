@@ -108,32 +108,9 @@ object WebSearchClassifier {
             )
         }
 
-        // E. Définition intemporelle / concepts fondamentaux (ex: « Qu'est-ce qu'un ordinateur ? »)
-        if (isEvergreenConceptOrDefinition(norm)) {
-            return SearchDecision(
-                level = SearchNeedLevel.NONE,
-                isSearchNeeded = false,
-                isStrictTemporal = false,
-                isNewsTopic = false,
-                cleanSearchQuery = raw,
-                reason = "Définition intemporelle ou concept encyclopédique établi"
-            )
-        }
-
-        // F. Rédaction créative / poésie / exercices
-        if (isCreativeWriting(norm)) {
-            return SearchDecision(
-                level = SearchNeedLevel.NONE,
-                isSearchNeeded = false,
-                isStrictTemporal = false,
-                isNewsTopic = false,
-                cleanSearchQuery = raw,
-                reason = "Tâche de rédaction créative ou littéraire"
-            )
-        }
-
-        // 3. Détection des cas TEMPORELS EN DIRECT (TEMPORAL_LIVE, isStrictTemporal = true)
-        // A. Sports, résultats de matchs, scores récents (ex: « Qui a remporté le match d'hier ? »)
+        // E. Détection PRIORITAIRE des cas TEMPORELS EN DIRECT (TEMPORAL_LIVE, isStrictTemporal = true)
+        // Avant les définitions générales, car "C'est quoi l'actualité ?" ou "Qu'est-ce qui se passe ?" est temporel !
+        // 1) Sports, résultats de matchs, scores récents
         if (isSportsOrMatch(norm)) {
             return SearchDecision(
                 level = SearchNeedLevel.TEMPORAL_LIVE,
@@ -145,7 +122,7 @@ object WebSearchClassifier {
             )
         }
 
-        // B. Actualités récentes, dernières nouvelles (ex: « Quelles sont les dernières nouvelles du Burkina Faso ? »)
+        // 2) Actualités récentes, dernières nouvelles, infos en direct
         if (isRecentNewsOrCurrentEvents(norm)) {
             return SearchDecision(
                 level = SearchNeedLevel.TEMPORAL_LIVE,
@@ -157,7 +134,7 @@ object WebSearchClassifier {
             )
         }
 
-        // C. Météo en direct
+        // 3) Météo en direct
         if (isWeather(norm)) {
             return SearchDecision(
                 level = SearchNeedLevel.TEMPORAL_LIVE,
@@ -169,7 +146,7 @@ object WebSearchClassifier {
             )
         }
 
-        // D. Cours, taux de change, prix fluctuants (ex: « Quel est le prix actuel de cet appareil ? »)
+        // 4) Cours, taux de change, prix fluctuants
         if (isLiveFinancialOrPrice(norm)) {
             return SearchDecision(
                 level = SearchNeedLevel.TEMPORAL_LIVE,
@@ -178,6 +155,30 @@ object WebSearchClassifier {
                 isNewsTopic = false,
                 cleanSearchQuery = cleanSearchQueryForEngine(raw),
                 reason = "Prix du marché, cours financier ou information fluctuante"
+            )
+        }
+
+        // F. Définition intemporelle / concepts fondamentaux (ex: « Qu'est-ce qu'un ordinateur ? »)
+        if (isEvergreenConceptOrDefinition(norm)) {
+            return SearchDecision(
+                level = SearchNeedLevel.NONE,
+                isSearchNeeded = false,
+                isStrictTemporal = false,
+                isNewsTopic = false,
+                cleanSearchQuery = raw,
+                reason = "Définition intemporelle ou concept encyclopédique établi"
+            )
+        }
+
+        // G. Rédaction créative / poésie / exercices
+        if (isCreativeWriting(norm)) {
+            return SearchDecision(
+                level = SearchNeedLevel.NONE,
+                isSearchNeeded = false,
+                isStrictTemporal = false,
+                isNewsTopic = false,
+                cleanSearchQuery = raw,
+                reason = "Tâche de rédaction créative ou littéraire"
             )
         }
 
@@ -294,11 +295,12 @@ object WebSearchClassifier {
         val hasDefStart = definitionStarts.any { norm.startsWith(it) || norm.contains(" $it") }
         if (!hasDefStart) return false
 
-        // Si la question contient des marqueurs temporels stricts, ce n'est PAS intemporel
+        // Si la question contient des marqueurs temporels ou d'actualité, ce n'est PAS intemporel
         val temporalClues = listOf(
-            "actuel", "actuelle", "aujourd'hui", "hier", "ce matin", "ce soir",
-            "cette annee", "recemment", "dernier", "derniere", "prix", "score",
-            "match", "president", "gouvernement", "ministre"
+            "actuel", "actuelle", "actualite", "actu", "nouvelle", "info", "news",
+            "aujourd'hui", "hier", "ce matin", "ce soir", "se passe", "en direct",
+            "cette annee", "recemment", "recent", "dernier", "derniere", "prix", "score",
+            "match", "president", "gouvernement", "ministre", "2025", "2026", "burkina"
         )
         return !temporalClues.any { norm.contains(it) }
     }
@@ -326,12 +328,17 @@ object WebSearchClassifier {
 
     private fun isRecentNewsOrCurrentEvents(norm: String): Boolean {
         val markers = listOf(
-            "derniere nouvelle", "dernieres nouvelles", "actualite", "actualites",
-            "ce matin", "hier soir", "aujourd'hui", "hier", "cette semaine",
-            "en ce moment", "derniere minute", "que se passe-t-il", "sommet de",
+            "derniere nouvelle", "dernieres nouvelles", "les nouvelles", "quelles sont les nouvelles",
+            "actualite", "actualites", "l'actu", "les actus", "actu du", "actu en",
+            "les infos", "quelles sont les infos", "info du jour", "infos du jour", "les news",
+            "quoi de neuf", "que se passe", "qu'est-ce qui se passe", "qu'est ce qui se passe",
+            "a la une", "titres du jour", "journal", "en direct",
+            "ce matin", "hier soir", "aujourd'hui", "hier", "cette semaine", "ce mois",
+            "en ce moment", "actuellement", "recemment", "derniere minute", "sommet de",
             "inauguration", "communique de", "ministre actuel", "president actuel",
             "gouvernement actuel", "au burkina faso aujourd'hui", "nouvelles du burkina",
-            "evenement recent", "qui dirige actuellement", "situation actuelle"
+            "evenement recent", "qui dirige actuellement", "situation actuelle",
+            "situation au", "en 2025", "en 2026"
         )
         return markers.any { norm.contains(it) }
     }

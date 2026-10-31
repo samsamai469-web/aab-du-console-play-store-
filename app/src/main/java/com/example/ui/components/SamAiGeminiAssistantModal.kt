@@ -1845,9 +1845,9 @@ enum class VoiceCallState {
 }
 
 /**
- * Mode Appel Vocal Direct et Continu (Style appel téléphonique où deux personnes causent).
- * L'utilisateur parle librement, SAM AI répond à voix haute en Mooré,
- * puis le micro se réouvre automatiquement en continu sans devoir cliquer à chaque fois.
+ * Mode Appel Vocal Direct et Continu propulsé par l'API OpenAI Realtime (WebSocket Audio-to-Audio).
+ * L'utilisateur parle librement en Français, SAM AI écoute et répond en temps réel avec détection
+ * vocale serveur (server_vad) et possibilité d'interrompre SAM AI naturellement à tout moment.
  */
 @Composable
 fun SamAiVoiceCallDialog(
@@ -1857,38 +1857,22 @@ fun SamAiVoiceCallDialog(
     ttsManager: TtsManager
 ) {
     val context = LocalContext.current
-    var callState by remember { mutableStateOf(VoiceCallState.CONNECTING) }
+    var callState by remember { mutableStateOf(VoiceCallState.USER_SPEAKING) }
     var isCallActive by remember { mutableStateOf(true) }
     var isMicMuted by remember { mutableStateOf(false) }
     var callDurationSeconds by remember { mutableIntStateOf(0) }
+    var isUsingFallbackRest by remember { mutableStateOf(false) }
 
     var lastUserSentence by remember { mutableStateOf("") }
     var lastAiSentence by remember { mutableStateOf("") }
-    // Mode linguistique de l'appel verrouillé en 100% Français
-    var callLangMode by remember { mutableStateOf("FR") }
     var lastDetectedLang by remember { mutableStateOf("Français") }
 
-    val soundLevel by speechManager.soundLevel.collectAsState()
-    val partialTranscript by speechManager.partialText.collectAsState()
+    val fallbackSoundLevel by speechManager.soundLevel.collectAsState()
+    val fallbackPartialTranscript by speechManager.partialText.collectAsState()
 
-    // Chronomètre d'appel (00:00)
-    LaunchedEffect(isCallActive) {
-        while (isCallActive) {
-            kotlinx.coroutines.delay(1000L)
-            callDurationSeconds++
-        }
-    }
-
-    // Réception en temps réel des mots prononcés par l'utilisateur
-    LaunchedEffect(partialTranscript) {
-        if (partialTranscript.isNotBlank() && callState == VoiceCallState.USER_SPEAKING) {
-            lastUserSentence = partialTranscript
-        }
-    }
-
-    // Boucle récursive infinie pour que l'appel continue sans limite de tours en 100% Français
-    fun listenTurn() {
-        if (!isCallActive || isMicMuted) return
+    // Boucle de secours (avec gpt-4o-mini-tts voix humaine "coral") uniquement si le WebSocket Realtime est indisponible
+    fun listenFallbackTurn() {
+        if (!isCallActive || isMicMuted || !isUsingFallbackRest) return
         callState = VoiceCallState.USER_SPEAKING
         speechManager.startListening(
             language = "Français",
@@ -1918,47 +1902,103 @@ fun SamAiVoiceCallDialog(
                                         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                                             if (isCallActive && !isMicMuted) {
                                                 speechManager.reset()
-                                                listenTurn()
+                                                listenFallbackTurn()
                                             }
-                                        }, 120L)
+                                        }, 60L)
                                     },
                                     onError = {
                                         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                                             if (isCallActive && !isMicMuted) {
                                                 speechManager.reset()
-                                                listenTurn()
+                                                listenFallbackTurn()
                                             }
-                                        }, 120L)
+                                        }, 60L)
                                     }
                                 )
                             }
                         }
                     )
                 } else if (isCallActive && !isMicMuted) {
-                    // Aucune parole captée sur ce créneau : on relance l'écoute immédiatement
                     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                         if (isCallActive && !isMicMuted && callState == VoiceCallState.USER_SPEAKING) {
-                            listenTurn()
+                            listenFallbackTurn()
                         }
-                    }, 120L)
+                    }, 80L)
                 }
             },
             onError = { _ ->
                 if (isCallActive && !isMicMuted) {
                     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                         if (isCallActive && !isMicMuted && callState == VoiceCallState.USER_SPEAKING) {
-                            listenTurn()
+                            listenFallbackTurn()
                         }
-                    }, 150L)
+                    }, 100L)
                 }
             }
         )
     }
 
-    val startListeningInCall = rememberUpdatedState { listenTurn() }
+    val startFallbackListening = rememberUpdatedState { listenFallbackTurn() }
+
+    val realtimeManager = remember {
+        com.example.util.OpenAiRealtimeCallManager(
+            context = context,
+            onTurnCompleted = { userText, aiText ->
+                viewModel.recordRealtimeCallTurn(userText, aiText)
+            },
+            onFallbackRequired = { _ ->
+                if (isCallActive && !isUsingFallbackRest) {
+                    isUsingFallbackRest = true
+                    startFallbackListening.value()
+                }
+            }
+        )
+    }
+
+    val realtimeCallState by realtimeManager.callState.collectAsState()
+    val realtimeSoundLevel by realtimeManager.soundLevel.collectAsState()
+    val realtimeUserTranscript by realtimeManager.userTranscript.collectAsState()
+    val realtimeAiTranscript by realtimeManager.aiTranscript.collectAsState()
+
+    val activeSoundLevel = if (isUsingFallbackRest) fallbackSoundLevel else realtimeSoundLevel
+
+    // Synchronisation de l'état et des transcriptions en direct depuis l'API OpenAI Realtime
+    LaunchedEffect(realtimeCallState, isUsingFallbackRest) {
+        if (!isUsingFallbackRest) {
+            callState = realtimeCallState
+        }
+    }
+
+    LaunchedEffect(realtimeUserTranscript, isUsingFallbackRest) {
+        if (!isUsingFallbackRest && realtimeUserTranscript.isNotBlank()) {
+            lastUserSentence = realtimeUserTranscript
+        }
+    }
+
+    LaunchedEffect(realtimeAiTranscript, isUsingFallbackRest) {
+        if (!isUsingFallbackRest && realtimeAiTranscript.isNotBlank()) {
+            lastAiSentence = realtimeAiTranscript
+        }
+    }
+
+    // Chronomètre d'appel (00:00)
+    LaunchedEffect(isCallActive) {
+        while (isCallActive) {
+            kotlinx.coroutines.delay(1000L)
+            callDurationSeconds++
+        }
+    }
+
+    // Réception en temps réel des mots prononcés en mode fallback
+    LaunchedEffect(fallbackPartialTranscript, isUsingFallbackRest) {
+        if (isUsingFallbackRest && fallbackPartialTranscript.isNotBlank() && callState == VoiceCallState.USER_SPEAKING) {
+            lastUserSentence = fallbackPartialTranscript
+        }
+    }
 
     val hangUpCall = {
         isCallActive = false
+        realtimeManager.stopCall()
         speechManager.reset()
         ttsManager.stop()
         onDismiss()
@@ -1969,14 +2009,15 @@ fun SamAiVoiceCallDialog(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            startListeningInCall.value()
+            ttsManager.stop()
+            realtimeManager.startCall()
         } else {
             Toast.makeText(context, "Permission micro requise pour l'appel", Toast.LENGTH_SHORT).show()
             hangUpCall()
         }
     }
 
-    // Déclenchement automatique de l'écoute dès l'ouverture de l'appel
+    // Démarrage instantané de l'API OpenAI Realtime avec capture microphone dès 0 ms
     LaunchedEffect(Unit) {
         val hasPermission = ContextCompat.checkSelfPermission(
             context,
@@ -1984,7 +2025,8 @@ fun SamAiVoiceCallDialog(
         ) == PackageManager.PERMISSION_GRANTED
 
         if (hasPermission) {
-            startListeningInCall.value()
+            ttsManager.stop()
+            realtimeManager.startCall()
         } else {
             permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
@@ -1994,6 +2036,7 @@ fun SamAiVoiceCallDialog(
     DisposableEffect(Unit) {
         onDispose {
             isCallActive = false
+            realtimeManager.stopCall()
             speechManager.reset()
             ttsManager.stop()
         }
@@ -2050,7 +2093,7 @@ fun SamAiVoiceCallDialog(
                             Text("🇫🇷", fontSize = 14.sp)
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Appel en direct • Français",
+                                text = "Appel Realtime • Français",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White
@@ -2106,7 +2149,7 @@ fun SamAiVoiceCallDialog(
                                 )
                             }
                             VoiceCallState.USER_SPEAKING -> {
-                                val dynamicHalo = (1f + (soundLevel * 0.8f)).coerceAtLeast(pulse1 * 0.9f)
+                                val dynamicHalo = (1f + (activeSoundLevel * 0.8f)).coerceAtLeast(pulse1 * 0.9f)
                                 Box(
                                     modifier = Modifier
                                         .size((140 * dynamicHalo).dp)
@@ -2128,16 +2171,28 @@ fun SamAiVoiceCallDialog(
                         // Noyau central interactif de la sphère (appui pour valider la parole ou couper SAM AI)
                         Surface(
                             onClick = {
-                                when (callState) {
-                                    VoiceCallState.USER_SPEAKING -> {
-                                        speechManager.stopListening()
+                                if (isUsingFallbackRest) {
+                                    when (callState) {
+                                        VoiceCallState.USER_SPEAKING -> {
+                                            speechManager.stopListening()
+                                        }
+                                        VoiceCallState.SAM_SPEAKING -> {
+                                            ttsManager.stop()
+                                            speechManager.reset()
+                                            startFallbackListening.value()
+                                        }
+                                        else -> {}
                                     }
-                                    VoiceCallState.SAM_SPEAKING -> {
-                                        ttsManager.stop()
-                                        speechManager.reset()
-                                        startListeningInCall.value()
+                                } else {
+                                    when (callState) {
+                                        VoiceCallState.USER_SPEAKING -> {
+                                            realtimeManager.commitUserSpeechNow()
+                                        }
+                                        VoiceCallState.SAM_SPEAKING -> {
+                                            realtimeManager.interruptAiSpeech()
+                                        }
+                                        else -> {}
                                     }
-                                    else -> {}
                                 }
                             },
                             shape = CircleShape,
@@ -2175,10 +2230,10 @@ fun SamAiVoiceCallDialog(
                     ) {
                         Text(
                             text = when (callState) {
-                                VoiceCallState.SAM_SPEAKING -> if (lastDetectedLang == "mooré") "🔊 SAM AI vous répond en Mooré..." else "🔊 SAM AI vous répond en Français..."
+                                VoiceCallState.SAM_SPEAKING -> if (lastDetectedLang == "mooré") "🔊 SAM AI vous répond en Mooré..." else "🔊 SAM AI vous répond en direct..."
                                 VoiceCallState.USER_SPEAKING -> "🎙️ À vous de parler, SAM AI écoute..."
-                                VoiceCallState.THINKING -> "⏳ SAM AI réfléchit..."
-                                VoiceCallState.CONNECTING -> "Connexion de l'appel..."
+                                VoiceCallState.THINKING -> "⚡ Réponse instantanée..."
+                                VoiceCallState.CONNECTING -> "Connexion Realtime en cours..."
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Bold,
@@ -2256,10 +2311,14 @@ fun SamAiVoiceCallDialog(
                     Surface(
                         onClick = {
                             isMicMuted = !isMicMuted
-                            if (isMicMuted) {
-                                speechManager.stopListening()
-                            } else if (callState == VoiceCallState.USER_SPEAKING) {
-                                startListeningInCall.value()
+                            if (isUsingFallbackRest) {
+                                if (isMicMuted) {
+                                    speechManager.stopListening()
+                                } else if (callState == VoiceCallState.USER_SPEAKING) {
+                                    startFallbackListening.value()
+                                }
+                            } else {
+                                realtimeManager.setMuted(isMicMuted)
                             }
                         },
                         shape = CircleShape,
@@ -2299,9 +2358,13 @@ fun SamAiVoiceCallDialog(
                     // Bouton Interrompre / Reprendre la parole
                     Surface(
                         onClick = {
-                            ttsManager.stop()
-                            speechManager.reset()
-                            startListeningInCall.value()
+                            if (isUsingFallbackRest) {
+                                ttsManager.stop()
+                                speechManager.reset()
+                                startFallbackListening.value()
+                            } else {
+                                realtimeManager.interruptAiSpeech()
+                            }
                         },
                         shape = CircleShape,
                         color = Color(0xFF262C38),

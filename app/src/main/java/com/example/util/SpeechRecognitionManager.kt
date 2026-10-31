@@ -131,62 +131,57 @@ class SpeechRecognitionManager(private val context: Context) {
             var speechStartTime = 0L
             var lastSoundTime = System.currentTimeMillis()
             val recordingStart = lastSoundTime
-            var noiseFloor = 300f
+            var noiseFloor = 160f
             var peakSpeechAmp = 0
 
             while (isActive && _state.value is State.Listening) {
                 val amp = audioRecorder.getMaxAmplitude()
-                val normalized = (amp / 14000f).coerceIn(0f, 1f)
+                val normalized = (amp / 12000f).coerceIn(0f, 1f)
                 val now = System.currentTimeMillis()
                 val elapsedSinceStart = now - recordingStart
 
-                // Calibrage dynamique du bruit ambiant sur les 150 premières ms
-                if (!speechDetected && elapsedSinceStart < 150L && amp > 0) {
-                    noiseFloor = (noiseFloor * 0.65f) + (amp.coerceAtMost(1800) * 0.35f)
-                } else if (!speechDetected && amp in 1..noiseFloor.toInt()) {
+                // Adaptation douce uniquement sur le bruit de fond faible (< 240)
+                // Ne JAMAIS calibrer la voix de l'utilisateur au démarrage comme du bruit ambiant !
+                if (!speechDetected && amp in 1..240) {
                     noiseFloor = (noiseFloor * 0.85f) + (amp * 0.15f)
                 }
 
-                val onsetThreshold = maxOf(380, (noiseFloor * 1.50f).toInt()).coerceAtMost(2200)
-                // Seuil de maintien souple (18% du pic, plafonné à 1400) pour ne jamais couper une question au milieu d'un mot
+                val onsetThreshold = maxOf(230, (noiseFloor * 1.45f).toInt()).coerceAtMost(520)
                 val activeThreshold = if (speechDetected) {
-                    maxOf(280, (noiseFloor * 1.25f).toInt(), (peakSpeechAmp * 0.18f).toInt().coerceAtMost(1400))
+                    maxOf(190, (noiseFloor * 1.25f).toInt(), (peakSpeechAmp * 0.15f).toInt().coerceAtMost(750))
                 } else {
                     onsetThreshold
                 }
 
-                if (amp > activeThreshold) {
+                if (amp >= activeThreshold) {
                     consecutiveVoiceFrames++
-                    if (speechDetected || consecutiveVoiceFrames >= 2) {
-                        lastSoundTime = now
-                        if (amp > peakSpeechAmp) {
-                            peakSpeechAmp = amp
-                            maxSpeechAmpInSession = amp
-                        }
-                        if (!speechDetected) {
-                            speechDetected = true
-                            hasDetectedSpeechInSession = true
-                            speechStartTime = now
-                        }
+                    lastSoundTime = now
+                    if (amp > peakSpeechAmp) {
+                        peakSpeechAmp = amp
+                        maxSpeechAmpInSession = amp
+                    }
+                    if (!speechDetected && consecutiveVoiceFrames >= 1) {
+                        speechDetected = true
+                        hasDetectedSpeechInSession = true
+                        speechStartTime = now
                     }
                 } else {
                     consecutiveVoiceFrames = 0
                     val silenceDuration = now - lastSoundTime
                     val totalSpeechDuration = if (speechDetected) (now - speechStartTime) else 0L
 
-                    // Si aucune parole n'a été détectée après 4.5s, on annule proprement SANS envoyer le silence à Whisper
-                    if (!speechDetected && elapsedSinceStart >= 4500L) {
+                    // Si aucune parole n'a été détectée après 7.5s, on relance proprement le cycle d'écoute
+                    if (!speechDetected && elapsedSinceStart >= 7500L) {
                         withContext(Dispatchers.Main) {
                             cancelSilenceRecording()
                         }
                         break
                     }
 
-                    // Fenêtre de silence ultra-réactive style ChatGPT Voice :
-                    // Détecte la fin de parole dès ~520-650 ms de silence pour répondre immédiatement sans faire attendre l'utilisateur.
-                    val requiredSilenceMs = if (totalSpeechDuration <= 1800L) 520L else 650L
-                    if ((speechDetected && silenceDuration >= requiredSilenceMs && totalSpeechDuration >= 180L) ||
-                        (speechDetected && totalSpeechDuration >= 16000L)
+                    // Fin de phrase ultra-réactive (~420-500 ms de silence) pour répondre sans attente
+                    val requiredSilenceMs = if (totalSpeechDuration <= 2000L) 420L else 500L
+                    if ((speechDetected && silenceDuration >= requiredSilenceMs && totalSpeechDuration >= 140L) ||
+                        (speechDetected && totalSpeechDuration >= 15000L)
                     ) {
                         withContext(Dispatchers.Main) {
                             stopListening()
@@ -198,7 +193,7 @@ class SpeechRecognitionManager(private val context: Context) {
                 withContext(Dispatchers.Main) {
                     _soundLevel.value = normalized
                 }
-                delay(25L)
+                delay(20L)
             }
         }
     }
@@ -270,10 +265,10 @@ class SpeechRecognitionManager(private val context: Context) {
         amplitudeJob = null
         _soundLevel.value = 0f
 
-        val voiceDetected = hasDetectedSpeechInSession && maxSpeechAmpInSession >= 320
+        val voiceDetected = hasDetectedSpeechInSession && maxSpeechAmpInSession >= 180
         val audioFile = audioRecorder.stopRecording()
 
-        if (!voiceDetected || audioFile == null || !audioFile.exists() || audioFile.length() < 600) {
+        if (!voiceDetected || audioFile == null || !audioFile.exists() || audioFile.length() < 400) {
             try {
                 audioFile?.delete()
             } catch (_: Exception) {}

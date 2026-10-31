@@ -43,10 +43,17 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     private val httpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(2200, TimeUnit.MILLISECONDS)
-            .readTimeout(2500, TimeUnit.MILLISECONDS)
-            .callTimeout(2800, TimeUnit.MILLISECONDS)
+            .connectTimeout(5000, TimeUnit.MILLISECONDS)
+            .readTimeout(7000, TimeUnit.MILLISECONDS)
+            .callTimeout(8000, TimeUnit.MILLISECONDS)
             .build()
+    }
+
+    companion object {
+        // Voix humaine unique et constante ("coral") partagée avec l'API OpenAI Realtime
+        private const val UNIFIED_OPENAI_VOICE = "coral"
+        private const val HUMAN_VOICE_INSTRUCTIONS =
+            "Parle exactement comme un véritable être humain chaleureux, naturel, vivant et spontané au téléphone en français, avec des intonations humaines fluides et expressives, sans aucun ton robotique ni mécanique."
     }
 
     private var activeOnDoneCallback: (() -> Unit)? = null
@@ -64,71 +71,29 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     private fun getCachedVoiceFile(spokenText: String, isMoore: Boolean): File {
         val dir = File(appContext.cacheDir, "tts_voice_cache").apply { if (!exists()) mkdirs() }
-        val key = "fr_${spokenText.lowercase(Locale.ROOT).trim()}".hashCode().toUInt().toString(16)
-        return File(dir, "sam_tts_fr_$key.mp3")
+        val key = "fr_human_${UNIFIED_OPENAI_VOICE}_${spokenText.lowercase(Locale.ROOT).trim()}".hashCode().toUInt().toString(16)
+        return File(dir, "sam_tts_human_${UNIFIED_OPENAI_VOICE}_$key.mp3")
     }
 
     private fun prewarmEssentialMooreAudioCache() {
-        scope.launch(Dispatchers.IO) {
-            try {
-                val apiKey = apiKeyManager.getActiveOpenAiApiKey()
-                if (apiKey.isBlank() || apiKey == "MY_OPENAI_API_KEY") return@launch
-                val essentialReplies = listOf(
-                    "Yibeo kibare",
-                    "Zabre kibare",
-                    "Windga kibare",
-                    "Yungo kibare",
-                    "Laafi bala ! Ya sonma.",
-                    "Laafi bala ! Ya sonma. Fo data bõe tɩ m sõng-fo ?",
-                    "Wẽnd na kõ-d laafi !",
-                    "Wẽnd na kõ-d laafi ! Fo data bõe tɩ m sõng-fo ?",
-                    "Barka ! Laafi bala ?",
-                    "Barka ! Laafi bala ? Fo data bõe tɩ m sõng-fo ?",
-                    "Wënd-na kô-d nindaare !",
-                    "Amiina ! Wind da ganeg laafi.",
-                    "Kaseto ka be ye ! Mam pʋsda fo.",
-                    "Kaseto ka be ye ! Mam pʋsda fo. Fo me data bõe ?",
-                    "Amiina ! Nindaaré.",
-                    "Wind da ganeg laafi !",
-                    "Wẽnd na taase laafi ! Nindaaré.",
-                    "Wẽnd na kõ-f ligdi la laafi !",
-                    "Rũndã kibaaya yaa sõama Burkina Faso pʋgẽ ! Laafi beeme.",
-                    "Mam yʋʋre la Same ! Maam la fo zoodo.",
-                    "Maam sõngda fõ ne Mooré la Burkina Faso kibaya !",
-                    "Burkina Faso yaa tẽng sõama ! Tond nongda Burkina Faso wʋsgo.",
-                    "N-ye, maam la fo zoodo Same.",
-                    "N-ye, fõ yaa mam zoodo !",
-                    "N-ye, tond be laafi bala !",
-                    "Wẽnd na kõ m'ma laafi !",
-                    "Wẽnd na kõ m'baaba laafi !",
-                    "Zom-kom noomame wʋsgo !"
-                )
-                for (batch in essentialReplies.chunked(6)) {
-                    kotlinx.coroutines.coroutineScope {
-                        batch.map { phrase ->
-                            launch(Dispatchers.IO) {
-                                try {
-                                    val spoken = toMooreSpokenPhonetics(phrase)
-                                    val cached = getCachedVoiceFile(spoken, true)
-                                    if (!cached.exists() || cached.length() < 200) {
-                                        val bytes = synthesizeNeuralBytes(spoken, apiKey, true, 1.08f)
-                                        if (bytes != null && bytes.size >= 200) {
-                                            FileOutputStream(cached).use { it.write(bytes) }
-                                        }
-                                    }
-                                } catch (_: Exception) {}
-                            }
-                        }
-                    }
-                }
-            } catch (_: Exception) {}
-        }
+        // Désactivé en mode 100% Français pour libérer toute la bande passante réseau
     }
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             try {
                 tts?.language = Locale.FRENCH
+                // Verrouille une seule voix française stable sur le moteur Android local
+                val fixedFrenchVoice = tts?.voices?.firstOrNull { v ->
+                    v.locale.language.equals("fr", ignoreCase = true) && !v.isNetworkConnectionRequired
+                } ?: tts?.voices?.firstOrNull { v ->
+                    v.locale.language.equals("fr", ignoreCase = true)
+                }
+                if (fixedFrenchVoice != null) {
+                    tts?.voice = fixedFrenchVoice
+                }
+                tts?.setPitch(1.0f)
+                tts?.setSpeechRate(1.0f)
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
                         mainHandler.post {
@@ -203,7 +168,6 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
         stop()
 
-        val isMoore = false
         val spokenText = cleanGeneralTextForSpeech(text)
 
         if (spokenText.isBlank()) {
@@ -236,24 +200,25 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         isMoore: Boolean,
         speed: Float
     ): ByteArray? = withContext(Dispatchers.IO) {
-        // Priorité absolue : Modèle vocal temps réel ultra-rapide d'OpenAI `tts-1` (latence minimale style ChatGPT Voice)
-        val fastPayload = buildJsonObject {
-            put("model", "tts-1")
+        // Priorité absolue à `gpt-4o-mini-tts` avec instructions de prosodie humaine naturelle et voix unique "coral"
+        val humanPayload = buildJsonObject {
+            put("model", "gpt-4o-mini-tts")
             put("input", spokenText.take(2500))
-            put("voice", "nova")
+            put("voice", UNIFIED_OPENAI_VOICE)
+            put("instructions", HUMAN_VOICE_INSTRUCTIONS)
             put("response_format", "mp3")
-            put("speed", speed)
+            put("speed", 1.0f)
         }.toString()
 
-        var audioBytes = requestOpenAiAudioBytes(fastPayload, apiKey)
+        var audioBytes = requestOpenAiAudioBytes(humanPayload, apiKey)
 
         if (audioBytes == null) {
             val fallbackPayload = buildJsonObject {
-                put("model", "gpt-4o-mini-tts")
+                put("model", "tts-1")
                 put("input", spokenText.take(2500))
-                put("voice", "coral")
+                put("voice", UNIFIED_OPENAI_VOICE)
                 put("response_format", "mp3")
-                put("speed", speed)
+                put("speed", 1.0f)
             }.toString()
             audioBytes = requestOpenAiAudioBytes(fallbackPayload, apiKey)
         }
@@ -267,22 +232,14 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         rate: Float
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val speed = (rate * 1.04f).coerceIn(1.0f, 1.35f)
+            val speed = 1.0f
             val cachedFile = getCachedVoiceFile(spokenText, false)
 
             if (!cachedFile.exists() || cachedFile.length() < 200) {
-                val audioBytes = kotlinx.coroutines.withTimeoutOrNull(2200L) {
+                val audioBytes = kotlinx.coroutines.withTimeoutOrNull(7500L) {
                     synthesizeNeuralBytes(spokenText, apiKey, false, speed)
                 }
                 if (audioBytes == null || audioBytes.size < 200) {
-                    scope.launch(Dispatchers.IO) {
-                        try {
-                            val bgBytes = synthesizeNeuralBytes(spokenText, apiKey, isMoore, speed)
-                            if (bgBytes != null && bgBytes.size >= 200) {
-                                FileOutputStream(cachedFile).use { it.write(bgBytes) }
-                            }
-                        } catch (_: Exception) {}
-                    }
                     return@withContext false
                 }
                 FileOutputStream(cachedFile).use { it.write(audioBytes) }

@@ -47,9 +47,12 @@ class OpenAiBackendService {
 
     companion object {
         const val FLAGSHIP_OPENAI_MODEL = "gpt-4o"
+        const val FAST_VOICE_OPENAI_MODEL = "gpt-4o-mini"
         private val VALID_OPENAI_MODELS = setOf(
             "gpt-4o",
+            "gpt-4o-mini",
             "gpt-4.1",
+            "gpt-4.1-mini",
             "chatgpt-4o-latest",
             "gpt-4.5-preview",
             "o3",
@@ -107,8 +110,9 @@ class OpenAiBackendService {
             )
         }
 
-        // Utilisation prioritaire du modèle flagship le plus performant d'OpenAI (gpt-4o)
+        // En appel vocal en direct (isVoiceCall), utilisation prioritaire de gpt-4o-mini pour une réponse en ~300ms
         val primaryModel = when {
+            isVoiceCall -> FAST_VOICE_OPENAI_MODEL
             preferredModel.isNotBlank() && preferredModel in VALID_OPENAI_MODELS -> preferredModel
             else -> clientConfiguredModel
         }
@@ -376,18 +380,23 @@ class OpenAiBackendService {
         val systemPrompt = if (isVoiceCall) {
             buildString {
                 append("Tu es SAM AI en mode conversation vocale en direct, conçu par Abdoul Mohamine Sawadogo.\n")
-                append("Aujourd'hui nous sommes le $dateStr.\n")
+                append("Aujourd'hui nous sommes le $dateStr (octobre 2026).\n")
+                if (newsContext.isNotBlank()) {
+                    append("\n--- ACTUALITÉS ET DÉPÊCHES EN DIRECT FOURNIES EN TEMPS RÉEL ---\n")
+                    append(newsContext)
+                    append("\n---------------------------------------------------------------\n")
+                }
                 append("RÈGLES ABSOLUES DE CONVERSATION VOCALE (STYLE CHATGPT VOICE — COMME UNE VRAIE PERSONNE) :\n")
                 append("1. 100% FRANÇAIS UNIQUEMENT : Réponds EXCLUSIVEMENT en français naturel, fluide et chaleureux. Ne mélange JAMAIS avec le mooré ni aucune autre langue.\n")
-                append("2. TON HUMAIN, NATUREL ET DIRECT : Parle exactement comme un interlocuteur humain intelligent et sympathique au téléphone. Fais des réponses courtes, claires et directes (1 à 2 phrases concises maximum, sauf si l'utilisateur demande explicitement plus de détails).\n")
-                append("3. RÉPONSE EXACTE SANS ERREUR : Écoute attentivement ce que dit l'utilisateur et réponds exactement à sa question ou à sa remarque, sans jamais répondre au hasard ni hors sujet.\n")
-                append("4. ZÉRO FORMATAGE ÉCRIT : N'utilise jamais de listes à puces, d'astérisques (*), de titres (#) ou d'émojis, car ta réponse est prononcée directement à voix haute.\n")
+                append("2. TON HUMAIN, NATUREL ET DIRECT : Parle exactement comme un interlocuteur humain intelligent et sympathique au téléphone. Fais des réponses courtes, claires et directes (1 à 3 phrases concises maximum, sauf si l'utilisateur demande plus de détails).\n")
+                append("3. ACTUALITÉS EN DIRECT : Tu disposes d'un accès aux actualités en temps réel. Lorsque des dépêches sont fournies ci-dessus, résume-les naturellement à l'oral avec les faits exacts. Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025, ni que tu n'as pas accès à Internet.\n")
+                append("4. ZÉRO FORMATAGE ÉCRIT : N'utilise jamais de listes à puces, d'astérisques (*), de titres (#), de liens URL bruts ou d'émojis, car ta réponse est prononcée directement à voix haute.\n")
                 append("5. IDENTITÉ : Tu es SAM AI (ne mentionne ton créateur Abdoul Mohamine Sawadogo que si on te demande qui t'a créé). Ne mentionne jamais OpenAI ou ChatGPT.\n")
             }
         } else {
             buildString {
                 append("Tu es SAM AI, une intelligence artificielle d'élite, cultivée, brillante, polyvalente et experte, conçue par Abdoul Mohamine Sawadogo, jeune développeur burkinabè.\n")
-                append("Aujourd'hui nous sommes exactement le $dateStr.\n")
+                append("Aujourd'hui nous sommes exactement le $dateStr (octobre 2026).\n")
                 if (newsContext.isNotBlank()) {
                     append("\n--- ACTUALITÉS ET DÉPÊCHES EN DIRECT FOURNIES EN TEMPS RÉEL ---\n")
                     append(newsContext)
@@ -403,7 +412,8 @@ class OpenAiBackendService {
                 append("3. LANGUE 100% FRANÇAIS :\n")
                 append("   - Réponds toujours en français impeccable, fluide et naturel, sans jamais mélanger avec le mooré ni une autre langue.\n")
                 append("4. ACTUALITÉS ET TEMPS RÉEL :\n")
-                append("   - Lorsque des dépêches en direct sont fournies ci-dessus, exploite-les immédiatement pour donner les faits, dates, scores et événements les plus récents.\n")
+                append("   - Lorsque des dépêches en direct sont fournies ci-dessus, exploite-les immédiatement pour donner les faits, dates, scores et événements les plus récents en citant les sources.\n")
+                append("   - Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025, ni que tu n'as pas accès à Internet ou aux informations en direct.\n")
                 append("5. IDENTITÉ EXCLUSIVE SAM AI :\n")
                 append("   - Tu es uniquement SAM AI, conçu par Abdoul Mohamine Sawadogo (ne le mentionne que si on te demande qui t'a créé). Ne mentionne JAMAIS OpenAI, ChatGPT, GPT-4 ou Claude.\n")
             }
@@ -413,11 +423,11 @@ class OpenAiBackendService {
             val isReasoningModel = model.startsWith("o1") || model.startsWith("o3")
             val systemRole = if (isReasoningModel) "developer" else "system"
 
-            val historyLimit = if (isVoiceCall) 10 else 20
+            val historyLimit = if (isVoiceCall) 6 else 20
             val safeHistory = messages.takeLast(historyLimit).map {
                 buildJsonObject {
                     put("role", if (it.role == "assistant" || it.role == "model" || it.role == "ai") "assistant" else "user")
-                    put("content", it.content.take(4000))
+                    put("content", it.content.take(if (isVoiceCall) 800 else 4000))
                 }
             }
 
@@ -439,8 +449,8 @@ class OpenAiBackendService {
                 put("model", model)
                 put("messages", messagesArray)
                 if (isVoiceCall) {
-                    put("max_completion_tokens", 200)
-                    put("temperature", 0.3)
+                    put("max_completion_tokens", if (newsContext.isNotBlank()) 220 else 130)
+                    put("temperature", 0.35)
                 } else {
                     put("max_completion_tokens", 3500)
                     if (!isReasoningModel) {

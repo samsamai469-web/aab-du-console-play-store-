@@ -328,7 +328,12 @@ class SamAiViewModel(
     init {
         viewModelScope.launch(Dispatchers.IO) {
             // Laisser la priorité absolue au premier frame de rendu de l'interface graphique
-            kotlinx.coroutines.delay(600L)
+            kotlinx.coroutines.delay(400L)
+            launch {
+                try {
+                    liveNewsFeedService.fetchLiveNews("actualités")
+                } catch (_: Throwable) {}
+            }
             loadLiveNews(forceRefresh = false)
             startNewsAutoRefresh()
             startAccountStatusVerification()
@@ -2550,33 +2555,55 @@ class SamAiViewModel(
                 )
             }
 
-            // En mode appel vocal en direct (isVoiceCall), on évite l'attente de 2.4s des flux RSS pour répondre instantanément comme une vraie personne
             var liveContextSummary = ""
             var liveSources = emptyList<com.example.data.local.WebSource>()
 
-            if (!isVoiceCall && !isMooreVoice) {
+            if (!isMooreVoice) {
                 val searchDecision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
                 if (searchDecision.isSearchNeeded) {
                     try {
-                        val newsResult = kotlinx.coroutines.withTimeoutOrNull(2000L) {
+                        val newsResult = kotlinx.coroutines.withTimeoutOrNull(1600L) {
                             liveNewsFeedService.fetchLiveNews(searchDecision.cleanSearchQuery.ifBlank { userText })
                         }
                         if (newsResult != null && newsResult.hasNews) {
                             liveContextSummary = newsResult.contextSummary
                             liveSources = newsResult.sources
+                        } else {
+                            // Repli instantané (0 ms) sur le cache mémoire pour éviter tout ralentissement
+                            val fallbackArticles = _newsArticles.value.ifEmpty {
+                                com.example.data.repository.NewsRepository.getDefaultBurkinaNews()
+                            }
+                            if (fallbackArticles.isNotEmpty()) {
+                                liveContextSummary = buildString {
+                                    append("ACTUALITÉS EN DIRECT RÉCENTES :\n")
+                                    fallbackArticles.take(6).forEachIndexed { idx, art ->
+                                        append("${idx + 1}. [${art.source}] ${art.title} - ${art.summary}\n")
+                                    }
+                                }
+                                liveSources = fallbackArticles.take(5).map { art ->
+                                    com.example.data.local.WebSource(
+                                        title = art.title,
+                                        url = art.url.ifBlank { "https://lefaso.net" },
+                                        domain = art.source
+                                    )
+                                }
+                            } else {
+                                liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
+                            }
                         }
                     } catch (e: Throwable) {
                         android.util.Log.w("SamAiViewModel", "Notice actualités en direct: ${e.message}")
+                        liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
                     }
                 }
             }
 
-            // Envoi direct à l'API OpenAI avec le modèle flagship gpt-4o haute précision
+            // Envoi direct à l'API OpenAI (gpt-4o-mini ultra-rapide en appel vocal, gpt-4o en chat écrit)
             val openAiResult = openAiBackendService.sendChatMessage(
                 messages = currentHistory,
                 userQuestion = userText,
                 enableWebSearch = liveSources.isNotEmpty(),
-                preferredModel = "gpt-4o",
+                preferredModel = if (isVoiceCall) "gpt-4o-mini" else "gpt-4o",
                 newsContext = liveContextSummary,
                 sources = liveSources,
                 isMooreVoice = false,
@@ -2620,6 +2647,38 @@ class SamAiViewModel(
      */
     fun askSamAiOpenAi(userQuestion: String) {
         askSamAiGemini(userQuestion)
+    }
+
+    /**
+     * Enregistre un tour de parole issu d'un appel vocal OpenAI Realtime dans l'historique de chat
+     */
+    fun recordRealtimeCallTurn(userQuestion: String, aiResponse: String) {
+        val cleanUser = userQuestion.trim()
+        val cleanAi = aiResponse.trim()
+        if (cleanUser.isBlank() || cleanAi.isBlank()) return
+
+        val now = System.currentTimeMillis()
+        val userMsg = SamAiChatMessage(
+            sender = "user",
+            text = cleanUser,
+            timestamp = now,
+            language = null
+        )
+        val botMsg = SamAiChatMessage(
+            sender = "sam_ai",
+            text = cleanAi,
+            timestamp = now + 1L,
+            isError = false,
+            sources = emptyList(),
+            model = null,
+            language = null
+        )
+        val baseList = if (_samAiChatMessages.value.size == 1 && _samAiChatMessages.value.first().id == "welcome_msg") {
+            emptyList()
+        } else {
+            _samAiChatMessages.value
+        }
+        _samAiChatMessages.value = baseList + userMsg + botMsg
     }
 
     fun getGreeting(): String {

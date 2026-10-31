@@ -4,7 +4,10 @@ import android.net.Uri
 import android.util.Log
 import com.example.data.local.WebSource
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.net.URLEncoder
@@ -33,17 +36,46 @@ data class LiveNewsResult(
  */
 class LiveNewsFeedService {
 
-    private val httpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(10, TimeUnit.SECONDS)
-            .followRedirects(true)
-            .build()
+    companion object {
+        // Cache mémoire partagé à travers toute l'application (chat + appels vocaux)
+        private val sharedMemoryCache = ConcurrentHashMap<String, Pair<Long, LiveNewsResult>>()
+        private const val CACHE_TTL_MS = 5 * 60 * 1000L
+
+        private val sharedHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(1200, TimeUnit.MILLISECONDS)
+                .readTimeout(1300, TimeUnit.MILLISECONDS)
+                .callTimeout(1500, TimeUnit.MILLISECONDS)
+                .followRedirects(true)
+                .build()
+        }
+
+        /**
+         * Renvoie instantanément (0 ms) les dernières dépêches en mémoire pour éviter toute latence
+         */
+        fun getInstantCachedSummary(): String {
+            val generalCached = sharedMemoryCache["general_top_news"]?.second
+            if (generalCached != null && generalCached.hasNews && generalCached.contextSummary.isNotBlank()) {
+                return generalCached.contextSummary
+            }
+            val anyCached = sharedMemoryCache.values.firstOrNull { it.second.hasNews }?.second
+            if (anyCached != null && anyCached.contextSummary.isNotBlank()) {
+                return anyCached.contextSummary
+            }
+            val defaultArticles = com.example.data.repository.NewsRepository.getDefaultBurkinaNews().take(5)
+            if (defaultArticles.isNotEmpty()) {
+                return buildString {
+                    append("ACTUALITÉS RÉCENTES EN DIRECT :\n")
+                    defaultArticles.forEachIndexed { idx, art ->
+                        append("${idx + 1}. [${art.source}] ${art.title} — ${art.summary.take(150)}\n")
+                    }
+                }
+            }
+            return ""
+        }
     }
 
-    // Cache mémoire de 5 minutes pour éviter des requêtes réseau redondantes
-    private val memoryCache = ConcurrentHashMap<String, Pair<Long, LiveNewsResult>>()
-    private val cacheTtlMs = 5 * 60 * 1000L
+    private val httpClient get() = sharedHttpClient
 
     private val itemPattern = Pattern.compile("<item[^>]*>(.*?)</item>", Pattern.DOTALL)
     private val titlePattern = Pattern.compile("<title[^>]*>(.*?)</title>", Pattern.DOTALL)
@@ -53,29 +85,85 @@ class LiveNewsFeedService {
     private val descPattern = Pattern.compile("<description[^>]*>(.*?)</description>", Pattern.DOTALL)
 
     /**
-     * Recherche et agrège les actualités les plus récentes en fonction de la question posée.
+     * Nettoie la question parlée ou écrite pour extraire uniquement les vrais mots-clés de recherche
+     */
+    private fun extractCoreKeywords(rawQuery: String): String {
+        val stopWords = setOf(
+            "quel", "quelle", "quels", "quelles", "est", "sont", "les", "des", "une", "un", "le", "la",
+            "du", "de", "dans", "sur", "pour", "avec", "par", "au", "aux", "en", "ce", "cet", "cette",
+            "ces", "mon", "ton", "son", "notre", "votre", "leur", "qui", "que", "quoi", "ou", "où",
+            "comment", "pourquoi", "quand", "donne", "donner", "donnez", "moi", "nous", "dis", "dire",
+            "parle", "parler", "cherche", "chercher", "recherche", "rechercher", "trouve", "trouver",
+            "fais", "faire", "peux", "peut", "tu", "vous", "je", "veux", "voudrais", "savoir", "connaitre",
+            "connaître", "actualite", "actualites", "actualité", "actualités", "actu", "actus", "nouvelle",
+            "nouvelles", "info", "infos", "information", "informations", "recent", "recente", "recents",
+            "recentes", "récent", "récente", "récents", "récentes", "dernier", "derniere", "derniers",
+            "dernieres", "dernière", "dernières", "aujourd", "hui", "aujourdhui", "jour", "direct",
+            "passe", "passer", "il", "elle", "on", "y", "a", "t", "neuf", "monde", "internet", "web",
+            "sam", "ai", "stp", "svp", "s'il", "plait", "plaît"
+        )
+        val tokens = rawQuery
+            .replace(Regex("['’`\"«»?!.,;:()\\[\\]-]"), " ")
+            .split(Regex("\\s+"))
+            .map { it.trim() }
+            .filter { token ->
+                val lower = token.lowercase(java.util.Locale.ROOT)
+                token.length >= 2 && lower !in stopWords
+            }
+        return tokens.joinToString(" ").trim()
+    }
+
+    /**
+     * Recherche et agrège en parallèle les actualités les plus récentes en fonction de la question posée.
      */
     suspend fun fetchLiveNews(query: String): LiveNewsResult = withContext(Dispatchers.IO) {
         val cleanQuery = query.trim()
-        val cacheKey = cleanQuery.lowercase()
+        val coreKeywords = extractCoreKeywords(cleanQuery)
+        val cacheKey = coreKeywords.ifBlank { "general_top_news" }.lowercase(java.util.Locale.ROOT)
 
-        val cached = memoryCache[cacheKey]
-        if (cached != null && (System.currentTimeMillis() - cached.first) < cacheTtlMs) {
+        val cached = sharedMemoryCache[cacheKey]
+        if (cached != null && (System.currentTimeMillis() - cached.first) < CACHE_TTL_MS) {
             return@withContext cached.second
         }
 
-        val isGeneralNews = isGeneralNewsQuery(cleanQuery)
-        val isBurkinaSpecific = isBurkinaTopic(cleanQuery) || isGeneralNews
-        val articles = mutableListOf<LiveNewsArticle>()
+        val isGeneralNews = coreKeywords.isBlank() || isGeneralNewsQuery(cleanQuery)
+        val isBurkinaSpecific = isBurkinaTopic(cleanQuery) || isBurkinaTopic(coreKeywords) || isGeneralNews
+        val effectiveSearchQuery = coreKeywords.ifBlank { cleanQuery }
 
-        // 1. Dépêches directes en temps réel du Faso (LeFaso.net & RFI)
-        if (isBurkinaSpecific) {
-            articles.addAll(fetchDirectFasoFeeds())
+        // Exécution 100% EN PARALLÈLE avec plafond de 1.3s par source pour qu'un serveur lent ne ralentisse jamais la réponse
+        val articles = supervisorScope {
+            val deferredGoogleSearch = async {
+                withTimeoutOrNull(1300L) {
+                    fetchGoogleNewsRss(effectiveSearchQuery, isGeneral = false, isBurkina = isBurkinaSpecific)
+                } ?: emptyList()
+            }
+            val deferredGoogleHeadline = async {
+                if (isGeneralNews || isBurkinaSpecific) {
+                    withTimeoutOrNull(1200L) {
+                        fetchGoogleNewsRss("", isGeneral = true, isBurkina = isBurkinaSpecific)
+                    } ?: emptyList()
+                } else {
+                    emptyList()
+                }
+            }
+            val deferredLefaso = async {
+                if (isBurkinaSpecific || isGeneralNews) {
+                    withTimeoutOrNull(1200L) { fetchLefasoFeed() } ?: emptyList()
+                } else {
+                    emptyList()
+                }
+            }
+            val deferredRfi = async {
+                withTimeoutOrNull(1200L) { fetchRfiFeed() } ?: emptyList()
+            }
+
+            val combined = mutableListOf<LiveNewsArticle>()
+            combined.addAll(deferredGoogleSearch.await())
+            combined.addAll(deferredLefaso.await())
+            combined.addAll(deferredRfi.await())
+            combined.addAll(deferredGoogleHeadline.await())
+            combined
         }
-
-        // 2. Flux Google News (À la Une ou recherche thématique)
-        val searchArticles = fetchGoogleNewsRss(cleanQuery, isGeneralNews, isBurkinaSpecific)
-        articles.addAll(searchArticles)
 
         // Déduplication par titre normalisé
         val distinctArticles = articles
@@ -94,8 +182,8 @@ class LiveNewsFeedService {
 
         val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
         val sb = StringBuilder()
-        sb.append("=== DÉPÊCHES OFFICIELLES ET ACTUALITÉS CERTIFIÉES DU JOUR ($dateStr) ===\n")
-        sb.append("Voici les articles et dépêches réels publiés par les médias officiels :\n\n")
+        sb.append("=== DÉPÊCHES OFFICIELLES ET ACTUALITÉS CERTIFIÉES EN DIRECT ($dateStr) ===\n")
+        sb.append("Voici les articles et dépêches réels publiés par les médias :\n\n")
 
         val webSources = mutableListOf<WebSource>()
 
@@ -119,7 +207,7 @@ class LiveNewsFeedService {
             )
         }
 
-        sb.append("Consigne impérative : Présente ces actualités de manière claire, structurée et attrayante sans t'excuser ni mentionner l'absence d'autres dépêches. Réponds immédiatement avec les sujets ci-dessus.")
+        sb.append("Consigne impérative : Exploite immédiatement ces actualités réelles pour répondre de manière directe, précise et naturelle, sans jamais dire que tu n'as pas accès à Internet ou aux actualités.")
 
         val finalResult = LiveNewsResult(
             hasNews = true,
@@ -127,25 +215,25 @@ class LiveNewsFeedService {
             sources = webSources
         )
 
-        memoryCache[cacheKey] = Pair(System.currentTimeMillis(), finalResult)
+        sharedMemoryCache[cacheKey] = Pair(System.currentTimeMillis(), finalResult)
+        if (isGeneralNews) {
+            sharedMemoryCache["general_top_news"] = Pair(System.currentTimeMillis(), finalResult)
+        }
         return@withContext finalResult
     }
 
     private fun fetchGoogleNewsRss(query: String, isGeneral: Boolean, isBurkina: Boolean): List<LiveNewsArticle> {
         return try {
-            val url = if (isGeneral) {
-                // Flux À la Une Burkina Faso & Monde
-                "https://news.google.com/rss?hl=fr&gl=BF&ceid=BF:fr"
-            } else {
-                val effectiveQuery = if (isBurkina && !query.contains("burkina", ignoreCase = true)) {
-                    "$query Burkina Faso"
+            val url = if (isGeneral || query.isBlank()) {
+                // Flux À la Une francophone
+                if (isBurkina) {
+                    "https://news.google.com/rss/search?q=Burkina+Faso+OR+Afrique&hl=fr&gl=FR&ceid=FR:fr"
                 } else {
-                    query
+                    "https://news.google.com/rss?hl=fr&gl=FR&ceid=FR:fr"
                 }
-                val encodedQuery = URLEncoder.encode(effectiveQuery, "UTF-8")
-                val gl = if (isBurkina) "BF" else "FR"
-                val ceid = if (isBurkina) "BF:fr" else "FR:fr"
-                "https://news.google.com/rss/search?q=$encodedQuery&hl=fr&gl=$gl&ceid=$ceid"
+            } else {
+                val encodedQuery = URLEncoder.encode(query, "UTF-8")
+                "https://news.google.com/rss/search?q=$encodedQuery&hl=fr&gl=FR&ceid=FR:fr"
             }
 
             val request = Request.Builder()
@@ -164,10 +252,8 @@ class LiveNewsFeedService {
         }
     }
 
-    private fun fetchDirectFasoFeeds(): List<LiveNewsArticle> {
-        val list = mutableListOf<LiveNewsArticle>()
-        // 1. Lefaso.net (Dépêches en temps réel du Burkina)
-        try {
+    private fun fetchLefasoFeed(): List<LiveNewsArticle> {
+        return try {
             val req = Request.Builder()
                 .url("https://lefaso.net/spip.php?page=backend")
                 .header("User-Agent", "Mozilla/5.0 (Android; Mobile) SAM-AI-Reader/1.0")
@@ -175,15 +261,19 @@ class LiveNewsFeedService {
             httpClient.newCall(req).execute().use { resp ->
                 if (resp.isSuccessful) {
                     val xml = resp.body?.string().orEmpty()
-                    list.addAll(parseRssXml(xml, fallbackSource = "LeFaso.net").take(5))
+                    parseRssXml(xml, fallbackSource = "LeFaso.net").take(5)
+                } else {
+                    emptyList()
                 }
             }
         } catch (e: Throwable) {
             Log.w("LiveNewsFeedService", "Lefaso feed error: ${e.message}")
+            emptyList()
         }
+    }
 
-        // 2. RFI Afrique
-        try {
+    private fun fetchRfiFeed(): List<LiveNewsArticle> {
+        return try {
             val req = Request.Builder()
                 .url("https://www.rfi.fr/fr/afrique/rss")
                 .header("User-Agent", "Mozilla/5.0 (Android; Mobile) SAM-AI-Reader/1.0")
@@ -191,13 +281,15 @@ class LiveNewsFeedService {
             httpClient.newCall(req).execute().use { resp ->
                 if (resp.isSuccessful) {
                     val xml = resp.body?.string().orEmpty()
-                    list.addAll(parseRssXml(xml, fallbackSource = "RFI Afrique").take(3))
+                    parseRssXml(xml, fallbackSource = "RFI Afrique").take(4)
+                } else {
+                    emptyList()
                 }
             }
         } catch (e: Throwable) {
             Log.w("LiveNewsFeedService", "RFI feed error: ${e.message}")
+            emptyList()
         }
-        return list
     }
 
     private fun parseRssXml(xml: String, fallbackSource: String): List<LiveNewsArticle> {
