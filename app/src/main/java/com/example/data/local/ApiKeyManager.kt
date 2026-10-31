@@ -164,11 +164,49 @@ class ApiKeyManager(context: Context) {
         prefs.edit().remove(KEY_CUSTOM_OPENAI_API_KEY).apply()
     }
 
+    fun getActiveHuggingFaceApiKey(): String {
+        val customKey = prefs.getString(KEY_CUSTOM_HUGGINGFACE_API_KEY, null)?.trim()
+        if (!customKey.isNullOrBlank() && customKey != "MY_HUGGINGFACE_API_KEY") {
+            return customKey
+        }
+        val buildConfigKey = try {
+            BuildConfig.HUGGINGFACE_API_KEY
+        } catch (_: Throwable) {
+            ""
+        }
+        val clean = buildConfigKey.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+        return if (clean.isNotBlank() && clean != "MY_HUGGINGFACE_API_KEY") clean else ""
+    }
+
+    fun isHuggingFaceConfigured(): Boolean = getActiveHuggingFaceApiKey().isNotBlank()
+
+    fun saveHuggingFaceApiKey(key: String) {
+        val clean = key.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+        if (clean.isBlank() || clean == "MY_HUGGINGFACE_API_KEY") {
+            clearHuggingFaceApiKey()
+        } else {
+            prefs.edit().putString(KEY_CUSTOM_HUGGINGFACE_API_KEY, clean).apply()
+        }
+    }
+
+    fun clearHuggingFaceApiKey() {
+        prefs.edit().remove(KEY_CUSTOM_HUGGINGFACE_API_KEY).apply()
+    }
+
+    fun getHuggingFaceMooreWhisperModel(): String {
+        val customModel = prefs.getString(KEY_CUSTOM_HF_MOORE_MODEL, null)?.trim()
+        return if (!customModel.isNullOrBlank()) customModel else DEFAULT_HUGGINGFACE_MOORE_MODEL
+    }
+
     companion object {
         private const val PREFS_NAME = "sam_ai_api_keys"
         private const val KEY_CUSTOM_GEMINI_API_KEY = "custom_gemini_api_key"
         private const val KEY_CUSTOM_GEMINI_LIVE_API_KEY = "custom_gemini_live_api_key"
         private const val KEY_CUSTOM_OPENAI_API_KEY = "custom_openai_api_key"
+        private const val KEY_CUSTOM_HUGGINGFACE_API_KEY = "custom_huggingface_api_key"
+        private const val KEY_CUSTOM_HF_MOORE_MODEL = "custom_hf_moore_model"
+
+        const val DEFAULT_HUGGINGFACE_MOORE_MODEL = "samaisam/sam-ai-moore-whisper"
 
         private val ENCODED_DEFAULT_KEY = intArrayOf(
             70, 51, 109, 119, 64, 115, 127, 126, 127, 87, 99, 87, 81, 86, 119, 82, 67, 83, 100, 97,

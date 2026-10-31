@@ -222,10 +222,14 @@ class OpenAiWhisperService(private val context: Context) {
         }
 
         val apiKey = apiKeyManager.getActiveOpenAiApiKey()
-        if (apiKey.isBlank() || apiKey == "MY_OPENAI_API_KEY") {
-            Log.e(TAG, "Clé API OpenAI non configurée")
+        val hfApiKey = apiKeyManager.getActiveHuggingFaceApiKey()
+        val hasOpenAi = apiKey.isNotBlank() && apiKey != "MY_OPENAI_API_KEY"
+        val hasHuggingFace = hfApiKey.isNotBlank() && hfApiKey != "MY_HUGGINGFACE_API_KEY"
+
+        if (!hasOpenAi && !hasHuggingFace) {
+            Log.e(TAG, "Aucune clé API OpenAI ni Hugging Face configurée")
             return@withContext Result.failure(
-                IllegalStateException("Clé API OpenAI non configurée. Veuillez ajouter votre clé dans les paramètres.")
+                IllegalStateException("Clé API vocale non configurée. Veuillez ajouter votre clé dans les paramètres.")
             )
         }
 
@@ -233,6 +237,38 @@ class OpenAiWhisperService(private val context: Context) {
         val whisperLangCode = mapToWhisperLanguageCode(languageHint)
 
         try {
+            // 0. Si le mode Mooré est actif et qu'une clé Hugging Face est configurée, on interroge le modèle Mooré entraîné (samaisam/sam-ai-moore-whisper)
+            if (isMooreHint && hasHuggingFace) {
+                val hfModelId = apiKeyManager.getHuggingFaceMooreWhisperModel()
+                val hfResult = executeHuggingFaceTranscriptionRequest(
+                    audioFile = audioFile,
+                    hfApiKey = hfApiKey,
+                    modelId = hfModelId
+                )
+                val hfText = hfResult.getOrNull()?.trim().orEmpty()
+                if (hfResult.isSuccess && hfText.isNotBlank() && !isHallucinationOrPromptEcho(hfText)) {
+                    val correctedHf = applyMoorePhoneticCorrections(hfText, isMooreHint = true)
+                    Log.d(TAG, "Transcription HuggingFace [$hfModelId] -> Brut: \"$hfText\" | Corrigé: \"$correctedHf\"")
+                    return@withContext Result.success(correctedHf)
+                }
+            }
+
+            if (!hasOpenAi) {
+                // Si seule la clé Hugging Face est présente (sans clé OpenAI)
+                val hfModelId = apiKeyManager.getHuggingFaceMooreWhisperModel()
+                val hfResult = executeHuggingFaceTranscriptionRequest(
+                    audioFile = audioFile,
+                    hfApiKey = hfApiKey,
+                    modelId = hfModelId
+                )
+                if (hfResult.isFailure) return@withContext hfResult
+                val rawHf = hfResult.getOrNull().orEmpty().trim()
+                if (rawHf.isBlank() || isHallucinationOrPromptEcho(rawHf)) {
+                    return@withContext Result.success("")
+                }
+                return@withContext Result.success(applyMoorePhoneticCorrections(rawHf, isMooreHint))
+            }
+
             // 1. Appel prioritaire sur le modèle flagship de transcription OpenAI : gpt-4o-transcribe (précision vocale maximale)
             val flagshipResult = executeTranscriptionRequest(
                 audioFile = audioFile,
@@ -290,6 +326,54 @@ class OpenAiWhisperService(private val context: Context) {
                 }
             } catch (_: Exception) {}
         }
+    }
+
+    /**
+     * Interroge le modèle Whisper Mooré hébergé sur Hugging Face Hub (ex: samaisam/sam-ai-moore-whisper)
+     * via l'API d'inférence Hugging Face avec repli transparent si le modèle est encore en cours de chargement.
+     */
+    private fun executeHuggingFaceTranscriptionRequest(
+        audioFile: File,
+        hfApiKey: String,
+        modelId: String
+    ): Result<String> {
+        val mediaType = when {
+            audioFile.name.endsWith(".wav", ignoreCase = true) -> "audio/wav".toMediaType()
+            audioFile.name.endsWith(".mp3", ignoreCase = true) -> "audio/mpeg".toMediaType()
+            else -> "audio/m4a".toMediaType()
+        }
+        val endpoints = listOf(
+            "https://router.huggingface.co/hf-inference/models/$modelId",
+            "https://api-inference.huggingface.co/models/$modelId"
+        )
+        var lastError: Exception? = null
+        for (endpoint in endpoints) {
+            try {
+                val request = Request.Builder()
+                    .url(endpoint)
+                    .addHeader("Authorization", "Bearer $hfApiKey")
+                    .post(audioFile.asRequestBody(mediaType))
+                    .build()
+
+                httpClient.newCall(request).execute().use { response ->
+                    val responseBody = response.body?.string().orEmpty()
+                    if (response.isSuccessful && responseBody.isNotBlank()) {
+                        val jsonEl = json.parseToJsonElement(responseBody).jsonObject
+                        val text = jsonEl["text"]?.jsonPrimitive?.content.orEmpty().trim()
+                        if (text.isNotBlank()) {
+                            return Result.success(text)
+                        }
+                    } else {
+                        Log.w(TAG, "HuggingFace ASR [$endpoint - Code ${response.code}]: $responseBody")
+                        lastError = Exception("HuggingFace ASR (${response.code})")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Exception HuggingFace ASR [$endpoint]: ${e.message}")
+                lastError = e
+            }
+        }
+        return Result.failure(lastError ?: Exception("Modèle Hugging Face indisponible"))
     }
 
     private fun executeTranscriptionRequest(
