@@ -413,7 +413,7 @@ fun SamAiGeminiAssistantModal(
                             .fillMaxWidth()
                             .padding(horizontal = 6.dp, vertical = 4.dp)
                     ) {
-                        // Pilules d'accès direct au dialogue et à l'appel en direct en Mooré
+                        // Pilule d'accès direct à l'appel vocal en direct en Français
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -449,32 +449,7 @@ fun SamAiGeminiAssistantModal(
                                         color = Color(0xFF009639)
                                     )
                                     Spacer(modifier = Modifier.width(4.dp))
-                                    Text("🇧🇫", fontSize = 11.sp)
-                                }
-                            }
-
-                            Surface(
-                                onClick = {
-                                    hideKeyboard()
-                                    showMooreVoiceDialog = true
-                                },
-                                shape = RoundedCornerShape(16.dp),
-                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.75f),
-                                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
-                                modifier = Modifier.testTag("btn_moore_voice_chat")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text("🗣️", fontSize = 12.sp)
-                                    Spacer(modifier = Modifier.width(5.dp))
-                                    Text(
-                                        text = "Dictée Mooré",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.Medium,
-                                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                                    )
+                                    Text("🇫🇷", fontSize = 11.sp)
                                 }
                             }
                         }
@@ -1889,9 +1864,9 @@ fun SamAiVoiceCallDialog(
 
     var lastUserSentence by remember { mutableStateOf("") }
     var lastAiSentence by remember { mutableStateOf("") }
-    // Mode linguistique de l'appel : "AUTO" (détecte Mooré ou Français), "MOORE" (100% Mooré), "FR" (100% Français)
-    var callLangMode by remember { mutableStateOf("AUTO") }
-    var lastDetectedLang by remember { mutableStateOf("mooré") }
+    // Mode linguistique de l'appel verrouillé en 100% Français
+    var callLangMode by remember { mutableStateOf("FR") }
+    var lastDetectedLang by remember { mutableStateOf("Français") }
 
     val soundLevel by speechManager.soundLevel.collectAsState()
     val partialTranscript by speechManager.partialText.collectAsState()
@@ -1911,65 +1886,51 @@ fun SamAiVoiceCallDialog(
         }
     }
 
-    // Boucle récursive infinie pour que l'appel continue sans limite de tours
+    // Boucle récursive infinie pour que l'appel continue sans limite de tours en 100% Français
     fun listenTurn() {
         if (!isCallActive || isMicMuted) return
         callState = VoiceCallState.USER_SPEAKING
-        val listenLangHint = if (callLangMode == "FR") "Français" else "Mooré"
         speechManager.startListening(
-            language = listenLangHint,
+            language = "Français",
             continuousMode = true,
             onResult = { recognizedText ->
                 val clean = recognizedText.trim()
                 if (clean.isNotBlank() && isCallActive) {
                     lastUserSentence = clean
                     callState = VoiceCallState.THINKING
-                    val turnStartMs = System.currentTimeMillis()
-                    val useMooreForThisTurn = when (callLangMode) {
-                        "MOORE" -> true
-                        "FR" -> false
-                        else -> com.example.data.remote.OpenAiWhisperService.isLikelyMooreUtterance(clean)
-                    }
-                    val targetTtsLang = if (useMooreForThisTurn) "mooré" else "Français"
-                    lastDetectedLang = targetTtsLang
+                    lastDetectedLang = "Français"
 
                     viewModel.askSamAiGemini(
                         userQuestion = clean,
-                        isMooreVoice = useMooreForThisTurn,
+                        isMooreVoice = false,
+                        isVoiceCall = true,
                         onReply = { botReply ->
                             if (isCallActive) {
-                                val elapsed = System.currentTimeMillis() - turnStartMs
-                                // Pause naturelle d'environ ~0.75s après que l'utilisateur a parlé avant que SAM AI ne prenne la parole
-                                val naturalPauseMs = (750L - elapsed).coerceAtLeast(0L)
-                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                    if (isCallActive) {
-                                        lastAiSentence = botReply
+                                lastAiSentence = botReply
+                                callState = VoiceCallState.SAM_SPEAKING
+                                ttsManager.speakWithCallback(
+                                    text = botReply,
+                                    language = "Français",
+                                    onStart = {
                                         callState = VoiceCallState.SAM_SPEAKING
-                                        ttsManager.speakWithCallback(
-                                            text = botReply,
-                                            language = targetTtsLang,
-                                            onStart = {
-                                                callState = VoiceCallState.SAM_SPEAKING
-                                            },
-                                            onDone = {
-                                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                                    if (isCallActive && !isMicMuted) {
-                                                        speechManager.reset()
-                                                        listenTurn()
-                                                    }
-                                                }, 300L)
-                                            },
-                                            onError = {
-                                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                                    if (isCallActive && !isMicMuted) {
-                                                        speechManager.reset()
-                                                        listenTurn()
-                                                    }
-                                                }, 300L)
+                                    },
+                                    onDone = {
+                                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                            if (isCallActive && !isMicMuted) {
+                                                speechManager.reset()
+                                                listenTurn()
                                             }
-                                        )
+                                        }, 120L)
+                                    },
+                                    onError = {
+                                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                            if (isCallActive && !isMicMuted) {
+                                                speechManager.reset()
+                                                listenTurn()
+                                            }
+                                        }, 120L)
                                     }
-                                }, naturalPauseMs)
+                                )
                             }
                         }
                     )
@@ -1979,7 +1940,7 @@ fun SamAiVoiceCallDialog(
                         if (isCallActive && !isMicMuted && callState == VoiceCallState.USER_SPEAKING) {
                             listenTurn()
                         }
-                    }, 180L)
+                    }, 120L)
                 }
             },
             onError = { _ ->
@@ -1988,7 +1949,7 @@ fun SamAiVoiceCallDialog(
                         if (isCallActive && !isMicMuted && callState == VoiceCallState.USER_SPEAKING) {
                             listenTurn()
                         }
-                    }, 200L)
+                    }, 150L)
                 }
             }
         )
@@ -2015,7 +1976,7 @@ fun SamAiVoiceCallDialog(
         }
     }
 
-    // Déclenchement automatique de l'écoute dès l'ouverture de l'appel pour que l'utilisateur puisse saluer ("Nii yi beogo") et que SAM réponde ("Yibeo kibare")
+    // Déclenchement automatique de l'écoute dès l'ouverture de l'appel
     LaunchedEffect(Unit) {
         val hasPermission = ContextCompat.checkSelfPermission(
             context,
@@ -2078,13 +2039,6 @@ fun SamAiVoiceCallDialog(
                     modifier = Modifier.fillMaxWidth().padding(top = 16.dp)
                 ) {
                     Surface(
-                        onClick = {
-                            callLangMode = when (callLangMode) {
-                                "AUTO" -> "MOORE"
-                                "MOORE" -> "FR"
-                                else -> "AUTO"
-                            }
-                        },
                         shape = RoundedCornerShape(20.dp),
                         color = Color(0xFF1E222B),
                         border = BorderStroke(1.dp, Color(0xFF009639).copy(alpha = 0.5f))
@@ -2093,14 +2047,10 @@ fun SamAiVoiceCallDialog(
                             modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Text(if (callLangMode == "FR") "🇫🇷" else "🇧🇫", fontSize = 14.sp)
+                            Text("🇫🇷", fontSize = 14.sp)
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = when (callLangMode) {
-                                    "MOORE" -> "Appel en direct • 100% Mooré"
-                                    "FR" -> "Appel en direct • 100% Français"
-                                    else -> "Appel en direct • Mooré & Français (Auto)"
-                                },
+                                text = "Appel en direct • Français",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White

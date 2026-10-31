@@ -2433,16 +2433,17 @@ class SamAiViewModel(
     fun askSamAiGemini(
         userQuestion: String,
         isMooreVoice: Boolean = false,
+        isVoiceCall: Boolean = false,
         onReply: ((String) -> Unit)? = null
     ) {
         val cleanQuestion = userQuestion.trim()
-        if (cleanQuestion.isBlank() || (_isSamAiGeminiThinking.value && !isMooreVoice)) return
+        if (cleanQuestion.isBlank() || (_isSamAiGeminiThinking.value && !isVoiceCall && !isMooreVoice)) return
 
         val userMsg = SamAiChatMessage(
             sender = "user",
             text = cleanQuestion,
             timestamp = System.currentTimeMillis(),
-            language = if (isMooreVoice) "mooré" else null
+            language = null
         )
         val currentList = if (_samAiChatMessages.value.size == 1 && _samAiChatMessages.value.first().id == "welcome_msg") {
             listOf(userMsg)
@@ -2451,77 +2452,10 @@ class SamAiViewModel(
         }
         _samAiChatMessages.value = currentList
 
-        // 0. RÉPONSE INSTANTANÉE SYNCHRONE (0 ms) pour toutes les salutations, phrases et mots des 50 leçons audio Mooré
-        val instantDeterministicReply = openAiBackendService.resolveDeterministicMooreLessonReply(cleanQuestion, isMooreVoice)
-        if (instantDeterministicReply != null) {
-            _isSamAiGeminiThinking.value = false
-            val botMsg = SamAiChatMessage(
-                sender = "sam_ai",
-                text = instantDeterministicReply,
-                timestamp = System.currentTimeMillis(),
-                isError = false,
-                sources = emptyList(),
-                model = null,
-                language = "mooré"
-            )
-            _samAiChatMessages.value = _samAiChatMessages.value + botMsg
-            onReply?.invoke(instantDeterministicReply)
-            return
-        }
-
         _isSamAiGeminiThinking.value = true
 
         viewModelScope.launch(Dispatchers.IO) {
             val userText = cleanQuestion.trim()
-            val isDetailRequested = userText.contains("détail", ignoreCase = true) ||
-                userText.contains("detail", ignoreCase = true) ||
-                userText.contains("développe", ignoreCase = true) ||
-                userText.contains("developpe", ignoreCase = true) ||
-                userText.contains("approfondi", ignoreCase = true) ||
-                userText.contains("explique en détail", ignoreCase = true) ||
-                userText.contains("étapes", ignoreCase = true) ||
-                userText.contains("tutoriel", ignoreCase = true) ||
-                userText.contains("donne un exemple", ignoreCase = true) ||
-                userText.contains("plus d'explication", ignoreCase = true)
-
-            val currentDateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
-            val currentTimeStr = java.text.SimpleDateFormat("HH:mm", java.util.Locale.FRENCH).format(java.util.Date())
-
-            val systemInstruction = """
-Tu es SAM AI, une intelligence artificielle d'élite, cultivée, brillante, polyvalente et experte, conçue à l'image des meilleures IA modernes de référence.
-Tu as été développée par Abdoul Mohamine Sawadogo, un jeune développeur burkinabè, avec l'ambition de fournir un assistant intelligent de très haut niveau, utile, pédagogique et ouvert sur le monde.
-
-DATE DU JOUR IMPÉRATIVE :
-Aujourd'hui nous sommes exactement le $currentDateStr ($currentTimeStr).
-Tu dois te baser sur cette date actuelle pour toute réponse temporelle, actualité ou événement.
-
-GROUNDING GOOGLE SEARCH & OBLIGATION DE RECHERCHE EN DIRECT :
-1. Tu disposes de l'outil de recherche web en direct Google Search (googleSearch).
-2. Pour TOUTE question portant sur un score sportif, un résultat de match, un classement, la météo, un cours de monnaie, une actualité politique, économique ou un fait récent, tu as l'OBLIGATION ABSOLUE d'effectuer une recherche web avec l'outil googleSearch. Ne réponds JAMAIS de mémoire ou par extrapolation pour ces informations récentes.
-3. RÈGLE STRICTE SUR LES MATCHS NON PRÉCISÉS :
-   Si l'utilisateur demande le score ou le résultat d'une équipe ou d'un club sans préciser la date ou la compétition (par exemple : « Quel est le score du Real Madrid ? », « Résultat du match du Barça », « Dernier score du PSG »), recherche et donne TOUJOURS et OBLIGATOIREMENT le résultat du match le PLUS RÉCENT joué par cette équipe à ce jour ($currentDateStr).
-   Précise clairement : la date du match, la compétition, l'adversaire, le score final exact et les buteurs s'ils sont connus.
-4. Tu as un accès complet à Internet en temps réel grâce à l'outil googleSearch. Ne dis JAMAIS que tu n'as pas accès à Internet ou que tes données s'arrêtent à une date passée.
-
-RÈGLES D'OR DE COMPORTEMENT :
-1. RÉPONSES DIRECTES, FLUIDES ET SANS BAVARDAGE INUTILE :
-   - Réponds directement et précisément au sujet sans jamais commencer par des salutations redondantes ("Bonjour", "Je suis SAM AI", etc.) lorsque la discussion est engagée.
-   - Si l'utilisateur demande "Détaille", "Développe", "Explique plus", "Pourquoi ?", "Continue", "Donne un exemple", ou pose une relance brève, analyse l'historique complet des messages précédents et fournis une explication approfondie, claire, structurée et riche sur le sujet en cours. Ne te présente JAMAIS dans ces cas-là.
-2. RIGUEUR ET HAUT NIVEAU INTELLECTUEL :
-   - Traite tous les sujets avec aisance et profondeur : sciences, technologies, programmation (Kotlin, Python, Web, IA), histoire mondiale et africaine, mathématiques, littérature, vie pratique, économie, santé, philosophie.
-   - Fournis des réponses de qualité supérieure, structurées avec des sous-titres ou des puces lorsque cela améliore la clarté.
-3. CONTEXTE ET SUIVI CONVERSATIONNEL (MULTI-TOUR) :
-   - Prends en compte l'ensemble des échanges pour maintenir la cohérence thématique et comprendre les pronoms ou références indirectes sans que l'utilisateur doive reformuler sa demande.
-4. EXPERTISE SUR LE BURKINA FASO ET LES LANGUES :
-   - Tu maîtrises parfaitement l'histoire, la géographie, les grandes figures, le patrimoine et les langues du Burkina Faso (Mooré, Dioula, Français, Haoussa, etc.).
-5. RÈGLE STRICTE SUR L'IDENTITÉ ET LE CRÉATEUR :
-   - Tu ne mentionnes ton créateur (Abdoul Mohamine Sawadogo) que SI et SEULEMENT SI l'utilisateur te demande explicitement qui t'a créé, développé ou conçu (ex: "Qui t'a créé ?", "Qui est ton créateur ?").
-   - Dans toutes les autres situations, concentre-toi à 100% sur la question posée par l'utilisateur sans aucune digression sur ton identité.
-6. RÈGLE ABSOLUE POUR LES ÉCHANGES EN MOORÉ :
-   - Si la question est posée en Mooré ou marquée par le mode vocal Mooré, réponds DIRECTEMENT et EXCLUSIVEMENT en langue Mooré (Burkina Faso).
-   - INTERDICTION STRICTE DE S'EXCUSER : Ne dis JAMAIS 'Désolé', 'Pardon', 'Je ne parle pas Mooré' ou 'En tant qu'IA'. Réponds immédiatement en Mooré naturel, chaleureux et bienveillant (ex: Ne y beogo, Laafi bala, Yaa sida, Asoe, etc.).
-""".trimIndent()
-
             val qNorm = userText.lowercase(java.util.Locale.ROOT)
                 .replace("’", "'")
                 .replace("‘", "'")
@@ -2570,11 +2504,7 @@ RÈGLES D'OR DE COMPORTEMENT :
             )
 
             if (isExplicitCreatorQuestion || isExplicitModelOrOpenAiQuestion) {
-                val directAnswer = if (isMooreVoice) {
-                    "Maam yaa SAM AI, Abdoul Mohamine Sawadogo n naan maam Burkina Faso pʋgẽ. Fo data bõe tɩ m sõng-fo ?"
-                } else {
-                    "Je suis SAM AI, une intelligence artificielle créée par Abdoul Mohamine Sawadogo, un jeune Burkinabè, pour faciliter l’apprentissage, la communication multilingue et l'accès à l'information."
-                }
+                val directAnswer = "Je suis SAM AI, une intelligence artificielle créée par Abdoul Mohamine Sawadogo, un jeune Burkinabè, pour vous accompagner et répondre à toutes vos questions."
                 _isSamAiGeminiThinking.value = false
                 val botMsg = SamAiChatMessage(
                     sender = "sam_ai",
@@ -2583,7 +2513,7 @@ RÈGLES D'OR DE COMPORTEMENT :
                     isError = false,
                     sources = emptyList(),
                     model = null,
-                    language = if (isMooreVoice) "mooré" else null
+                    language = null
                 )
                 _samAiChatMessages.value = _samAiChatMessages.value + botMsg
                 if (onReply != null) {
@@ -2593,11 +2523,7 @@ RÈGLES D'OR DE COMPORTEMENT :
             }
 
             if (isExplicitWhyCreatedQuestion) {
-                val directAnswer = if (isMooreVoice) {
-                    "Maam sõngda fõ ne Mooré la Burkina Faso kibaya. Fo data bõe tɩ m sõng-fo ?"
-                } else {
-                    "Mon objectif est d’aider les personnes dans leurs besoins quotidiens, de promouvoir l’apprentissage des langues burkinabè et de valoriser la culture, l’histoire et l’actualité du Burkina Faso."
-                }
+                val directAnswer = "Mon objectif est d’aider les personnes au quotidien, de répondre avec précision à leurs questions et de faciliter l'accès au savoir et à l'information."
                 _isSamAiGeminiThinking.value = false
                 val botMsg = SamAiChatMessage(
                     sender = "sam_ai",
@@ -2606,7 +2532,7 @@ RÈGLES D'OR DE COMPORTEMENT :
                     isError = false,
                     sources = emptyList(),
                     model = null,
-                    language = if (isMooreVoice) "mooré" else null
+                    language = null
                 )
                 _samAiChatMessages.value = _samAiChatMessages.value + botMsg
                 if (onReply != null) {
@@ -2624,15 +2550,15 @@ RÈGLES D'OR DE COMPORTEMENT :
                 )
             }
 
-            // Classification de la requête pour détecter le besoin d'actualités récentes (sauf en appel vocal Mooré direct pour garder une latence minimale)
+            // En mode appel vocal en direct (isVoiceCall), on évite l'attente de 2.4s des flux RSS pour répondre instantanément comme une vraie personne
             var liveContextSummary = ""
             var liveSources = emptyList<com.example.data.local.WebSource>()
 
-            if (!isMooreVoice) {
+            if (!isVoiceCall && !isMooreVoice) {
                 val searchDecision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
                 if (searchDecision.isSearchNeeded) {
                     try {
-                        val newsResult = kotlinx.coroutines.withTimeoutOrNull(2400L) {
+                        val newsResult = kotlinx.coroutines.withTimeoutOrNull(2000L) {
                             liveNewsFeedService.fetchLiveNews(searchDecision.cleanSearchQuery.ifBlank { userText })
                         }
                         if (newsResult != null && newsResult.hasNews) {
@@ -2653,7 +2579,8 @@ RÈGLES D'OR DE COMPORTEMENT :
                 preferredModel = "gpt-4o",
                 newsContext = liveContextSummary,
                 sources = liveSources,
-                isMooreVoice = isMooreVoice
+                isMooreVoice = false,
+                isVoiceCall = isVoiceCall
             )
 
             var responseText = openAiResult.text
@@ -2676,7 +2603,7 @@ RÈGLES D'OR DE COMPORTEMENT :
                 isError = isError,
                 sources = responseSources,
                 model = null,
-                language = if (isMooreVoice) "mooré" else null
+                language = null
             )
             _samAiChatMessages.value = _samAiChatMessages.value + botMsg
 

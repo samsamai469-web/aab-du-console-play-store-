@@ -96,7 +96,8 @@ class OpenAiBackendService {
         preferredModel: String = "",
         newsContext: String = "",
         sources: List<WebSource> = emptyList(),
-        isMooreVoice: Boolean = false
+        isMooreVoice: Boolean = false,
+        isVoiceCall: Boolean = false
     ): OpenAiChatResult = withContext(Dispatchers.IO) {
         val cleanQuestion = userQuestion.trim()
         if (cleanQuestion.isBlank() && messages.isEmpty()) {
@@ -106,20 +107,7 @@ class OpenAiBackendService {
             )
         }
 
-        // RÈGLES PRIORITAIRES DÉTERMINISTES (50 Leçons Audio Officielles du Créateur) :
-        // Normalisation des prolongations vocales ("Niiiii zabreee", "Maaaaam", "Fooooo") et réponse immédiate sans erreur (0 ms)
-        val deterministicReply = resolveDeterministicMooreLessonReply(cleanQuestion, isMooreVoice)
-        if (deterministicReply != null) {
-            return@withContext OpenAiChatResult(
-                success = true,
-                text = deterministicReply,
-                sources = emptyList(),
-                model = "sam-ai-moore-direct",
-                searchPerformed = false
-            )
-        }
-
-        // Utilisation prioritaire du modèle flagship le plus performant d'OpenAI (gpt-4o / gpt-4.1)
+        // Utilisation prioritaire du modèle flagship le plus performant d'OpenAI (gpt-4o)
         val primaryModel = when {
             preferredModel.isNotBlank() && preferredModel in VALID_OPENAI_MODELS -> preferredModel
             else -> clientConfiguredModel
@@ -131,7 +119,8 @@ class OpenAiBackendService {
             model = primaryModel,
             newsContext = newsContext,
             sources = sources,
-            isMooreVoice = isMooreVoice
+            isMooreVoice = false,
+            isVoiceCall = isVoiceCall
         )
 
         if (directOpenAiResult == null || !directOpenAiResult.success) {
@@ -142,7 +131,8 @@ class OpenAiBackendService {
                 model = fallbackModel,
                 newsContext = newsContext,
                 sources = sources,
-                isMooreVoice = isMooreVoice
+                isMooreVoice = false,
+                isVoiceCall = isVoiceCall
             )
             if (fallbackResult != null && fallbackResult.success) {
                 directOpenAiResult = fallbackResult
@@ -158,11 +148,14 @@ class OpenAiBackendService {
     }
 
     /**
-     * Répond instantanément (0 ms) et avec 0% d'erreur à toutes les salutations, phrases et mots
-     * enseignés dans les 50 audios de référence ainsi qu'aux relances conversationnelles courantes,
-     * y compris lorsque l'utilisateur prolonge les voyelles ou les consonnes nasales.
+     * Mode 100% Français activé : désactive les réponses pré-enregistrées en Mooré pour laisser OpenAI répondre en français naturel.
      */
     fun resolveDeterministicMooreLessonReply(rawQuestion: String, isMooreVoice: Boolean): String? {
+        return null
+    }
+
+    @Suppress("unused")
+    private fun legacyResolveDeterministicMooreLessonReply(rawQuestion: String, isMooreVoice: Boolean): String? {
         val cleaned = rawQuestion
             .replace(Regex("\\[.*?\\]"), " ")
             .trim()
@@ -176,8 +169,6 @@ class OpenAiBackendService {
             .replace(Regex("\\s+"), " ")
             .trim()
 
-        // En mode écrit normal (!isMooreVoice), on ne déclenche jamais de traduction automatique non sollicitée :
-        // seules les vraies salutations Mooré exactes ou le mode Appel Vocal En Direct (isMooreVoice) déclenchent la réponse vocale Mooré.
         if (!isMooreVoice && norm !in setOf(
                 "nii yi beogo", "ni yibeogo", "ni yi beogo", "ne y beogo", "ne yibeogo",
                 "nii zabre", "nii zaabre", "ni zabre", "ni zaabre", "ne zabre", "ne zaabre",
@@ -368,7 +359,8 @@ class OpenAiBackendService {
         model: String,
         newsContext: String = "",
         sources: List<WebSource> = emptyList(),
-        isMooreVoice: Boolean = false
+        isMooreVoice: Boolean = false,
+        isVoiceCall: Boolean = false
     ): OpenAiChatResult? {
         val apiKey = getOpenAiApiKey()
         if (apiKey.isBlank() || apiKey.contains("MY_OPENAI_API_KEY")) {
@@ -381,29 +373,16 @@ class OpenAiBackendService {
         }
 
         val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
-        val systemPrompt = if (isMooreVoice) {
+        val systemPrompt = if (isVoiceCall) {
             buildString {
-                append("Tu es SAM AI en mode APPEL VOCAL DIRECT EN LANGUE MOORÉ (Burkina Faso), conçu par Abdoul Mohamine Sawadogo.\n")
+                append("Tu es SAM AI en mode conversation vocale en direct, conçu par Abdoul Mohamine Sawadogo.\n")
                 append("Aujourd'hui nous sommes le $dateStr.\n")
-                append("RÈGLES ABSOLUES ET OBLIGATOIRES :\n")
-                append("1. RÉPONDRE EXACTEMENT À LA QUESTION POSÉE SANS AUCUNE ERREUR :\n")
-                append("   - Écoute et analyse attentivement la question ou la phrase de l'utilisateur (qu'elle soit transcrite en Mooré ou en Français).\n")
-                append("   - Réponds TOUJOURS directement, exactement et sans erreur à la question précise que l'utilisateur vient de poser (1 à 3 phrases claires).\n")
-                append("   - Ne réponds JAMAIS au hasard et ne remplace JAMAIS la réponse à une question par une simple salutation.\n")
-                append("2. 100% MOORÉ AUTHENTIQUE UNIQUEMENT :\n")
-                append("   - Formule toute ta réponse EXCLUSIVEMENT en langue Mooré authentique du Burkina Faso.\n")
-                append("   - N'ajoute JAMAIS de traduction en français ni de texte entre parenthèses.\n")
-                append("   - Après avoir répondu avec précision à la question de l'utilisateur, tu peux terminer poliment par « Fo me data bõe ? » ou « Fo data bõe tɩ m sõng-fo ? ».\n")
-                append("3. SALUTATIONS ET VOCABULAIRE MOORÉ CERTIFIÉS (50 LEÇONS AUDIO) :\n")
-                append("   - 'Nii yi beogo' -> 'Yibeo kibare'\n")
-                append("   - 'Nii zabre' -> 'Zabre kibare'\n")
-                append("   - 'Nii windga' -> 'Windga kibare'\n")
-                append("   - 'Niyungo' -> 'Yungo kibare'\n")
-                append("   - 'Wind da ganeg laafi' -> 'Amiina ! Wind da ganeg laafi.'\n")
-                append("   - 'Neewôgô' -> 'Barka ! Laafi bala ? Fo data bõe ?'\n")
-                append("   - 'Kibare' / 'Laafi beeme' -> 'Laafi bala ! Ya sonma. Fo data bõe tɩ m sõng-fo ?'\n")
-                append("   - 'Nindaaré' -> 'Wënd-na kô-d nindaare !'\n")
-                append("   - Vocabulaire Mooré : Maam, Fõ, Tond, M'ma, M'baaba, Nikieman, Poug yaanga, Paga, Rawa, Biiga, Poug sada, Kakouada, Tandaogo, M nan gounsam, M data ligdi, M debda zakin wan, Sên na be, Raaga, Monteur, Monbile, Pnous, Nanwoudre, Weefo, Moncoroni, Foūgou, Son kaam, Bidou, Mougne, Beinga, Touayga, Zom-kom, Banga, Yagre.\n")
+                append("RÈGLES ABSOLUES DE CONVERSATION VOCALE (STYLE CHATGPT VOICE — COMME UNE VRAIE PERSONNE) :\n")
+                append("1. 100% FRANÇAIS UNIQUEMENT : Réponds EXCLUSIVEMENT en français naturel, fluide et chaleureux. Ne mélange JAMAIS avec le mooré ni aucune autre langue.\n")
+                append("2. TON HUMAIN, NATUREL ET DIRECT : Parle exactement comme un interlocuteur humain intelligent et sympathique au téléphone. Fais des réponses courtes, claires et directes (1 à 2 phrases concises maximum, sauf si l'utilisateur demande explicitement plus de détails).\n")
+                append("3. RÉPONSE EXACTE SANS ERREUR : Écoute attentivement ce que dit l'utilisateur et réponds exactement à sa question ou à sa remarque, sans jamais répondre au hasard ni hors sujet.\n")
+                append("4. ZÉRO FORMATAGE ÉCRIT : N'utilise jamais de listes à puces, d'astérisques (*), de titres (#) ou d'émojis, car ta réponse est prononcée directement à voix haute.\n")
+                append("5. IDENTITÉ : Tu es SAM AI (ne mentionne ton créateur Abdoul Mohamine Sawadogo que si on te demande qui t'a créé). Ne mentionne jamais OpenAI ou ChatGPT.\n")
             }
         } else {
             buildString {
@@ -414,16 +393,15 @@ class OpenAiBackendService {
                     append(newsContext)
                     append("\n---------------------------------------------------------------\n")
                 }
-                append("\nConsignes impératives d'excellence (niveau ChatGPT / Claude) :\n")
+                append("\nConsignes impératives d'excellence (niveau ChatGPT) :\n")
                 append("1. COMPRÉHENSION EXACTE, ANALYSE PROFONDE ET RÉPONSE SANS ERREUR :\n")
                 append("   - Analyse l'intention exacte de la question de l'utilisateur et réponds directement, avec une précision factuelle absolue et une clarté remarquable.\n")
                 append("   - Ne réponds JAMAIS à côté de la question, ne donne JAMAIS de réponse générique au hasard, et ne t'excuse JAMAIS inutilement ('Désolé', 'En tant qu'IA').\n")
                 append("   - Traite tous les domaines (sciences, mathématiques, programmation, médecine, droit, économie, histoire mondiale et africaine, culture du Burkina Faso, rédaction, conseils pratiques) avec une maîtrise experte et structurée.\n")
                 append("2. SUIVI CONVERSATIONNEL MULTI-TOUR :\n")
                 append("   - Maintiens parfaitement le fil de la discussion sur tous les messages précédents (pronoms, sous-entendus, demandes d'approfondissement comme 'Pourquoi ?', 'Détaille', 'Donne un exemple').\n")
-                append("3. INTERDICTION DE TRADUIRE SANS DEMANDE EXPLICITE :\n")
-                append("   - Si l'utilisateur pose une question en Français, réponds en Français impeccable sans jamais traduire en Mooré de manière non sollicitée.\n")
-                append("   - Si l'utilisateur écrit en Mooré ou demande explicitement une traduction en Mooré, utilise le vocabulaire certifié (Nii yi beogo -> Yibeo kibare, Nii zabre -> Zabre kibare, Nii windga -> Windga kibare, Niyungo -> Yungo kibare, Wind da ganeg laafi, Neewôgô, Ya sonma, Laafi beeme, Kibaré, Nindaaré, Wënd-na kô-d nindaare, Barka, Zom-kom, Sên na be, Maam, Fõ, Tond, M'ma, M'baaba, Nikieman, Poug yaanga, Paga, Rawa, Biiga, Poug sada, Kakouada, Tandaogo, M nan gounsam, M data ligdi, M debda zakin wan, Raaga, Monteur, Monbile, Pnous, Nanwoudre, Weefo, Moncoroni, Foūgou, Son kaam, Bidou, Mougne, Beinga, Touayga, Banga, Yagre).\n")
+                append("3. LANGUE 100% FRANÇAIS :\n")
+                append("   - Réponds toujours en français impeccable, fluide et naturel, sans jamais mélanger avec le mooré ni une autre langue.\n")
                 append("4. ACTUALITÉS ET TEMPS RÉEL :\n")
                 append("   - Lorsque des dépêches en direct sont fournies ci-dessus, exploite-les immédiatement pour donner les faits, dates, scores et événements les plus récents.\n")
                 append("5. IDENTITÉ EXCLUSIVE SAM AI :\n")
@@ -435,17 +413,8 @@ class OpenAiBackendService {
             val isReasoningModel = model.startsWith("o1") || model.startsWith("o3")
             val systemRole = if (isReasoningModel) "developer" else "system"
 
-            val historyLimit = if (isMooreVoice) 8 else 20
-            // En mode appel vocal Mooré, on ne garde dans l'historique que les échanges en Mooré pour éviter toute contamination par d'anciens messages en français
-            val filteredMessages = if (isMooreVoice) {
-                messages.filter { msg ->
-                    val lowerMsg = msg.content.lowercase(java.util.Locale.ROOT)
-                    !lowerMsg.contains("je suis sam ai") && !lowerMsg.contains("bonjour !")
-                }
-            } else {
-                messages
-            }
-            val safeHistory = filteredMessages.takeLast(historyLimit).map {
+            val historyLimit = if (isVoiceCall) 10 else 20
+            val safeHistory = messages.takeLast(historyLimit).map {
                 buildJsonObject {
                     put("role", if (it.role == "assistant" || it.role == "model" || it.role == "ai") "assistant" else "user")
                     put("content", it.content.take(4000))
@@ -469,9 +438,9 @@ class OpenAiBackendService {
             val requestBodyJson = buildJsonObject {
                 put("model", model)
                 put("messages", messagesArray)
-                if (isMooreVoice) {
-                    put("max_completion_tokens", 320)
-                    put("temperature", 0.15)
+                if (isVoiceCall) {
+                    put("max_completion_tokens", 200)
+                    put("temperature", 0.3)
                 } else {
                     put("max_completion_tokens", 3500)
                     if (!isReasoningModel) {
@@ -520,19 +489,7 @@ class OpenAiBackendService {
                 val content = (messageObj?.get("content") as? kotlinx.serialization.json.JsonPrimitive)?.content
 
                 if (!content.isNullOrBlank()) {
-                    val sanitized = sanitizeSamAiText(content)
-                    val finalText = if (isMooreVoice) {
-                        val cleanedMoore = cleanMooreVoiceFormatting(sanitized)
-                        if (containsFrenchPhrases(cleanedMoore)) {
-                            // Traduit fidèlement la vraie réponse en Mooré sans jamais perdre le sens de la réponse
-                            val translatedMoore = translateWithOpenAi(cleanedMoore, "Français", "Mooré")
-                            if (translatedMoore.isNotBlank()) cleanMooreVoiceFormatting(translatedMoore) else cleanedMoore
-                        } else {
-                            cleanedMoore
-                        }
-                    } else {
-                        sanitized
-                    }
+                    val finalText = sanitizeSamAiText(content)
                     return OpenAiChatResult(
                         success = true,
                         text = finalText,

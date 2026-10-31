@@ -182,11 +182,10 @@ class SpeechRecognitionManager(private val context: Context) {
                         break
                     }
 
-                    // Fenêtre de silence adaptative style ChatGPT Voice :
-                    // - Salutation courte (< 1.65s de parole) : 850 ms de silence suffisent pour répondre vite
-                    // - Question complète (> 1.65s de parole) : 1300 ms de respiration permise entre deux parties de phrase sans jamais couper la question !
-                    val requiredSilenceMs = if (totalSpeechDuration <= 1650L) 850L else 1300L
-                    if ((speechDetected && silenceDuration >= requiredSilenceMs && totalSpeechDuration >= 240L) ||
+                    // Fenêtre de silence ultra-réactive style ChatGPT Voice :
+                    // Détecte la fin de parole dès ~520-650 ms de silence pour répondre immédiatement sans faire attendre l'utilisateur.
+                    val requiredSilenceMs = if (totalSpeechDuration <= 1800L) 520L else 650L
+                    if ((speechDetected && silenceDuration >= requiredSilenceMs && totalSpeechDuration >= 180L) ||
                         (speechDetected && totalSpeechDuration >= 16000L)
                     ) {
                         withContext(Dispatchers.Main) {
@@ -216,9 +215,7 @@ class SpeechRecognitionManager(private val context: Context) {
     }
 
     private fun deliverSuccess(text: String, onFinished: ((String) -> Unit)? = null) {
-        val rawClean = text.trim()
-        val isMoore = isAfricanLanguage(activeLanguage)
-        val clean = whisperService.applyMoorePhoneticCorrections(rawClean, isMooreHint = isMoore)
+        val clean = text.trim()
         _state.value = State.Success(clean)
         _partialText.value = clean
         _soundLevel.value = 0f

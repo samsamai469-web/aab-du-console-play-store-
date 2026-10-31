@@ -60,13 +60,12 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         } catch (_: Exception) {
             isReady = false
         }
-        prewarmEssentialMooreAudioCache()
     }
 
     private fun getCachedVoiceFile(spokenText: String, isMoore: Boolean): File {
         val dir = File(appContext.cacheDir, "tts_voice_cache").apply { if (!exists()) mkdirs() }
-        val key = "${isMoore}_${spokenText.lowercase(Locale.ROOT).trim()}".hashCode().toUInt().toString(16)
-        return File(dir, "sam_tts_v4_$key.mp3")
+        val key = "fr_${spokenText.lowercase(Locale.ROOT).trim()}".hashCode().toUInt().toString(16)
+        return File(dir, "sam_tts_fr_$key.mp3")
     }
 
     private fun prewarmEssentialMooreAudioCache() {
@@ -204,17 +203,8 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
         stop()
 
-        val isMoore = language?.lowercase(Locale.ROOT)?.let {
-            it.contains("moor") || it.contains("dioul")
-        } ?: false
-
-        // Conversion phonétique avancée : élimine les symboles/accents/lettres isolées ("vi", "i grec", "tilde")
-        // et applique la phonétique authentique du Mooré parlé au Burkina Faso
-        val spokenText = if (isMoore) {
-            toMooreSpokenPhonetics(text)
-        } else {
-            cleanGeneralTextForSpeech(text)
-        }
+        val isMoore = false
+        val spokenText = cleanGeneralTextForSpeech(text)
 
         if (spokenText.isBlank()) {
             onError?.invoke()
@@ -228,15 +218,15 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         val apiKey = apiKeyManager.getActiveOpenAiApiKey()
         if (apiKey.isNotBlank() && apiKey != "MY_OPENAI_API_KEY") {
             speechJob = scope.launch {
-                val success = trySpeakWithNeuralVoice(spokenText, apiKey, isMoore, rate)
+                val success = trySpeakWithNeuralVoice(spokenText, apiKey, false, rate)
                 if (!success) {
                     withContext(Dispatchers.Main) {
-                        speakWithLocalAndroidTts(spokenText, language, rate)
+                        speakWithLocalAndroidTts(spokenText, "Français", rate)
                     }
                 }
             }
         } else {
-            speakWithLocalAndroidTts(spokenText, language, rate)
+            speakWithLocalAndroidTts(spokenText, "Français", rate)
         }
     }
 
@@ -246,17 +236,16 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         isMoore: Boolean,
         speed: Float
     ): ByteArray? = withContext(Dispatchers.IO) {
-        // Priorité absolue : Modèle vocal Haute Définition d'élite d'OpenAI `tts-1-hd`
-        // lisant directement notre transcription phonétique ouest-africaine (`toMooreSpokenPhonetics`)
-        val hdPayload = buildJsonObject {
-            put("model", "tts-1-hd")
+        // Priorité absolue : Modèle vocal temps réel ultra-rapide d'OpenAI `tts-1` (latence minimale style ChatGPT Voice)
+        val fastPayload = buildJsonObject {
+            put("model", "tts-1")
             put("input", spokenText.take(2500))
             put("voice", "nova")
             put("response_format", "mp3")
             put("speed", speed)
         }.toString()
 
-        var audioBytes = requestOpenAiAudioBytes(hdPayload, apiKey)
+        var audioBytes = requestOpenAiAudioBytes(fastPayload, apiKey)
 
         if (audioBytes == null) {
             val fallbackPayload = buildJsonObject {
@@ -265,12 +254,6 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 put("voice", "coral")
                 put("response_format", "mp3")
                 put("speed", speed)
-                if (isMoore) {
-                    put(
-                        "instructions",
-                        "Locuteur burkinabè natif parlant en langue Mooré. Prononciation ouest-africaine franche, zéro anglais, zéro français."
-                    )
-                }
             }.toString()
             audioBytes = requestOpenAiAudioBytes(fallbackPayload, apiKey)
         }
@@ -284,13 +267,12 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         rate: Float
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val speed = (rate * 1.08f).coerceIn(1.0f, 1.45f)
-            val cachedFile = getCachedVoiceFile(spokenText, isMoore)
+            val speed = (rate * 1.04f).coerceIn(1.0f, 1.35f)
+            val cachedFile = getCachedVoiceFile(spokenText, false)
 
             if (!cachedFile.exists() || cachedFile.length() < 200) {
-                // Délai de 2.4s pour laisser le modèle Haute Définition `tts-1-hd` générer l'audio studio
-                val audioBytes = kotlinx.coroutines.withTimeoutOrNull(2400L) {
-                    synthesizeNeuralBytes(spokenText, apiKey, isMoore, speed)
+                val audioBytes = kotlinx.coroutines.withTimeoutOrNull(2200L) {
+                    synthesizeNeuralBytes(spokenText, apiKey, false, speed)
                 }
                 if (audioBytes == null || audioBytes.size < 200) {
                     scope.launch(Dispatchers.IO) {

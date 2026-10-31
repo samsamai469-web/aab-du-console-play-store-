@@ -48,19 +48,16 @@ class OpenAiWhisperService(private val context: Context) {
         private const val GPT4O_MINI_TRANSCRIBE_MODEL = "gpt-4o-mini-transcribe"
         private const val WHISPER_FAST_MODEL = "whisper-1"
 
-        // Prompt concis sans biais pour éviter toute hallucination de salutations sur des questions ouvertes
         private const val MOORE_WHISPER_PROMPT =
-            "Transcription fidèle en Français et Mooré (Burkina Faso) : Nii yi beogo, Yibeo kibare, Nii zabre, Zabre kibare, Nii windga, Niyungo, Kibare, Laafi bala, Barka."
+            "Transcription fidèle et exacte en français."
 
         private const val MOORE_GPT4O_PROMPT =
-            "Transcris mot pour mot et avec une fidélité absolue la question ou la phrase prononcée par l'utilisateur (qu'elle soit en Français ou en Mooré du Burkina Faso). Ne remplace jamais une question par une salutation."
+            "Transcris mot pour mot et avec une fidélité absolue en français la question ou la phrase prononcée par l'utilisateur."
 
         private const val FRENCH_GPT4O_PROMPT =
-            "Transcris mot pour mot et avec une fidélité absolue la question ou la phrase prononcée par l'utilisateur sans jamais inventer ni remplacer de mots."
+            "Transcris mot pour mot et avec une fidélité absolue en français tout ce que dit l'utilisateur, sans inventer ni modifier de mots."
 
         private val QUESTION_PROTECTED_WORDS = setOf(
-            "bõe", "boe", "bôe", "yɛ", "ãnda", "anda", "wãn", "wan", "yʋʋre", "yuure",
-            "tẽng", "teng", "tõe", "toe", "maane", "sõng", "song", "sokre", "leokre",
             "qui", "que", "quoi", "quel", "quelle", "quels", "quelles", "pourquoi", "quand", "combien",
             "ou", "où", "comment", "explique", "dis", "raconte", "parle", "capitale", "president",
             "président", "burkina", "faso", "ouagadougou", "histoire", "signifie", "veut", "traduis",
@@ -68,44 +65,12 @@ class OpenAiWhisperService(private val context: Context) {
             "est-ce", "qu'est-ce", "peux-tu", "peut-on", "donne", "aide", "cherche", "calcul", "calcule"
         )
 
-        private val MOORE_SIGNATURE_WORDS = setOf(
-            "nii", "beogo", "yibeogo", "yibeo", "kibare", "kibaré", "zabre", "zaabre",
-            "windga", "niyungo", "yungo", "laafi", "lafi", "beeme", "bala", "sonma", "soma",
-            "barka", "wʋsgo", "wusgo", "nindaaré", "nindaare", "neewôgô", "neewogo", "ganeg",
-            "bõe", "boe", "bôe", "yʋʋre", "yuure", "ãnda", "tõe", "maane", "sõng", "maam",
-            "fõ", "tond", "m'ma", "m'baaba", "nikiem", "nikieman", "poug", "yaanga", "sada",
-            "paga", "rawa", "biiga", "raaga", "weefo", "foūgou", "monbile", "pnous", "nanwoudre",
-            "moncoroni", "kaam", "bidou", "mougne", "beinga", "touayga", "kakouada", "tandaogo",
-            "gounsam", "ligdi", "debda", "zakin", "zom-kom", "kibaaya", "rũndã", "runda", "wẽnd", "wend"
-        )
+        private val MOORE_SIGNATURE_WORDS = emptySet<String>()
 
         /**
-         * Détecte intelligemment si l'énoncé transcrit est en langue Mooré (true) ou en Français/autre (false).
-         * Permet à l'Appel Vocal en Direct de répondre en Mooré quand on lui parle en Mooré,
-         * et en Français précis (comme ChatGPT / Claude) quand on lui pose une question en Français !
+         * Mode 100% Français activé : désactive la bascule automatique vers le Mooré.
          */
         fun isLikelyMooreUtterance(text: String): Boolean {
-            val cleaned = com.example.data.engine.DictionaryLookupEngine.normalizeMooreProlongations(text.trim())
-            val lower = cleaned.lowercase(Locale.ROOT)
-                .replace("’", "'")
-                .replace(Regex("[^a-zàâäéèêëîïôöùûüçñãẽĩõũʋɩɛ'\\s-]"), " ")
-                .replace(Regex("\\s+"), " ")
-                .trim()
-            if (lower.isEmpty()) return false
-
-            val words = lower.split(" ").filter { it.isNotBlank() }
-            val mooreHits = words.count { it in MOORE_SIGNATURE_WORDS }
-            val frenchHits = words.count { it in FRENCH_PROTECTED_WORDS }
-
-            if (mooreHits >= 1 && frenchHits == 0) return true
-            if (mooreHits > frenchHits) return true
-            if (lower.startsWith("nii ") || lower.startsWith("ne y ") || lower.startsWith("fo ") ||
-                lower.startsWith("m data") || lower.startsWith("m nan") || lower.startsWith("m debda") ||
-                lower.contains("kibare") || lower.contains("laafi") || lower.contains("beogo") ||
-                lower.contains("zabre") || lower.contains("windga") || lower.contains("yungo")
-            ) {
-                return true
-            }
             return false
         }
 
@@ -233,70 +198,44 @@ class OpenAiWhisperService(private val context: Context) {
             )
         }
 
-        val isMooreHint = languageHint?.lowercase(Locale.ROOT)?.contains("moor") == true
-        val whisperLangCode = mapToWhisperLanguageCode(languageHint)
+        val isMooreHint = false
+        val whisperLangCode = "fr"
 
         try {
-            // 0. Si le mode Mooré est actif et qu'une clé Hugging Face est configurée, on interroge le modèle Mooré entraîné (samaisam/sam-ai-moore-whisper)
-            if (isMooreHint && hasHuggingFace) {
-                val hfModelId = apiKeyManager.getHuggingFaceMooreWhisperModel()
-                val hfResult = executeHuggingFaceTranscriptionRequest(
-                    audioFile = audioFile,
-                    hfApiKey = hfApiKey,
-                    modelId = hfModelId
-                )
-                val hfText = hfResult.getOrNull()?.trim().orEmpty()
-                if (hfResult.isSuccess && hfText.isNotBlank() && !isHallucinationOrPromptEcho(hfText)) {
-                    val correctedHf = applyMoorePhoneticCorrections(hfText, isMooreHint = true)
-                    Log.d(TAG, "Transcription HuggingFace [$hfModelId] -> Brut: \"$hfText\" | Corrigé: \"$correctedHf\"")
-                    return@withContext Result.success(correctedHf)
-                }
-            }
-
             if (!hasOpenAi) {
-                // Si seule la clé Hugging Face est présente (sans clé OpenAI)
-                val hfModelId = apiKeyManager.getHuggingFaceMooreWhisperModel()
-                val hfResult = executeHuggingFaceTranscriptionRequest(
-                    audioFile = audioFile,
-                    hfApiKey = hfApiKey,
-                    modelId = hfModelId
+                return@withContext Result.failure(
+                    IllegalStateException("Clé API OpenAI requise pour la reconnaissance vocale.")
                 )
-                if (hfResult.isFailure) return@withContext hfResult
-                val rawHf = hfResult.getOrNull().orEmpty().trim()
-                if (rawHf.isBlank() || isHallucinationOrPromptEcho(rawHf)) {
-                    return@withContext Result.success("")
-                }
-                return@withContext Result.success(applyMoorePhoneticCorrections(rawHf, isMooreHint))
             }
 
-            // 1. Appel prioritaire sur le modèle flagship de transcription OpenAI : gpt-4o-transcribe (précision vocale maximale)
-            val flagshipResult = executeTranscriptionRequest(
+            // Appel ultra-rapide sur gpt-4o-mini-transcribe (faible latence) avec repli immédiat sur whisper-1 et gpt-4o-transcribe
+            val fastResult = executeTranscriptionRequest(
                 audioFile = audioFile,
                 apiKey = apiKey,
-                model = GPT4O_FLAGSHIP_TRANSCRIBE_MODEL,
+                model = GPT4O_MINI_TRANSCRIBE_MODEL,
                 whisperLangCode = whisperLangCode,
-                isMooreHint = isMooreHint
+                isMooreHint = false
             )
 
-            val rawTranscriptResult = if (flagshipResult.isSuccess && !flagshipResult.getOrNull().isNullOrBlank()) {
-                flagshipResult
+            val rawTranscriptResult = if (fastResult.isSuccess && !fastResult.getOrNull().isNullOrBlank()) {
+                fastResult
             } else {
-                val miniResult = executeTranscriptionRequest(
+                val whisperResult = executeTranscriptionRequest(
                     audioFile = audioFile,
                     apiKey = apiKey,
-                    model = GPT4O_MINI_TRANSCRIBE_MODEL,
+                    model = WHISPER_FAST_MODEL,
                     whisperLangCode = whisperLangCode,
-                    isMooreHint = isMooreHint
+                    isMooreHint = false
                 )
-                if (miniResult.isSuccess && !miniResult.getOrNull().isNullOrBlank()) {
-                    miniResult
+                if (whisperResult.isSuccess && !whisperResult.getOrNull().isNullOrBlank()) {
+                    whisperResult
                 } else {
                     executeTranscriptionRequest(
                         audioFile = audioFile,
                         apiKey = apiKey,
-                        model = WHISPER_FAST_MODEL,
+                        model = GPT4O_FLAGSHIP_TRANSCRIBE_MODEL,
                         whisperLangCode = whisperLangCode,
-                        isMooreHint = isMooreHint
+                        isMooreHint = false
                     )
                 }
             }
@@ -311,11 +250,8 @@ class OpenAiWhisperService(private val context: Context) {
                 return@withContext Result.success("")
             }
 
-            // Correction phonétique ciblée uniquement sur les vraies salutations Mooré sans altérer les questions
-            val finalTranscript = applyMoorePhoneticCorrections(rawText, isMooreHint)
-            Log.d(TAG, "Transcription -> Brut: \"$rawText\" | Corrigé: \"$finalTranscript\"")
-
-            Result.success(finalTranscript)
+            Log.d(TAG, "Transcription FR -> \"$rawText\"")
+            Result.success(rawText)
         } catch (e: Exception) {
             Log.e(TAG, "Exception lors de l'appel OpenAI Transcription : ${e.message}", e)
             Result.failure(Exception("Erreur de connexion : ${e.localizedMessage ?: "Vérifiez votre réseau"}"))
@@ -329,51 +265,14 @@ class OpenAiWhisperService(private val context: Context) {
     }
 
     /**
-     * Interroge le modèle Whisper Mooré hébergé sur Hugging Face Hub (ex: samaisam/sam-ai-moore-whisper)
-     * via l'API d'inférence Hugging Face avec repli transparent si le modèle est encore en cours de chargement.
+     * Interroge le modèle Whisper Mooré hébergé sur Hugging Face Hub (désactivé en mode 100% Français)
      */
     private fun executeHuggingFaceTranscriptionRequest(
         audioFile: File,
         hfApiKey: String,
         modelId: String
     ): Result<String> {
-        val mediaType = when {
-            audioFile.name.endsWith(".wav", ignoreCase = true) -> "audio/wav".toMediaType()
-            audioFile.name.endsWith(".mp3", ignoreCase = true) -> "audio/mpeg".toMediaType()
-            else -> "audio/m4a".toMediaType()
-        }
-        val endpoints = listOf(
-            "https://router.huggingface.co/hf-inference/models/$modelId",
-            "https://api-inference.huggingface.co/models/$modelId"
-        )
-        var lastError: Exception? = null
-        for (endpoint in endpoints) {
-            try {
-                val request = Request.Builder()
-                    .url(endpoint)
-                    .addHeader("Authorization", "Bearer $hfApiKey")
-                    .post(audioFile.asRequestBody(mediaType))
-                    .build()
-
-                httpClient.newCall(request).execute().use { response ->
-                    val responseBody = response.body?.string().orEmpty()
-                    if (response.isSuccessful && responseBody.isNotBlank()) {
-                        val jsonEl = json.parseToJsonElement(responseBody).jsonObject
-                        val text = jsonEl["text"]?.jsonPrimitive?.content.orEmpty().trim()
-                        if (text.isNotBlank()) {
-                            return Result.success(text)
-                        }
-                    } else {
-                        Log.w(TAG, "HuggingFace ASR [$endpoint - Code ${response.code}]: $responseBody")
-                        lastError = Exception("HuggingFace ASR (${response.code})")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.w(TAG, "Exception HuggingFace ASR [$endpoint]: ${e.message}")
-                lastError = e
-            }
-        }
-        return Result.failure(lastError ?: Exception("Modèle Hugging Face indisponible"))
+        return Result.failure(Exception("Mode Français uniquement"))
     }
 
     private fun executeTranscriptionRequest(
@@ -390,11 +289,9 @@ class OpenAiWhisperService(private val context: Context) {
         }
 
         val contextPrompt = when {
-            isMooreHint && (model == GPT4O_FLAGSHIP_TRANSCRIBE_MODEL || model == GPT4O_MINI_TRANSCRIBE_MODEL) -> MOORE_GPT4O_PROMPT
             model == GPT4O_FLAGSHIP_TRANSCRIBE_MODEL || model == GPT4O_MINI_TRANSCRIBE_MODEL -> FRENCH_GPT4O_PROMPT
-            isMooreHint -> MOORE_WHISPER_PROMPT
             whisperLangCode == "en" -> "Accurate speech-to-text transcription."
-            else -> "Bonjour, bonsoir, SAM AI, Burkina Faso, Ouagadougou, Nii yi beogo, Yibeo kibare, Nii zabre, Zabre kibare."
+            else -> "Bonjour, bonsoir, comment ça va, SAM AI."
         }
 
         val multipartBuilder = MultipartBody.Builder()
@@ -409,7 +306,7 @@ class OpenAiWhisperService(private val context: Context) {
                 audioFile.asRequestBody(mediaType)
             )
 
-        val effectiveLang = if (isMooreHint) "fr" else (whisperLangCode ?: "fr")
+        val effectiveLang = whisperLangCode ?: "fr"
         multipartBuilder.addFormDataPart("language", effectiveLang)
 
         val request = Request.Builder()
@@ -447,18 +344,17 @@ class OpenAiWhisperService(private val context: Context) {
         val lower = text.trim().lowercase(Locale.ROOT)
         if (lower.length < 2) return true
         if (HALLUCINATION_PATTERNS.any { lower.contains(it) }) return true
-        if (lower.contains("nii yi beogo, yibeo kibare, nii zabre")) return true
-        if (lower.contains("ne y beogo, ne y zaabre, ne y windga")) return true
-        if (lower.contains("transcris exactement la question")) return true
+        if (lower.contains("transcris mot pour mot")) return true
+        if (lower.contains("transcris exactement")) return true
         return false
     }
 
     /**
-     * Normalise les salutations et expressions Mooré tout en préservant à 100% les vraies phrases et questions de l'utilisateur.
+     * En mode 100% Français, ne modifie jamais les mots français prononcés par l'utilisateur.
      */
-    fun applyMoorePhoneticCorrections(input: String, isMooreHint: Boolean = true): String {
+    fun applyMoorePhoneticCorrections(input: String, isMooreHint: Boolean = false): String {
         var s = input.trim()
-        if (s.isEmpty()) return s
+        if (s.isEmpty() || !isMooreHint) return s
 
         // 0. Normalisation des prolongations vocaliques excessives (ex: "Niiiii yi beoooogo" -> "Nii yi beogo")
         s = com.example.data.engine.DictionaryLookupEngine.normalizeMooreProlongations(s)
