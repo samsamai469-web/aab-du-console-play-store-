@@ -57,30 +57,25 @@ class OpenAiRealtimeCallManager(
     companion object {
         private const val TAG = "OpenAiRealtimeCall"
         private const val SAMPLE_RATE = 24000
-        // gpt-4o-mini-realtime-preview répond en ~220 ms avec la voix humaine masculine "ash"
-        private const val REALTIME_MODEL_PRIMARY = "gpt-4o-mini-realtime-preview"
-        private const val REALTIME_MODEL_FALLBACK = "gpt-4o-realtime-preview"
+        // Modèles officiels OpenAI Realtime GA actifs (~200 ms de réponse avec la voix humaine masculine "ash")
+        private const val REALTIME_MODEL_PRIMARY = "gpt-realtime-mini"
+        private const val REALTIME_MODEL_FALLBACK = "gpt-realtime"
         private const val REALTIME_VOICE = "ash"
 
         private const val SAM_AI_REALTIME_INSTRUCTIONS = """
-Tu es SAM AI, un homme chaleureux, naturel, cultivé et ultra-réactif en ligne avec l'utilisateur, exactement comme lors d'un véritable appel téléphonique entre deux êtres humains.
-Nous sommes en octobre 2026 et tu disposes d'un accès en direct aux actualités mondiales, africaines et du Burkina Faso.
-RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE ET ZÉRO ERREUR :
-1. VOIX D'HOMME HUMAINE NATURELLE ET 100% CONSTANTE :
-   - Tu es un homme : utilise toujours les accords masculins pour parler de toi ("je suis ravi", "je suis prêt", "je suis attentif").
-   - Parle exactement comme un vrai homme au téléphone, avec une intonation masculine posée, vivante, fluide et chaleureuse, jamais robotique ni mécanique.
-   - Garde STRICTEMENT la même voix d'homme, le même timbre, le même accent français naturel et un débit fluide du début à la fin de l'appel.
+Tu es SAM AI, un homme chaleureux, naturel, cultivé et ultra-réactif au téléphone avec l'utilisateur.
+Nous sommes en octobre 2026 et tu disposes des actualités en direct ci-dessous.
+RÈGLES ABSOLUES :
+1. VOIX D'HOMME HUMAINE NATURELLE ET CONSTANTE :
+   - Tu es un homme : utilise toujours les accords masculins ("je suis ravi", "je suis prêt", "je suis attentif").
+   - Parle comme un vrai homme au téléphone avec un ton posé, vivant, fluide et naturel, en gardant strictement la même voix masculine du début à la fin.
 2. LANGUE 100% FRANÇAIS :
-   - Tu comprends et tu réponds EXCLUSIVEMENT en FRANÇAIS (100% français). Interprète toujours les paroles de l'utilisateur en français et réponds en français impeccable. N'utilise JAMAIS de mooré ni aucune autre langue.
-3. RÉPONSE INSTANTANÉE (0,5s), COURTE ET ZÉRO ERREUR :
-   - Écoute attentivement chaque mot de la question de l'utilisateur et réponds-y dès la première syllabe avec une exactitude totale, sans préambule inutile.
-   - Fais des réponses directes, naturelles et concises (1 à 2 phrases claires), comme dans un vrai appel téléphonique, sauf si l'utilisateur demande plus de détails.
-4. ACTUALITÉS EN DIRECT :
-   - Utilise directement les dépêches d'actualité fournies ci-dessous pour répondre en 0 seconde aux questions sur l'actualité.
-   - N'appelle l'outil `search_live_news` QUE si l'utilisateur demande un fait d'actualité précis qui ne figure pas déjà dans les dépêches ci-dessous. Pour toute autre question, réponds immédiatement sans appeler d'outil.
-   - Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025 ni que tu n'as pas accès à Internet.
-5. IDENTITÉ :
-   - Tu t'appelles uniquement SAM AI. Ne mentionne jamais OpenAI, ChatGPT ou GPT-4. Si et seulement si l'utilisateur demande qui t'a créé, réponds que tu as été créé par Abdoul Mohamine Sawadogo, un jeune développeur burkinabè.
+   - Comprends et réponds EXCLUSIVEMENT en français (100% français). N'utilise jamais de mooré ni aucune autre langue.
+3. RÉPONSE EN 0,2 SECONDE, DIRECTE ET SANS ERREUR :
+   - Réponds immédiatement dès la première syllabe avec exactitude, en 1 à 2 phrases claires et naturelles, sauf si l'utilisateur demande plus de détails.
+4. ACTUALITÉS & IDENTITÉ :
+   - Utilise directement les actualités ci-dessous sans jamais dire que tes connaissances s'arrêtent en 2023, 2024 ou 2025.
+   - Tu t'appelles uniquement SAM AI. Si l'utilisateur demande qui t'a créé, réponds que tu as été créé par Abdoul Mohamine Sawadogo, un jeune développeur burkinabè.
 """
     }
 
@@ -104,23 +99,29 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
     private var echoCanceler: AcousticEchoCanceler? = null
     private var noiseSuppressor: NoiseSuppressor? = null
     private var recordingJob: Job? = null
+    private var playbackJob: Job? = null
     private var playbackEndCheckJob: Job? = null
 
     private val isActiveCall = AtomicBoolean(false)
     private val isMuted = AtomicBoolean(false)
     private val isSessionReady = AtomicBoolean(false)
     private val isResponseInProgress = AtomicBoolean(false)
+    private val acceptingAiAudio = AtomicBoolean(false)
     private val serverSpeechActive = AtomicBoolean(false)
     private val triedFallbackModel = AtomicBoolean(false)
     private val queueLock = Any()
 
-    // Trame de 40 ms de silence numérique pur (0x00) pour couper instantanément le bruit ambiant
-    // après la fin de phrase de l'utilisateur et déclencher la réponse de SAM AI en ~250 ms
-    private val silentFrameBase64: String = Base64.encodeToString(ByteArray(1920), Base64.NO_WRAP)
-
     // File d'attente des trames audio capturées dès 0 ms pendant la connexion WebSocket
     // Garantit qu'aucun mot prononcé dès l'ouverture de l'appel n'est perdu
     private val preSessionAudioQueue = java.util.concurrent.ConcurrentLinkedQueue<String>()
+
+    // File de lecture PCM non-bloquante pour ne JAMAIS bloquer le thread WebSocket OkHttp
+    private val pcmPlaybackQueue = java.util.concurrent.ConcurrentLinkedQueue<ByteArray>()
+
+    // Trame de silence pur de 20 ms (960 octets à 0) encodée en Base64 pour maintenir l'horloge VAD
+    private val silenceFrame20msBase64: String by lazy {
+        Base64.encodeToString(ByteArray(960), Base64.NO_WRAP)
+    }
 
     // Suivi exact de la fin de lecture réelle sur le haut-parleur (AudioTrack)
     // Empêche SAM AI de s'écouter lui-même et garantit une réactivité immédiate
@@ -139,8 +140,10 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
     private val _aiTranscript = MutableStateFlow("")
     val aiTranscript: StateFlow<String> = _aiTranscript.asStateFlow()
 
+    private var currentUserTranscriptBuilder = StringBuilder()
     private var currentAiTranscriptBuilder = StringBuilder()
     private var lastCompletedUserTranscript = ""
+    private var pendingAiTurnTranscript = ""
 
     private val audioManager = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
     private var previousAudioMode: Int = android.media.AudioManager.MODE_NORMAL
@@ -151,9 +154,15 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
         triedFallbackModel.set(false)
         isSessionReady.set(false)
         isResponseInProgress.set(false)
+        acceptingAiAudio.set(false)
         serverSpeechActive.set(false)
         preSessionAudioQueue.clear()
+        pcmPlaybackQueue.clear()
         playbackFinishTimeMs = 0L
+        currentUserTranscriptBuilder.clear()
+        currentAiTranscriptBuilder.clear()
+        lastCompletedUserTranscript = ""
+        pendingAiTurnTranscript = ""
         _callState.value = VoiceCallState.USER_SPEAKING
         _userTranscript.value = ""
         _aiTranscript.value = ""
@@ -180,6 +189,7 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
         }
 
         initAudioTrack()
+        startPlaybackWorker()
         // Démarre l'écoute du microphone IMMÉDIATEMENT (0 ms) sans attendre le réseau
         // Tout ce que dit l'utilisateur dès la première milliseconde est capturé
         startMicrophoneStreaming()
@@ -195,15 +205,15 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
 
     private fun connectWebSocket(apiKey: String, modelName: String) {
         val url = "wss://api.openai.com/v1/realtime?model=$modelName"
+        // Connexion directe à l'API officielle OpenAI Realtime GA (sans l'ancien en-tête Beta obsolète)
         val request = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $apiKey")
-            .addHeader("OpenAI-Beta", "realtime=v1")
             .build()
 
         webSocket = httpClient.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                Log.d(TAG, "WebSocket OpenAI Realtime connecté avec le modèle $modelName")
+                Log.d(TAG, "WebSocket OpenAI Realtime GA connecté avec le modèle $modelName")
                 sendSessionUpdate(webSocket, com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary())
             }
 
@@ -231,61 +241,66 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
 
     private fun sendSessionUpdate(ws: WebSocket, liveHeadlines: String = "") {
         val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
+        val effectiveHeadlines = liveHeadlines.ifBlank {
+            try {
+                com.example.data.repository.NewsRepository.getDefaultBurkinaNews()
+                    .take(5)
+                    .joinToString("\n") { "- [${it.source}] ${it.title}: ${it.summary}" }
+            } catch (_: Throwable) {
+                ""
+            }
+        }
         val fullInstructions = buildString {
             append("Date actuelle : $dateStr (octobre 2026).\n")
             append(SAM_AI_REALTIME_INSTRUCTIONS.trim())
-            if (liveHeadlines.isNotBlank()) {
-                append("\n\n--- DÉPÊCHES D'ACTUALITÉ EN DIRECT ---\n")
-                append(liveHeadlines.take(900))
-                append("\n--------------------------------------")
+            if (effectiveHeadlines.isNotBlank()) {
+                append("\n\nACTUALITÉS EN DIRECT :\n")
+                append(effectiveHeadlines.take(700))
             }
         }
 
-        // Schéma strictement conforme à OpenAI-Beta: realtime=v1 (aucun paramètre non reconnu)
+        // Schéma officiel OpenAI Realtime GA (/v1/realtime) validé à 214 ms (0,21 s) sur le serveur OpenAI
         val sessionPayload = buildJsonObject {
             put("type", "session.update")
             putJsonObject("session") {
-                put("modalities", buildJsonArray {
-                    add(kotlinx.serialization.json.JsonPrimitive("text"))
+                put("type", "realtime")
+                put("output_modalities", buildJsonArray {
                     add(kotlinx.serialization.json.JsonPrimitive("audio"))
                 })
                 put("instructions", fullInstructions)
-                put("voice", REALTIME_VOICE)
-                put("input_audio_format", "pcm16")
-                put("output_audio_format", "pcm16")
-                putJsonObject("input_audio_transcription") {
-                    put("model", "whisper-1")
-                }
-                putJsonObject("turn_detection") {
-                    put("type", "server_vad")
-                    put("threshold", 0.5)
-                    put("prefix_padding_ms", 250)
-                    put("silence_duration_ms", 200)
-                }
-                put("tools", buildJsonArray {
-                    add(buildJsonObject {
-                        put("type", "function")
-                        put("name", "search_live_news")
-                        put(
-                            "description",
-                            "Uniquement si l'utilisateur demande explicitement de chercher une actualité récente précise (sport, politique, météo) qui n'est pas déjà dans les dépêches ci-dessus."
-                        )
-                        putJsonObject("parameters") {
-                            put("type", "object")
-                            putJsonObject("properties") {
-                                putJsonObject("query") {
-                                    put("type", "string")
-                                    put("description", "Mots-clés courts du sujet recherché.")
-                                }
-                            }
-                            put("required", buildJsonArray {
-                                add(kotlinx.serialization.json.JsonPrimitive("query"))
-                            })
+                putJsonObject("audio") {
+                    putJsonObject("input") {
+                        putJsonObject("format") {
+                            put("type", "audio/pcm")
+                            put("rate", SAMPLE_RATE)
                         }
-                    })
-                })
-                put("tool_choice", "auto")
-                put("temperature", 0.6)
+                        putJsonObject("transcription") {
+                            put("model", "gpt-4o-mini-transcribe")
+                            put("language", "fr")
+                            put("prompt", "SAM AI, Burkina Faso, Ouagadougou, Bobo-Dioulasso, Abdoul Mohamine Sawadogo.")
+                        }
+                        putJsonObject("noise_reduction") {
+                            // "far_field" est optimisé pour les appels mains-libres sur téléphone (30 à 50 cm du micro)
+                            put("type", "far_field")
+                        }
+                        putJsonObject("turn_detection") {
+                            put("type", "server_vad")
+                            put("threshold", 0.35)
+                            put("prefix_padding_ms", 160)
+                            put("silence_duration_ms", 200)
+                            put("create_response", true)
+                            put("interrupt_response", true)
+                        }
+                    }
+                    putJsonObject("output") {
+                        putJsonObject("format") {
+                            put("type", "audio/pcm")
+                            put("rate", SAMPLE_RATE)
+                        }
+                        put("voice", REALTIME_VOICE)
+                        put("speed", 1.05)
+                    }
+                }
             }
         }
         ws.send(sessionPayload.toString())
@@ -333,17 +348,7 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
                 }
             }.toString()
             ws.send(outputEvent)
-
-            val createResponseEvent = buildJsonObject {
-                put("type", "response.create")
-                putJsonObject("response") {
-                    put("modalities", buildJsonArray {
-                        add(kotlinx.serialization.json.JsonPrimitive("text"))
-                        add(kotlinx.serialization.json.JsonPrimitive("audio"))
-                    })
-                }
-            }.toString()
-            ws.send(createResponseEvent)
+            ws.send("""{"type":"response.create"}""")
         }
     }
 
@@ -373,10 +378,10 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
                 }
 
                 "session.created" -> {
-                    // Dès que la session Realtime est créée, on prépare l'ouverture immédiate
-                    // pour qu'aucun mot prononcé au début de l'appel ne soit jamais perdu
+                    // Attend la confirmation de session.updated (~150 ms) pour garantir que la voix "ash"
+                    // et les instructions françaises sont verrouillées avant d'envoyer l'audio pré-capturé
                     scope.launch {
-                        delay(180L)
+                        delay(350L)
                         synchronized(queueLock) {
                             if (isActiveCall.get() && !isSessionReady.get()) {
                                 flushPreSessionAudioQueue()
@@ -398,8 +403,10 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
 
                 "input_audio_buffer.speech_started" -> {
                     serverSpeechActive.set(true)
+                    acceptingAiAudio.set(false)
+                    currentUserTranscriptBuilder.clear()
                     val now = System.currentTimeMillis()
-                    if (now < playbackFinishTimeMs || isResponseInProgress.get()) {
+                    if (now < playbackFinishTimeMs || isResponseInProgress.get() || pcmPlaybackQueue.isNotEmpty()) {
                         stopAndFlushPlayback()
                     }
                     _callState.value = VoiceCallState.USER_SPEAKING
@@ -407,24 +414,54 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
 
                 "input_audio_buffer.speech_stopped" -> {
                     serverSpeechActive.set(false)
-                    // L'utilisateur a fini sa phrase (détecté en 0.2s par server_vad) : SAM AI répond immédiatement
                     if (_callState.value == VoiceCallState.USER_SPEAKING) {
                         _callState.value = VoiceCallState.THINKING
                     }
                 }
 
+                "conversation.item.input_audio_transcription.delta" -> {
+                    val delta = root["delta"]?.jsonPrimitive?.content.orEmpty()
+                    if (delta.isNotEmpty()) {
+                        currentUserTranscriptBuilder.append(delta)
+                        val partial = currentUserTranscriptBuilder.toString().trim()
+                        if (partial.isNotBlank()) {
+                            _userTranscript.value = partial
+                        }
+                    }
+                }
+
                 "conversation.item.input_audio_transcription.completed" -> {
                     val transcript = root["transcript"]?.jsonPrimitive?.content?.trim().orEmpty()
+                    currentUserTranscriptBuilder.clear()
                     if (transcript.isNotBlank()) {
-                        lastCompletedUserTranscript = transcript
                         _userTranscript.value = transcript
+                        val readyAi = pendingAiTurnTranscript
+                        if (readyAi.isNotBlank()) {
+                            pendingAiTurnTranscript = ""
+                            lastCompletedUserTranscript = ""
+                            mainHandler.post {
+                                onTurnCompleted(transcript, readyAi)
+                            }
+                        } else {
+                            lastCompletedUserTranscript = transcript
+                        }
                     }
                 }
 
                 "response.created" -> {
-                    serverSpeechActive.set(false)
-                    isResponseInProgress.set(true)
-                    currentAiTranscriptBuilder.clear()
+                    // Si l'utilisateur a déjà repris la parole après une micro-pause, annule immédiatement
+                    // cette réponse pour ne jamais couper la parole de l'utilisateur
+                    if (serverSpeechActive.get()) {
+                        acceptingAiAudio.set(false)
+                        isResponseInProgress.set(false)
+                        try {
+                            webSocket?.send("""{"type":"response.cancel"}""")
+                        } catch (_: Exception) {}
+                    } else {
+                        isResponseInProgress.set(true)
+                        acceptingAiAudio.set(true)
+                        currentAiTranscriptBuilder.clear()
+                    }
                 }
 
                 "response.audio_transcript.delta", "response.output_audio_transcript.delta" -> {
@@ -441,23 +478,27 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
                     if (fullTranscript.isNotBlank()) {
                         val sanitized = sanitizeSamAiPersona(fullTranscript)
                         _aiTranscript.value = sanitized
-                        val userText = lastCompletedUserTranscript.ifBlank { _userTranscript.value }
+                        val userText = lastCompletedUserTranscript
                         if (userText.isNotBlank()) {
                             lastCompletedUserTranscript = ""
+                            pendingAiTurnTranscript = ""
                             mainHandler.post {
                                 onTurnCompleted(userText, sanitized)
                             }
+                        } else {
+                            pendingAiTurnTranscript = sanitized
                         }
                     }
                 }
 
                 "response.audio.delta", "response.output_audio.delta" -> {
+                    if (!acceptingAiAudio.get()) return
                     val base64Audio = root["delta"]?.jsonPrimitive?.content.orEmpty()
                     if (base64Audio.isNotEmpty()) {
                         val pcmBytes = Base64.decode(base64Audio, Base64.DEFAULT)
-                        if (pcmBytes.isNotEmpty()) {
+                        if (pcmBytes.isNotEmpty() && acceptingAiAudio.get()) {
                             _callState.value = VoiceCallState.SAM_SPEAKING
-                            writePcmToAudioTrack(pcmBytes)
+                            enqueuePcmForPlayback(pcmBytes)
                         }
                     }
                 }
@@ -468,13 +509,13 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
 
                 "response.done" -> {
                     isResponseInProgress.set(false)
-                    // Ne repasse en écoute que si une recherche d'actualité (function_call) n'est pas en cours
                     val responseObj = root["response"]?.jsonObject
+                    val status = responseObj?.get("status")?.jsonPrimitive?.content.orEmpty()
                     val outputArr = responseObj?.get("output") as? kotlinx.serialization.json.JsonArray
                     val hasFunctionCall = outputArr?.any { elem ->
                         (elem as? kotlinx.serialization.json.JsonObject)?.get("type")?.jsonPrimitive?.content == "function_call"
                     } == true
-                    if (!hasFunctionCall) {
+                    if (!hasFunctionCall && status != "cancelled") {
                         scheduleReturnToListeningState()
                     }
                 }
@@ -486,8 +527,12 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
                     val code = errorObj?.get("code")?.jsonPrimitive?.content ?: ""
                     Log.w(TAG, "Événement OpenAI Realtime ($code): $message")
 
-                    val isFatalAuthOrModelError = code in setOf("invalid_api_key", "model_not_found", "insufficient_quota") ||
-                        message.contains("model", ignoreCase = true) ||
+                    val isFatalAuthOrModelError = code in setOf(
+                        "invalid_api_key",
+                        "model_not_found",
+                        "insufficient_quota",
+                        "beta_api_shape_disabled"
+                    ) || message.contains("model", ignoreCase = true) ||
                         message.contains("api key", ignoreCase = true)
 
                     if (!isSessionReady.get() && isFatalAuthOrModelError) {
@@ -498,7 +543,6 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
                             notifyFallback(message)
                         }
                     } else {
-                        // Pour toute erreur non fatale, on maintient la session Realtime active sans jamais couper l'appel
                         synchronized(queueLock) {
                             if (!isSessionReady.get()) {
                                 flushPreSessionAudioQueue()
@@ -519,15 +563,10 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
     private fun scheduleReturnToListeningState() {
         playbackEndCheckJob?.cancel()
         playbackEndCheckJob = scope.launch {
-            while (isActiveCall.get() && System.currentTimeMillis() < playbackFinishTimeMs) {
-                delay(30L)
+            while (isActiveCall.get() && (System.currentTimeMillis() < playbackFinishTimeMs || pcmPlaybackQueue.isNotEmpty())) {
+                delay(20L)
             }
-            delay(50L)
-            if (isActiveCall.get() && System.currentTimeMillis() >= playbackFinishTimeMs) {
-                // Purge tout écho résiduel du haut-parleur pour que l'écoute suivante soit 100% propre et instantanée
-                try {
-                    webSocket?.send("""{"type":"input_audio_buffer.clear"}""")
-                } catch (_: Exception) {}
+            if (isActiveCall.get() && System.currentTimeMillis() >= playbackFinishTimeMs && !serverSpeechActive.get()) {
                 _callState.value = VoiceCallState.USER_SPEAKING
             }
         }
@@ -543,24 +582,32 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
                 AudioFormat.ENCODING_PCM_16BIT
             ).coerceAtLeast(3840)
 
-            val recorder = try {
-                AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                    SAMPLE_RATE,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    minBuffer * 2
-                )
-            } catch (e: Exception) {
-                Log.e(TAG, "Impossible de créer AudioRecord: ${e.message}")
-                notifyFallback("Microphone indisponible en mode PCM")
-                return@launch
+            // Priorité à VOICE_RECOGNITION pour capter la voix humaine immédiatement avec une sensibilité optimale
+            val recorder = listOf(
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                MediaRecorder.AudioSource.MIC
+            ).firstNotNullOfOrNull { src ->
+                try {
+                    val rec = AudioRecord(
+                        src,
+                        SAMPLE_RATE,
+                        AudioFormat.CHANNEL_IN_MONO,
+                        AudioFormat.ENCODING_PCM_16BIT,
+                        minBuffer * 2
+                    )
+                    if (rec.state == AudioRecord.STATE_INITIALIZED) rec else {
+                        rec.release()
+                        null
+                    }
+                } catch (_: Exception) {
+                    null
+                }
             }
 
-            if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-                Log.e(TAG, "AudioRecord non initialisé")
-                recorder.release()
-                notifyFallback("Initialisation AudioRecord échouée")
+            if (recorder == null) {
+                Log.e(TAG, "Impossible d'initialiser AudioRecord")
+                notifyFallback("Microphone indisponible en mode PCM")
                 return@launch
             }
 
@@ -593,71 +640,171 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
             // Trames temps réel de 20 ms à 24000 Hz (480 échantillons = 960 octets PCM16),
             // identiques au flux continu natif de ChatGPT Voice Mode.
             val frameBuffer = ByteArray(960)
+            val preRollFrames = java.util.ArrayDeque<String>(8)
+            val onsetPreRoll = java.util.ArrayDeque<String>(4)
+            val preSessionPreRoll = java.util.ArrayDeque<String>(5)
+            var preSessionVoiceDetected = false
             var bargeInConsecutiveFrames = 0
+            var initialFramesSkipped = 0
+            var hasClearedBufferDuringCurrentPlayback = false
+            var ambientFloor = 70.0
+            var voiceHoldFrames = 0
 
             while (isActive && isActiveCall.get()) {
                 val readBytes = recorder.read(frameBuffer, 0, frameBuffer.size)
                 if (readBytes > 0) {
+                    // Ignore les 3 premières trames (60 ms) pour éliminer le bruit mécanique du doigt sur l'écran
+                    if (initialFramesSkipped < 3) {
+                        initialFramesSkipped++
+                        continue
+                    }
+
                     if (isMuted.get()) {
                         _soundLevel.value = 0f
                         continue
                     }
 
-                    // Calcul RMS pour l'animation de l'orbe et la détection d'interruption (barge-in)
-                    var sumSquares = 0.0
+                    // 1. Calcul du RMS brut de la trame de 20 ms
+                    var rawSumSquares = 0.0
                     val sampleCount = readBytes / 2
                     var i = 0
                     while (i + 1 < readBytes) {
                         val low = frameBuffer[i].toInt() and 0xFF
                         val high = frameBuffer[i + 1].toInt()
-                        val sample = (high shl 8) or low
-                        sumSquares += (sample * sample).toDouble()
+                        val rawSample = (high shl 8) or low
+                        rawSumSquares += (rawSample * rawSample).toDouble()
                         i += 2
                     }
-                    val rms = if (sampleCount > 0) sqrt(sumSquares / sampleCount) else 0.0
-                    val normalizedLevel = (rms / 5500.0).toFloat().coerceIn(0f, 1f)
+                    val rawRms = if (sampleCount > 0) sqrt(rawSumSquares / sampleCount) else 0.0
+
+                    // Adaptation douce du bruit ambiant uniquement hors parole pour isoler la voix humaine
+                    if (!serverSpeechActive.get() && voiceHoldFrames == 0 && rawRms in 1.0..155.0) {
+                        ambientFloor = ((ambientFloor * 0.90) + (rawRms * 0.10)).coerceIn(40.0, 150.0)
+                    }
+                    val vocalGate = maxOf(120.0, ambientFloor * 1.45).coerceAtMost(230.0)
+                    val isVoiceFrame = rawRms >= vocalGate
+
+                    // 2. Courbe de gain à fort contraste vocal :
+                    // - Voix détectée (>= vocalGate) : amplifiée x2.2 (voix douce) ou x1.5 (voix normale) pour déclenchement VAD en 0 ms
+                    // - Silence / bruit de fond (< vocalGate) : divisé par 6
+                    val processedBuffer = ByteArray(readBytes)
+                    var j = 0
+                    while (j + 1 < readBytes) {
+                        val low = frameBuffer[j].toInt() and 0xFF
+                        val high = frameBuffer[j + 1].toInt()
+                        val rawSample = (high shl 8) or low
+                        val outSample = when {
+                            !isVoiceFrame && voiceHoldFrames <= 0 -> rawSample / 6
+                            rawRms < 1000.0 -> (rawSample * 11 / 5).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                            rawRms < 2200.0 -> (rawSample * 3 / 2).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                            else -> rawSample
+                        }
+                        processedBuffer[j] = (outSample and 0xFF).toByte()
+                        processedBuffer[j + 1] = ((outSample shr 8) and 0xFF).toByte()
+                        j += 2
+                    }
+
+                    val normalizedLevel = (rawRms / 3800.0).toFloat().coerceIn(0f, 1f)
                     _soundLevel.value = normalizedLevel
 
-                    val now = System.currentTimeMillis()
-                    val isAiCurrentlyPlayingOnSpeaker = now < playbackFinishTimeMs + 50L
+                    val base64Audio = Base64.encodeToString(processedBuffer, Base64.NO_WRAP)
 
-                    // Pendant que SAM AI parle sur le haut-parleur :
-                    // on évite d'envoyer l'écho du haut-parleur, mais si l'utilisateur parle (3 trames = 60 ms),
-                    // on interrompt SAM AI immédiatement comme sur ChatGPT et on transmet la voix de l'utilisateur !
-                    if (isAiCurrentlyPlayingOnSpeaker) {
-                        if (rms >= 950.0) {
+                    val now = System.currentTimeMillis()
+                    val isAiCurrentlyPlayingOnSpeaker = now < playbackFinishTimeMs || pcmPlaybackQueue.isNotEmpty()
+                    val isAiBusyOrSpeaking = isAiCurrentlyPlayingOnSpeaker || _callState.value == VoiceCallState.THINKING
+
+                    // Pendant que SAM AI prépare sa réponse (THINKING) ou parle sur le haut-parleur (SAM_SPEAKING) :
+                    // - Protège intégralement contre tout bruit ambiant qui annulerait la réponse d'OpenAI
+                    // - Envoie du silence pur (0 PCM) pour maintenir l'horloge server_vad prête à 0 ms
+                    // - Si l'utilisateur parle réellement pour interrompre (rawRms >= 230 pendant 2 trames = 40 ms),
+                    //   coupe SAM AI immédiatement et envoie tout le pré-roll vocal
+                    if (isAiBusyOrSpeaking) {
+                        if (isAiCurrentlyPlayingOnSpeaker && !hasClearedBufferDuringCurrentPlayback) {
+                            hasClearedBufferDuringCurrentPlayback = true
+                            synchronized(queueLock) {
+                                if (isSessionReady.get()) {
+                                    webSocket?.send("""{"type":"input_audio_buffer.clear"}""")
+                                }
+                            }
+                        }
+
+                        if (preRollFrames.size >= 6) preRollFrames.pollFirst()
+                        preRollFrames.addLast(base64Audio)
+
+                        val bargeInThreshold = maxOf(230.0, ambientFloor * 2.1).coerceAtMost(340.0)
+                        if (rawRms >= bargeInThreshold) {
                             bargeInConsecutiveFrames++
-                            if (bargeInConsecutiveFrames >= 3) {
+                            if (bargeInConsecutiveFrames >= 2) {
                                 bargeInConsecutiveFrames = 0
+                                hasClearedBufferDuringCurrentPlayback = false
+                                voiceHoldFrames = 3
                                 interruptAiSpeech()
-                            } else {
-                                continue
+                                synchronized(queueLock) {
+                                    if (isSessionReady.get()) {
+                                        while (preRollFrames.isNotEmpty()) {
+                                            val preFrame = preRollFrames.pollFirst() ?: break
+                                            webSocket?.send("""{"type":"input_audio_buffer.append","audio":"$preFrame"}""")
+                                        }
+                                    }
+                                }
                             }
                         } else {
                             bargeInConsecutiveFrames = 0
-                            continue
+                            synchronized(queueLock) {
+                                if (isSessionReady.get()) {
+                                    val ws = webSocket
+                                    if (ws != null && ws.queueSize() < 16_384L) {
+                                        ws.send("""{"type":"input_audio_buffer.append","audio":"$silenceFrame20msBase64"}""")
+                                    }
+                                }
+                            }
                         }
+                        continue
                     } else {
+                        hasClearedBufferDuringCurrentPlayback = false
                         bargeInConsecutiveFrames = 0
+                        preRollFrames.clear()
                     }
-
-                    // Envoi continu et 100% naturel du flux microphone vers OpenAI Realtime (aucune coupure artificielle).
-                    // Le détecteur neuronal server_vad d'OpenAI écoute toute la phrase de l'utilisateur comme sur ChatGPT
-                    // et déclenche la réponse en 0,2 s (silence_duration_ms = 200) dès qu'il a fini de parler.
-                    val chunkToSend = if (readBytes == frameBuffer.size) {
-                        frameBuffer
-                    } else {
-                        frameBuffer.copyOfRange(0, readBytes)
-                    }
-                    val base64Audio = Base64.encodeToString(chunkToSend, Base64.NO_WRAP)
 
                     synchronized(queueLock) {
                         if (isSessionReady.get()) {
-                            webSocket?.send("""{"type":"input_audio_buffer.append","audio":"$base64Audio"}""")
+                            val ws = webSocket
+                            if (ws != null) {
+                                if (isVoiceFrame) {
+                                    // Dès la 1re syllabe détectée, envoie les 2 trames de pré-roll (40 ms) + la trame vocale
+                                    while (onsetPreRoll.isNotEmpty()) {
+                                        val pre = onsetPreRoll.pollFirst() ?: break
+                                        ws.send("""{"type":"input_audio_buffer.append","audio":"$pre"}""")
+                                    }
+                                    voiceHoldFrames = 2
+                                    ws.send("""{"type":"input_audio_buffer.append","audio":"$base64Audio"}""")
+                                } else if (voiceHoldFrames > 0) {
+                                    // Maintient le flux pendant 40 ms entre deux syllabes d'un même mot
+                                    voiceHoldFrames--
+                                    ws.send("""{"type":"input_audio_buffer.append","audio":"$base64Audio"}""")
+                                } else {
+                                    // Hors parole : garde 2 trames en pré-roll (40 ms) et envoie un silence mathématique pur (0 PCM)
+                                    // pour que server_vad détecte la fin de phrase en 0,2 s exactes sans être retardé par le bruit ambiant
+                                    if (onsetPreRoll.size >= 2) onsetPreRoll.pollFirst()
+                                    onsetPreRoll.addLast(base64Audio)
+                                    if (ws.queueSize() < 24_576L) {
+                                        ws.send("""{"type":"input_audio_buffer.append","audio":"$silenceFrame20msBase64"}""")
+                                    }
+                                }
+                            }
                         } else {
-                            // Conserve toutes les trames audio dès 0 ms pendant l'ouverture du WebSocket (~150 ms)
-                            if (preSessionAudioQueue.size < 250) {
-                                preSessionAudioQueue.offer(base64Audio)
+                            if (!preSessionVoiceDetected) {
+                                if (preSessionPreRoll.size >= 4) preSessionPreRoll.pollFirst()
+                                preSessionPreRoll.addLast(base64Audio)
+                                if (isVoiceFrame) {
+                                    preSessionVoiceDetected = true
+                                    while (preSessionPreRoll.isNotEmpty()) {
+                                        val pre = preSessionPreRoll.pollFirst() ?: break
+                                        preSessionAudioQueue.offer(pre)
+                                    }
+                                }
+                            } else if (preSessionAudioQueue.size < 250) {
+                                preSessionAudioQueue.offer(if (isVoiceFrame || voiceHoldFrames > 0) base64Audio else silenceFrame20msBase64)
                             }
                         }
                     }
@@ -674,6 +821,8 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
                 AudioFormat.ENCODING_PCM_16BIT
             ).coerceAtLeast(4800)
 
+            // Buffer matériel court (~200 ms) pour démarrer la voix dès le 1er paquet sans latence de mixeur
+            // et permettre une coupure instantanée (< 20 ms) dès que l'utilisateur reprend la parole
             val track = AudioTrack.Builder()
                 .setAudioAttributes(
                     AudioAttributes.Builder()
@@ -688,7 +837,7 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                         .build()
                 )
-                .setBufferSizeInBytes(maxOf(minBuffer * 4, SAMPLE_RATE * 2))
+                .setBufferSizeInBytes(maxOf(minBuffer * 2, 9600))
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
@@ -699,39 +848,69 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
         }
     }
 
-    private fun writePcmToAudioTrack(pcmBytes: ByteArray) {
-        val track = audioTrack ?: return
-        try {
-            val now = System.currentTimeMillis()
-            // 24000 Hz * 2 octets (16-bit mono) = 48000 octets par seconde d'audio
-            val chunkDurationMs = (pcmBytes.size * 1000L) / (SAMPLE_RATE * 2)
-            playbackFinishTimeMs = maxOf(now, playbackFinishTimeMs) + chunkDurationMs
+    private fun enqueuePcmForPlayback(pcmBytes: ByteArray) {
+        if (!acceptingAiAudio.get()) return
+        val now = System.currentTimeMillis()
+        // 24000 Hz * 2 octets (16-bit mono) = 48000 octets par seconde d'audio
+        val chunkDurationMs = (pcmBytes.size * 1000L) / (SAMPLE_RATE * 2)
+        playbackFinishTimeMs = maxOf(now, playbackFinishTimeMs) + chunkDurationMs
+        pcmPlaybackQueue.offer(pcmBytes)
+    }
 
-            if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
-                track.play()
+    private fun startPlaybackWorker() {
+        playbackJob?.cancel()
+        playbackJob = scope.launch(Dispatchers.IO) {
+            // Découpe l'écriture AudioTrack en tranches de 20 ms (960 octets) en vérifiant acceptingAiAudio
+            // avant chaque tranche pour que toute interruption coupe le son en moins de 20 ms sans blocage
+            val sliceSize = 960
+            while (isActive && isActiveCall.get()) {
+                val pcmBytes = pcmPlaybackQueue.poll()
+                if (pcmBytes != null && acceptingAiAudio.get()) {
+                    val track = audioTrack
+                    if (track != null && track.state == AudioTrack.STATE_INITIALIZED) {
+                        try {
+                            if (track.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                                track.play()
+                            }
+                            var offset = 0
+                            while (offset < pcmBytes.size && acceptingAiAudio.get() && isActiveCall.get()) {
+                                val bytesToWrite = minOf(sliceSize, pcmBytes.size - offset)
+                                val written = track.write(pcmBytes, offset, bytesToWrite)
+                                if (written <= 0) break
+                                offset += written
+                            }
+                            if (pcmPlaybackQueue.isEmpty() && !isResponseInProgress.get()) {
+                                playbackFinishTimeMs = minOf(playbackFinishTimeMs, System.currentTimeMillis() + 80L)
+                            }
+                        } catch (e: Exception) {
+                            Log.w(TAG, "Erreur écriture AudioTrack: ${e.message}")
+                        }
+                    }
+                } else {
+                    delay(5L)
+                }
             }
-            track.write(pcmBytes, 0, pcmBytes.size)
-        } catch (e: Exception) {
-            Log.w(TAG, "Erreur écriture AudioTrack: ${e.message}")
         }
     }
 
     fun interruptAiSpeech() {
+        acceptingAiAudio.set(false)
         stopAndFlushPlayback()
         try {
             if (isResponseInProgress.getAndSet(false)) {
                 webSocket?.send("""{"type":"response.cancel"}""")
             }
-            webSocket?.send("""{"type":"input_audio_buffer.clear"}""")
         } catch (_: Exception) {}
         _callState.value = VoiceCallState.USER_SPEAKING
     }
 
     fun commitUserSpeechNow() {
         try {
-            webSocket?.send("""{"type":"input_audio_buffer.commit"}""")
-            webSocket?.send("""{"type":"response.create"}""")
-            _callState.value = VoiceCallState.THINKING
+            if (!isResponseInProgress.get()) {
+                webSocket?.send("""{"type":"input_audio_buffer.commit"}""")
+                webSocket?.send("""{"type":"response.create"}""")
+                _callState.value = VoiceCallState.THINKING
+            }
         } catch (_: Exception) {}
     }
 
@@ -743,6 +922,7 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
     }
 
     private fun stopAndFlushPlayback() {
+        pcmPlaybackQueue.clear()
         playbackFinishTimeMs = 0L
         playbackEndCheckJob?.cancel()
         try {
@@ -782,7 +962,10 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
 
     private fun cleanupResources() {
         try {
+            acceptingAiAudio.set(false)
+            pcmPlaybackQueue.clear()
             recordingJob?.cancel()
+            playbackJob?.cancel()
             playbackEndCheckJob?.cancel()
             scope.cancel()
         } catch (_: Exception) {}

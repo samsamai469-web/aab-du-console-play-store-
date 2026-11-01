@@ -271,6 +271,8 @@ fun SamAiGeminiAssistantModal(
                             // Bouton Appel vocal direct en continu (style conversation téléphonique)
                             Surface(
                                 onClick = {
+                                    isListeningVoice = false
+                                    speechManager.reset()
                                     hideKeyboard()
                                     showVoiceCallDialog = true
                                 },
@@ -423,6 +425,8 @@ fun SamAiGeminiAssistantModal(
                         ) {
                             Surface(
                                 onClick = {
+                                    isListeningVoice = false
+                                    speechManager.reset()
                                     hideKeyboard()
                                     showVoiceCallDialog = true
                                 },
@@ -2009,6 +2013,7 @@ fun SamAiVoiceCallDialog(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
+            speechManager.reset()
             ttsManager.stop()
             realtimeManager.startCall()
         } else {
@@ -2025,6 +2030,7 @@ fun SamAiVoiceCallDialog(
         ) == PackageManager.PERMISSION_GRANTED
 
         if (hasPermission) {
+            speechManager.reset()
             ttsManager.stop()
             realtimeManager.startCall()
         } else {

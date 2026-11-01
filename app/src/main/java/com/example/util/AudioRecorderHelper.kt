@@ -185,21 +185,26 @@ class AudioRecorderHelper(private val context: Context) {
                         val absRaw = kotlin.math.abs(rawSample)
                         if (absRaw > peakSample) peakSample = absRaw
                         sumSquares += (rawSample.toDouble() * rawSample.toDouble())
+                    }
 
-                        // Amplification vocale douce et linéaire pour une clarté maximale sans distorsion
-                        val boosted = if (absRaw > 140) {
-                            (rawSample * 3 / 2).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                        } else {
-                            rawSample
+                    val rms = kotlin.math.sqrt(sumSquares / readShorts).toInt()
+                    for (i in 0 until readShorts) {
+                        val rawSample = audioData[i].toInt()
+                        // Courbe de gain vocale à fort contraste ("Soft-Knee") :
+                        // - Silence / bruit ambiant (< 115 RMS) : divisé par 5 pour éliminer le souffle de fond
+                        // - Voix douce ou normale (115..1000 RMS) : amplifiée x2.2 pour détection immédiate dès la 1re syllabe
+                        // - Voix soutenue (1000..2200 RMS) : amplifiée x1.5
+                        val boosted = when {
+                            rms < 115 -> rawSample / 5
+                            rms < 1000 -> (rawSample * 11 / 5).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                            rms < 2200 -> (rawSample * 3 / 2).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                            else -> rawSample
                         }
-
                         frameBytes[i * 2] = (boosted and 0xFF).toByte()
                         frameBytes[i * 2 + 1] = ((boosted shr 8) and 0xFF).toByte()
                     }
 
-                    val rms = kotlin.math.sqrt(sumSquares / readShorts).toInt()
-                    val effectiveAmp = ((rms * 1.95f).toInt() + (peakSample / 3)).coerceAtMost(32767)
-                    currentPcmAmplitude = effectiveAmp
+                    currentPcmAmplitude = rms.coerceAtMost(32767)
 
                     // Écriture directe dès la milliseconde 0 pour ne jamais couper le début de la parole
                     fos.write(frameBytes)
@@ -244,6 +249,17 @@ class AudioRecorderHelper(private val context: Context) {
             mediaRecorder = null
         }
 
+        try {
+            audioRecord?.stop()
+        } catch (_: Exception) {}
+
+        // Attend que le thread d'écriture ferme le flux et mette à jour l'en-tête WAV (taille réelle)
+        // AVANT de libérer AudioRecord et de retourner le fichier à Whisper
+        try {
+            recordingThread?.join(500)
+        } catch (_: Exception) {}
+        recordingThread = null
+
         try { noiseSuppressor?.release() } catch (_: Exception) {}
         noiseSuppressor = null
         try { automaticGainControl?.release() } catch (_: Exception) {}
@@ -251,20 +267,10 @@ class AudioRecorderHelper(private val context: Context) {
         try { echoCanceler?.release() } catch (_: Exception) {}
         echoCanceler = null
 
-        audioRecord?.let { ar ->
-            try {
-                ar.stop()
-            } catch (_: Exception) {}
-            try {
-                ar.release()
-            } catch (_: Exception) {}
-            audioRecord = null
-        }
-
         try {
-            recordingThread?.join(120)
+            audioRecord?.release()
         } catch (_: Exception) {}
-        recordingThread = null
+        audioRecord = null
 
         return activeAudioFile
     }

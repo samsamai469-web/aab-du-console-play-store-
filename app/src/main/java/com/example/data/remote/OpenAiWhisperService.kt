@@ -208,22 +208,22 @@ class OpenAiWhisperService(private val context: Context) {
                 )
             }
 
-            // Priorité absolue à whisper-1 en français (modèle le plus rapide d'OpenAI : ~300-450ms, universellement disponible sans délai)
-            val whisperResult = executeTranscriptionRequest(
+            // Priorité directe à gpt-4o-mini-transcribe (zéro hallucination "Amara.org" et un seul appel réseau rapide)
+            val primaryResult = executeTranscriptionRequest(
                 audioFile = audioFile,
                 apiKey = apiKey,
-                model = WHISPER_FAST_MODEL,
+                model = GPT4O_MINI_TRANSCRIBE_MODEL,
                 whisperLangCode = whisperLangCode,
                 isMooreHint = false
             )
 
-            val rawTranscriptResult = if (whisperResult.isSuccess && !whisperResult.getOrNull().isNullOrBlank()) {
-                whisperResult
+            val rawTranscriptResult = if (primaryResult.isSuccess && !primaryResult.getOrNull().isNullOrBlank()) {
+                primaryResult
             } else {
                 executeTranscriptionRequest(
                     audioFile = audioFile,
                     apiKey = apiKey,
-                    model = GPT4O_MINI_TRANSCRIBE_MODEL,
+                    model = WHISPER_FAST_MODEL,
                     whisperLangCode = whisperLangCode,
                     isMooreHint = false
                 )
