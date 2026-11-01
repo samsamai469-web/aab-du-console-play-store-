@@ -142,6 +142,10 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
     private var currentAiTranscriptBuilder = StringBuilder()
     private var lastCompletedUserTranscript = ""
 
+    private val audioManager = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? android.media.AudioManager
+    private var previousAudioMode: Int = android.media.AudioManager.MODE_NORMAL
+    private var previousSpeakerphoneState: Boolean = false
+
     fun startCall() {
         if (isActiveCall.getAndSet(true)) return
         triedFallbackModel.set(false)
@@ -160,6 +164,19 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
             Log.w(TAG, "Clé API OpenAI absente, bascule sur le pipeline standard")
             notifyFallback("Clé API non configurée")
             return
+        }
+
+        // Mode audio HD : conserve AudioManager en MODE_NORMAL pour bénéficier du convertisseur
+        // haute définition 24 kHz (sans le filtre téléphonique 8 kHz qui étouffe la voix)
+        try {
+            audioManager?.let { am ->
+                previousAudioMode = am.mode
+                if (am.mode != android.media.AudioManager.MODE_NORMAL) {
+                    am.mode = android.media.AudioManager.MODE_NORMAL
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Notice AudioManager: ${e.message}")
         }
 
         initAudioTrack()
@@ -671,7 +688,7 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
                         .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
                         .build()
                 )
-                .setBufferSizeInBytes(minBuffer * 2)
+                .setBufferSizeInBytes(maxOf(minBuffer * 4, SAMPLE_RATE * 2))
                 .setTransferMode(AudioTrack.MODE_STREAM)
                 .build()
 
@@ -802,6 +819,14 @@ RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE E
                 track.release()
             }
             audioTrack = null
+        } catch (_: Exception) {}
+
+        try {
+            audioManager?.let { am ->
+                @Suppress("DEPRECATION")
+                am.isSpeakerphoneOn = previousSpeakerphoneState
+                am.mode = previousAudioMode
+            }
         } catch (_: Exception) {}
     }
 }
