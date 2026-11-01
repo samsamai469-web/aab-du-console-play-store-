@@ -114,6 +114,7 @@ fun SamAiGeminiAssistantModal(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
+            ttsManager.stop()
             isListeningVoice = true
             speechManager.startListening(
                 language = "Français",
@@ -121,6 +122,7 @@ fun SamAiGeminiAssistantModal(
                     if (transcript.isNotBlank()) {
                         inputText = transcript
                         isListeningVoice = false
+                        speechManager.reset()
                         hideKeyboard()
                         viewModel.askSamAiGemini(userQuestion = transcript)
                         inputText = ""
@@ -536,6 +538,7 @@ fun SamAiGeminiAssistantModal(
                                         ) == PackageManager.PERMISSION_GRANTED
 
                                         if (hasPermission) {
+                                            ttsManager.stop()
                                             isListeningVoice = true
                                             speechManager.startListening(
                                                 language = "Français",
@@ -543,6 +546,7 @@ fun SamAiGeminiAssistantModal(
                                                     if (transcript.isNotBlank()) {
                                                         inputText = transcript
                                                         isListeningVoice = false
+                                                        speechManager.reset()
                                                         hideKeyboard()
                                                         viewModel.askSamAiGemini(userQuestion = transcript)
                                                         inputText = ""
@@ -1874,9 +1878,10 @@ fun SamAiVoiceCallDialog(
     val fallbackSoundLevel by speechManager.soundLevel.collectAsState()
     val fallbackPartialTranscript by speechManager.partialText.collectAsState()
 
-    // Boucle de secours (avec gpt-4o-mini-tts voix humaine "coral") uniquement si le WebSocket Realtime est indisponible
+    // Boucle de secours (avec gpt-4o-mini-tts voix humaine "ash") uniquement si le WebSocket Realtime est indisponible
     fun listenFallbackTurn() {
-        if (!isCallActive || isMicMuted || !isUsingFallbackRest) return
+        if (!isCallActive || isMicMuted || !isUsingFallbackRest || ttsManager.isSpeaking() || TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) return
+        if (callState == VoiceCallState.SAM_SPEAKING || callState == VoiceCallState.THINKING) return
         callState = VoiceCallState.USER_SPEAKING
         speechManager.startListening(
             language = "Français",
@@ -1884,6 +1889,9 @@ fun SamAiVoiceCallDialog(
             onResult = { recognizedText ->
                 val clean = recognizedText.trim()
                 if (clean.isNotBlank() && isCallActive) {
+                    // Coupe immédiatement le microphone dès que la question de l'utilisateur est captée
+                    // pour que SAM AI ne ré-entende jamais sa propre voix en haut-parleur
+                    speechManager.reset()
                     lastUserSentence = clean
                     callState = VoiceCallState.THINKING
                     lastDetectedLang = "Français"
@@ -1894,49 +1902,54 @@ fun SamAiVoiceCallDialog(
                         isVoiceCall = true,
                         onReply = { botReply ->
                             if (isCallActive) {
+                                speechManager.reset()
                                 lastAiSentence = botReply
                                 callState = VoiceCallState.SAM_SPEAKING
                                 ttsManager.speakWithCallback(
                                     text = botReply,
                                     language = "Français",
                                     onStart = {
+                                        speechManager.reset()
                                         callState = VoiceCallState.SAM_SPEAKING
                                     },
                                     onDone = {
+                                        // Garde acoustique de 520 ms après la fin du haut-parleur avant de rouvrir le micro
                                         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                            if (isCallActive && !isMicMuted) {
+                                            if (isCallActive && !isMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) {
                                                 speechManager.reset()
+                                                callState = VoiceCallState.USER_SPEAKING
                                                 listenFallbackTurn()
                                             }
-                                        }, 60L)
+                                        }, 520L)
                                     },
                                     onError = {
                                         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                            if (isCallActive && !isMicMuted) {
+                                            if (isCallActive && !isMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) {
                                                 speechManager.reset()
+                                                callState = VoiceCallState.USER_SPEAKING
                                                 listenFallbackTurn()
                                             }
-                                        }, 60L)
+                                        }, 520L)
                                     }
                                 )
                             }
                         }
                     )
-                } else if (isCallActive && !isMicMuted) {
+                } else if (isCallActive && !isMicMuted && !ttsManager.isSpeaking()) {
                     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                        if (isCallActive && !isMicMuted && callState == VoiceCallState.USER_SPEAKING) {
+                        if (isCallActive && !isMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L) && callState == VoiceCallState.USER_SPEAKING) {
                             listenFallbackTurn()
                         }
-                    }, 80L)
+                    }, 200L)
                 }
             },
             onError = { _ ->
-                if (isCallActive && !isMicMuted) {
+                if (isCallActive && !isMicMuted && !ttsManager.isSpeaking()) {
                     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                        if (isCallActive && !isMicMuted && callState == VoiceCallState.USER_SPEAKING) {
+                        if (isCallActive && !isMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L) && callState == VoiceCallState.USER_SPEAKING) {
                             listenFallbackTurn()
                         }
-                    }, 100L)
+                    }, 350L)
                 }
             }
         )

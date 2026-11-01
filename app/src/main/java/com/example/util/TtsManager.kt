@@ -56,6 +56,38 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         private const val FALLBACK_TTS1_MALE_VOICE = "onyx"
         private const val HUMAN_VOICE_INSTRUCTIONS =
             "Voix d'homme humain naturel, chaleureux, posé et spontané lors d'un véritable appel téléphonique en français. Intonation masculine réaliste, fluide et vivante, jamais robotique."
+
+        private val activeInstances = java.util.Collections.synchronizedSet(
+            java.util.Collections.newSetFromMap(java.util.WeakHashMap<TtsManager, Boolean>())
+        )
+
+        @Volatile
+        var isGlobalTtsSpeaking: Boolean = false
+            private set
+
+        @Volatile
+        var lastGlobalTtsEndTimeMs: Long = 0L
+            private set
+
+        fun isAnyTtsSpeakingOrCoolingDown(guardMs: Long = 480L): Boolean {
+            if (isGlobalTtsSpeaking) return true
+            val anyInstanceSpeaking = synchronized(activeInstances) {
+                activeInstances.any { it.isSpeaking() }
+            }
+            if (anyInstanceSpeaking) return true
+            val elapsed = System.currentTimeMillis() - lastGlobalTtsEndTimeMs
+            return lastGlobalTtsEndTimeMs > 0L && elapsed in 0..guardMs
+        }
+
+        fun stopAllActiveTts() {
+            isGlobalTtsSpeaking = false
+            val snapshot = synchronized(activeInstances) { activeInstances.toList() }
+            snapshot.forEach { instance ->
+                try {
+                    instance.stop()
+                } catch (_: Exception) {}
+            }
+        }
     }
 
     private var activeOnDoneCallback: (() -> Unit)? = null
@@ -64,6 +96,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     private var pendingSpeech: (() -> Unit)? = null
 
     init {
+        activeInstances.add(this)
         try {
             tts = TextToSpeech(appContext, this)
         } catch (_: Exception) {
@@ -105,12 +138,16 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 tts?.setSpeechRate(1.03f)
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
+                        isGlobalTtsSpeaking = true
+                        SpeechRecognitionManager.pauseAllActiveRecognizersForTts()
                         mainHandler.post {
                             activeOnStartCallback?.invoke()
                         }
                     }
 
                     override fun onDone(utteranceId: String?) {
+                        isGlobalTtsSpeaking = false
+                        lastGlobalTtsEndTimeMs = System.currentTimeMillis()
                         val callback = activeOnDoneCallback
                         activeOnDoneCallback = null
                         mainHandler.post {
@@ -119,6 +156,8 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                     }
 
                     override fun onError(utteranceId: String?) {
+                        isGlobalTtsSpeaking = false
+                        lastGlobalTtsEndTimeMs = System.currentTimeMillis()
                         val callback = activeOnErrorCallback
                         activeOnErrorCallback = null
                         mainHandler.post {
@@ -187,6 +226,11 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         activeOnStartCallback = onStart
         activeOnDoneCallback = onDone
         activeOnErrorCallback = onError
+
+        // Verrouille immédiatement l'état global TTS et coupe tout microphone de reconnaissance actif
+        // pour que SAM AI ne ré-entende jamais sa propre voix en haut-parleur
+        isGlobalTtsSpeaking = true
+        SpeechRecognitionManager.pauseAllActiveRecognizersForTts()
 
         val apiKey = apiKeyManager.getActiveOpenAiApiKey()
         if (apiKey.isNotBlank() && apiKey != "MY_OPENAI_API_KEY") {
@@ -269,6 +313,8 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                         setDataSource(cachedFile.absolutePath)
                         setVolume(1.0f, 1.0f)
                         setOnPreparedListener { mp ->
+                            isGlobalTtsSpeaking = true
+                            SpeechRecognitionManager.pauseAllActiveRecognizersForTts()
                             try {
                                 loudnessEnhancer = LoudnessEnhancer(mp.audioSessionId).apply {
                                     setTargetGain(450)
@@ -280,6 +326,8 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                         }
                         setOnCompletionListener {
                             isNeuralPlaying = false
+                            isGlobalTtsSpeaking = false
+                            lastGlobalTtsEndTimeMs = System.currentTimeMillis()
                             releaseMediaPlayer()
                             val cb = activeOnDoneCallback
                             activeOnDoneCallback = null
@@ -287,6 +335,8 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                         }
                         setOnErrorListener { _, _, _ ->
                             isNeuralPlaying = false
+                            isGlobalTtsSpeaking = false
+                            lastGlobalTtsEndTimeMs = System.currentTimeMillis()
                             releaseMediaPlayer()
                             cachedFile.delete()
                             val errCb = activeOnErrorCallback
@@ -747,6 +797,10 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     fun stop() {
         try {
+            if (isNeuralPlaying || isGlobalTtsSpeaking || (tts?.isSpeaking == true)) {
+                lastGlobalTtsEndTimeMs = System.currentTimeMillis()
+            }
+            isGlobalTtsSpeaking = false
             speechJob?.cancel()
             speechJob = null
             isNeuralPlaying = false

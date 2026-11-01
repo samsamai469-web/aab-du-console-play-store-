@@ -64,6 +64,29 @@ class SpeechRecognitionManager(private val context: Context) {
 
     companion object {
         private const val TAG = "SpeechRecognitionMgr"
+
+        private val activeRecognizers = java.util.Collections.synchronizedSet(
+            java.util.Collections.newSetFromMap(java.util.WeakHashMap<SpeechRecognitionManager, Boolean>())
+        )
+
+        /**
+         * Coupe immédiatement tous les microphones de reconnaissance vocale actifs dès que SAM AI
+         * commence à parler à haute voix pour empêcher toute auto-détection de sa propre voix.
+         */
+        fun pauseAllActiveRecognizersForTts() {
+            val snapshot = synchronized(activeRecognizers) { activeRecognizers.toList() }
+            snapshot.forEach { recognizer ->
+                try {
+                    if (recognizer._state.value is State.Listening) {
+                        recognizer.reset()
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    init {
+        activeRecognizers.add(this)
     }
 
     private fun isAfricanLanguage(lang: String): Boolean {
@@ -89,7 +112,7 @@ class SpeechRecognitionManager(private val context: Context) {
     }
 
     /**
-     * Démarre la reconnaissance vocale haute précision avec capture PCM 16kHz instantanée (0 ms de délai).
+     * Démarre la reconnaissance vocale haute précision avec capture PCM 16kHz instantanée.
      */
     fun startListening(
         language: String = "fr-FR",
@@ -97,6 +120,19 @@ class SpeechRecognitionManager(private val context: Context) {
         onResult: (String) -> Unit = {},
         onError: (String) -> Unit = {}
     ) {
+        // En mode continu automatique (appel vocal de secours / conversation live), si SAM AI est
+        // en train de parler en haut-parleur ou dans sa garde acoustique, on refuse d'ouvrir le micro
+        if (continuousMode && TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) {
+            reset()
+            onError("Haut-parleur actif")
+            return
+        }
+        // En mode manuel (appui explicite de l'utilisateur sur le bouton micro), on coupe d'abord
+        // toute voix TTS en cours pour qu'elle ne soit jamais enregistrée par le microphone
+        if (!continuousMode && TtsManager.isAnyTtsSpeakingOrCoolingDown(0L)) {
+            TtsManager.stopAllActiveTts()
+        }
+
         cancelCurrentJobs()
         activeOnResult = onResult
         activeOnError = onError
@@ -136,6 +172,16 @@ class SpeechRecognitionManager(private val context: Context) {
             var sampleFrameCount = 0
 
             while (isActive && _state.value is State.Listening) {
+                // Protection anti-écho globale : si SAM AI prend la parole sur le haut-parleur pendant
+                // que le micro écoute, on annule immédiatement l'enregistrement en cours pour ne jamais
+                // transcrire la voix de SAM AI comme une question de l'utilisateur
+                if (TtsManager.isGlobalTtsSpeaking) {
+                    withContext(Dispatchers.Main) {
+                        reset()
+                    }
+                    break
+                }
+
                 val amp = audioRecorder.getMaxAmplitude()
                 val normalized = (amp / 4000f).coerceIn(0f, 1f)
                 val now = System.currentTimeMillis()
@@ -199,9 +245,10 @@ class SpeechRecognitionManager(private val context: Context) {
                         break
                     }
 
-                    // Détection ultra-réactive de fin de phrase (0,20 s = 200 ms de silence)
-                    val requiredSilenceMs = 200L
-                    if ((speechDetected && silenceDuration >= requiredSilenceMs && voicedDuration >= 60L) ||
+                    // Détection naturelle de fin de question (550 ms de silence) : laisse l'utilisateur
+                    // respirer entre les mots de sa question sans jamais le couper prématurément
+                    val requiredSilenceMs = 550L
+                    if ((speechDetected && silenceDuration >= requiredSilenceMs && voicedDuration >= 120L) ||
                         (speechDetected && totalSpeechDuration >= 15000L)
                     ) {
                         withContext(Dispatchers.Main) {

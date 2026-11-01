@@ -55,8 +55,8 @@ class AudioRecorderHelper(private val context: Context) {
 
         // 2. Repli : MediaRecorder (AAC .m4a)
         val sourcesToTry = listOf(
-            MediaRecorder.AudioSource.VOICE_RECOGNITION,
             MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+            MediaRecorder.AudioSource.VOICE_RECOGNITION,
             MediaRecorder.AudioSource.MIC
         )
 
@@ -100,6 +100,7 @@ class AudioRecorderHelper(private val context: Context) {
     @SuppressLint("MissingPermission")
     private fun startPcmWavRecording(): File? {
         val sources = listOf(
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             MediaRecorder.AudioSource.VOICE_RECOGNITION,
             MediaRecorder.AudioSource.MIC
         )
