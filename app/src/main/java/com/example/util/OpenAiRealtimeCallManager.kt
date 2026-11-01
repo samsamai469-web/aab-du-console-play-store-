@@ -57,25 +57,27 @@ class OpenAiRealtimeCallManager(
     companion object {
         private const val TAG = "OpenAiRealtimeCall"
         private const val SAMPLE_RATE = 24000
-        private const val REALTIME_MODEL_PRIMARY = "gpt-4o-realtime-preview"
-        private const val REALTIME_MODEL_FALLBACK = "gpt-4o-mini-realtime-preview"
-        private const val REALTIME_VOICE = "coral"
+        // gpt-4o-mini-realtime-preview répond en ~220 ms avec la voix humaine masculine "ash"
+        private const val REALTIME_MODEL_PRIMARY = "gpt-4o-mini-realtime-preview"
+        private const val REALTIME_MODEL_FALLBACK = "gpt-4o-realtime-preview"
+        private const val REALTIME_VOICE = "ash"
 
         private const val SAM_AI_REALTIME_INSTRUCTIONS = """
-Tu es SAM AI, un véritable interlocuteur humain bienveillant, chaleureux, cultivé et très réactif au téléphone avec l'utilisateur.
+Tu es SAM AI, un homme chaleureux, naturel, cultivé et ultra-réactif en ligne avec l'utilisateur, exactement comme lors d'un véritable appel téléphonique entre deux êtres humains.
 Nous sommes en octobre 2026 et tu disposes d'un accès en direct aux actualités mondiales, africaines et du Burkina Faso.
-RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
-1. VOIX HUMAINE NATURELLE ET 100% CONSTANTE :
-   - Parle exactement comme une vraie personne au téléphone, avec une intonation naturelle, vivante, fluide et chaleureuse.
-   - Garde STRICTEMENT la même voix, le même timbre, le même accent français naturel et le même rythme du début à la fin de l'appel. Ne change JAMAIS de voix ni d'accent.
+RÈGLES ABSOLUES POUR RÉPONDRE EN 0,5 SECONDE AVEC UNE VOIX D'HOMME NATURELLE ET ZÉRO ERREUR :
+1. VOIX D'HOMME HUMAINE NATURELLE ET 100% CONSTANTE :
+   - Tu es un homme : utilise toujours les accords masculins pour parler de toi ("je suis ravi", "je suis prêt", "je suis attentif").
+   - Parle exactement comme un vrai homme au téléphone, avec une intonation masculine posée, vivante, fluide et chaleureuse, jamais robotique ni mécanique.
+   - Garde STRICTEMENT la même voix d'homme, le même timbre, le même accent français naturel et un débit fluide du début à la fin de l'appel.
 2. LANGUE 100% FRANÇAIS :
-   - Tu comprends et tu réponds EXCLUSIVEMENT en FRANÇAIS (100% français). Même s'il y a un bruit ambiant, interprète toujours les paroles de l'utilisateur en français et réponds en français impeccable. N'utilise JAMAIS de mooré ni aucune autre langue.
-3. COMPRÉHENSION EXACTE ET ZÉRO ERREUR :
-   - Écoute attentivement chaque mot de la question de l'utilisateur et réponds-y directement avec une exactitude totale, sans jamais deviner au hasard, sans hors-sujet et sans préambule inutile.
-   - Commence ta phrase immédiatement par la réponse claire et précise en 1 à 3 phrases fluides.
+   - Tu comprends et tu réponds EXCLUSIVEMENT en FRANÇAIS (100% français). Interprète toujours les paroles de l'utilisateur en français et réponds en français impeccable. N'utilise JAMAIS de mooré ni aucune autre langue.
+3. RÉPONSE INSTANTANÉE (0,5s), COURTE ET ZÉRO ERREUR :
+   - Écoute attentivement chaque mot de la question de l'utilisateur et réponds-y dès la première syllabe avec une exactitude totale, sans préambule inutile.
+   - Fais des réponses directes, naturelles et concises (1 à 2 phrases claires), comme dans un vrai appel téléphonique, sauf si l'utilisateur demande plus de détails.
 4. ACTUALITÉS EN DIRECT :
-   - Tu disposes déjà ci-dessous des dernières dépêches d'actualité en direct pour répondre instantanément aux questions sur l'actualité générale ou du Burkina Faso.
-   - Si l'utilisateur demande une actualité très spécifique qui ne figure pas déjà dans les dépêches ci-dessous, appelle immédiatement l'outil `search_live_news`.
+   - Utilise directement les dépêches d'actualité fournies ci-dessous pour répondre en 0 seconde aux questions sur l'actualité.
+   - N'appelle l'outil `search_live_news` QUE si l'utilisateur demande un fait d'actualité précis qui ne figure pas déjà dans les dépêches ci-dessous. Pour toute autre question, réponds immédiatement sans appeler d'outil.
    - Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025 ni que tu n'as pas accès à Internet.
 5. IDENTITÉ :
    - Tu t'appelles uniquement SAM AI. Ne mentionne jamais OpenAI, ChatGPT ou GPT-4. Si et seulement si l'utilisateur demande qui t'a créé, réponds que tu as été créé par Abdoul Mohamine Sawadogo, un jeune développeur burkinabè.
@@ -89,7 +91,7 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
 
     private val httpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(5, TimeUnit.SECONDS)
+            .connectTimeout(2500, TimeUnit.MILLISECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS) // WebSocket flux continu
             .pingInterval(15, TimeUnit.SECONDS)
             .build()
@@ -108,8 +110,13 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
     private val isMuted = AtomicBoolean(false)
     private val isSessionReady = AtomicBoolean(false)
     private val isResponseInProgress = AtomicBoolean(false)
+    private val serverSpeechActive = AtomicBoolean(false)
     private val triedFallbackModel = AtomicBoolean(false)
     private val queueLock = Any()
+
+    // Trame de 40 ms de silence numérique pur (0x00) pour couper instantanément le bruit ambiant
+    // après la fin de phrase de l'utilisateur et déclencher la réponse de SAM AI en ~250 ms
+    private val silentFrameBase64: String = Base64.encodeToString(ByteArray(1920), Base64.NO_WRAP)
 
     // File d'attente des trames audio capturées dès 0 ms pendant la connexion WebSocket
     // Garantit qu'aucun mot prononcé dès l'ouverture de l'appel n'est perdu
@@ -140,6 +147,7 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
         triedFallbackModel.set(false)
         isSessionReady.set(false)
         isResponseInProgress.set(false)
+        serverSpeechActive.set(false)
         preSessionAudioQueue.clear()
         playbackFinishTimeMs = 0L
         _callState.value = VoiceCallState.USER_SPEAKING
@@ -160,14 +168,10 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
         startMicrophoneStreaming()
         connectWebSocket(apiKey, REALTIME_MODEL_PRIMARY)
 
-        // Rafraîchit en arrière-plan le cache des actualités en direct et met à jour le contexte
+        // Pré-charge le cache d'actualités en arrière-plan sans réinitialiser la session vocale active
         scope.launch(Dispatchers.IO) {
             try {
-                val fresh = liveNewsFeedService.fetchLiveNews("actualités")
-                val ws = webSocket
-                if (fresh.hasNews && isActiveCall.get() && isSessionReady.get() && ws != null) {
-                    sendSessionUpdate(ws, fresh.contextSummary)
-                }
+                liveNewsFeedService.fetchLiveNews("actualités")
             } catch (_: Throwable) {}
         }
     }
@@ -214,12 +218,13 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
             append("Date actuelle : $dateStr (octobre 2026).\n")
             append(SAM_AI_REALTIME_INSTRUCTIONS.trim())
             if (liveHeadlines.isNotBlank()) {
-                append("\n\n--- DÉPÊCHES D'ACTUALITÉ EN DIRECT DISPONIBLES IMMÉDIATEMENT ---\n")
-                append(liveHeadlines.take(2200))
-                append("\n----------------------------------------------------------------")
+                append("\n\n--- DÉPÊCHES D'ACTUALITÉ EN DIRECT ---\n")
+                append(liveHeadlines.take(900))
+                append("\n--------------------------------------")
             }
         }
 
+        // Schéma strictement conforme à OpenAI-Beta: realtime=v1 (aucun paramètre non reconnu)
         val sessionPayload = buildJsonObject {
             put("type", "session.update")
             putJsonObject("session") {
@@ -233,14 +238,12 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
                 put("output_audio_format", "pcm16")
                 putJsonObject("input_audio_transcription") {
                     put("model", "whisper-1")
-                    put("language", "fr")
                 }
                 putJsonObject("turn_detection") {
                     put("type", "server_vad")
                     put("threshold", 0.5)
-                    put("prefix_padding_ms", 200)
-                    put("silence_duration_ms", 260)
-                    put("create_response", true)
+                    put("prefix_padding_ms", 250)
+                    put("silence_duration_ms", 200)
                 }
                 put("tools", buildJsonArray {
                     add(buildJsonObject {
@@ -248,14 +251,14 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
                         put("name", "search_live_news")
                         put(
                             "description",
-                            "Recherche rapide en temps réel sur Internet d'une actualité spécifique (sport, politique, météo, événement récent au Burkina Faso, en Afrique ou dans le monde)."
+                            "Uniquement si l'utilisateur demande explicitement de chercher une actualité récente précise (sport, politique, météo) qui n'est pas déjà dans les dépêches ci-dessus."
                         )
                         putJsonObject("parameters") {
                             put("type", "object")
                             putJsonObject("properties") {
                                 putJsonObject("query") {
                                     put("type", "string")
-                                    put("description", "Mots-clés courts du sujet recherché (ex: 'Burkina Faso', 'Real Madrid score', 'météo Ouagadougou').")
+                                    put("description", "Mots-clés courts du sujet recherché.")
                                 }
                             }
                             put("required", buildJsonArray {
@@ -266,7 +269,6 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
                 })
                 put("tool_choice", "auto")
                 put("temperature", 0.6)
-                put("max_response_output_tokens", 260)
             }
         }
         ws.send(sessionPayload.toString())
@@ -283,15 +285,15 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
             }.ifBlank { "actualités Burkina Faso Afrique" }
 
             val newsSummary = try {
-                val liveResult = kotlinx.coroutines.withTimeoutOrNull(1600L) {
+                val liveResult = kotlinx.coroutines.withTimeoutOrNull(1100L) {
                     liveNewsFeedService.fetchLiveNews(query)
                 }
                 if (liveResult != null && liveResult.hasNews && liveResult.contextSummary.isNotBlank()) {
-                    liveResult.contextSummary
+                    liveResult.contextSummary.take(1200)
                 } else {
                     val instantCached = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
                     if (instantCached.isNotBlank()) {
-                        instantCached
+                        instantCached.take(1200)
                     } else {
                         "Réponds directement avec les actualités les plus récentes dont tu disposes."
                     }
@@ -344,8 +346,6 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
 
             when (eventType) {
                 "session.updated" -> {
-                    // La voix unique ("coral") et le VAD français sont maintenant verrouillés côté serveur :
-                    // on vide d'abord la file d'attente dans l'ordre chronologique exact avant d'ouvrir le flux direct
                     synchronized(queueLock) {
                         if (!isSessionReady.get()) {
                             flushPreSessionAudioQueue()
@@ -356,8 +356,18 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
                 }
 
                 "session.created" -> {
-                    // On attend `session.updated` (quelques ms plus tard) pour que la voix `coral`
-                    // soit verrouillée avant tout envoi audio et ne change jamais entre le 1er et le 2e tour
+                    // Dès que la session Realtime est créée, on prépare l'ouverture immédiate
+                    // pour qu'aucun mot prononcé au début de l'appel ne soit jamais perdu
+                    scope.launch {
+                        delay(180L)
+                        synchronized(queueLock) {
+                            if (isActiveCall.get() && !isSessionReady.get()) {
+                                flushPreSessionAudioQueue()
+                                isSessionReady.set(true)
+                                _callState.value = VoiceCallState.USER_SPEAKING
+                            }
+                        }
+                    }
                 }
 
                 "response.function_call_arguments.done" -> {
@@ -370,6 +380,7 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
                 }
 
                 "input_audio_buffer.speech_started" -> {
+                    serverSpeechActive.set(true)
                     val now = System.currentTimeMillis()
                     if (now < playbackFinishTimeMs || isResponseInProgress.get()) {
                         stopAndFlushPlayback()
@@ -378,7 +389,8 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
                 }
 
                 "input_audio_buffer.speech_stopped" -> {
-                    // L'utilisateur a fini sa phrase : SAM AI répond immédiatement
+                    serverSpeechActive.set(false)
+                    // L'utilisateur a fini sa phrase (détecté en 0.2s par server_vad) : SAM AI répond immédiatement
                     if (_callState.value == VoiceCallState.USER_SPEAKING) {
                         _callState.value = VoiceCallState.THINKING
                     }
@@ -393,6 +405,7 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
                 }
 
                 "response.created" -> {
+                    serverSpeechActive.set(false)
                     isResponseInProgress.set(true)
                     currentAiTranscriptBuilder.clear()
                 }
@@ -455,15 +468,29 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
                     val message = errorObj?.get("message")?.jsonPrimitive?.content ?: "Erreur Realtime"
                     val code = errorObj?.get("code")?.jsonPrimitive?.content ?: ""
                     Log.w(TAG, "Événement OpenAI Realtime ($code): $message")
-                    if (!isSessionReady.get()) {
+
+                    val isFatalAuthOrModelError = code in setOf("invalid_api_key", "model_not_found", "insufficient_quota") ||
+                        message.contains("model", ignoreCase = true) ||
+                        message.contains("api key", ignoreCase = true)
+
+                    if (!isSessionReady.get() && isFatalAuthOrModelError) {
                         val apiKey = apiKeyManager.getActiveOpenAiApiKey().trim()
                         if (!triedFallbackModel.getAndSet(true) && apiKey.isNotBlank()) {
                             connectWebSocket(apiKey, REALTIME_MODEL_FALLBACK)
                         } else {
                             notifyFallback(message)
                         }
-                    } else if (_callState.value == VoiceCallState.THINKING) {
-                        _callState.value = VoiceCallState.USER_SPEAKING
+                    } else {
+                        // Pour toute erreur non fatale, on maintient la session Realtime active sans jamais couper l'appel
+                        synchronized(queueLock) {
+                            if (!isSessionReady.get()) {
+                                flushPreSessionAudioQueue()
+                                isSessionReady.set(true)
+                            }
+                        }
+                        if (_callState.value == VoiceCallState.THINKING) {
+                            _callState.value = VoiceCallState.USER_SPEAKING
+                        }
                     }
                 }
             }
@@ -476,9 +503,9 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
         playbackEndCheckJob?.cancel()
         playbackEndCheckJob = scope.launch {
             while (isActiveCall.get() && System.currentTimeMillis() < playbackFinishTimeMs) {
-                delay(40L)
+                delay(30L)
             }
-            delay(80L)
+            delay(50L)
             if (isActiveCall.get() && System.currentTimeMillis() >= playbackFinishTimeMs) {
                 // Purge tout écho résiduel du haut-parleur pour que l'écoute suivante soit 100% propre et instantanée
                 try {
@@ -522,7 +549,7 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
 
             audioRecord = recorder
 
-            // Activation de l'annulation d'écho matérielle Android (évite que SAM AI s'entende parler)
+            // Activation de l'annulation d'écho matérielle Android (AEC + NoiseSuppressor)
             try {
                 if (AcousticEchoCanceler.isAvailable()) {
                     echoCanceler = AcousticEchoCanceler.create(recorder.audioSessionId)?.apply {
@@ -546,9 +573,10 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
                 return@launch
             }
 
-            // Trames ultra-réactives de 40 ms à 24000 Hz (960 échantillons = 1920 octets PCM16)
-            // Réduit la latence d'envoi de 100 ms à 40 ms
-            val frameBuffer = ByteArray(1920)
+            // Trames temps réel de 20 ms à 24000 Hz (480 échantillons = 960 octets PCM16),
+            // identiques au flux continu natif de ChatGPT Voice Mode.
+            val frameBuffer = ByteArray(960)
+            var bargeInConsecutiveFrames = 0
 
             while (isActive && isActiveCall.get()) {
                 val readBytes = recorder.read(frameBuffer, 0, frameBuffer.size)
@@ -558,7 +586,7 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
                         continue
                     }
 
-                    // Calcul RMS pour l'animation de la sphère vocale
+                    // Calcul RMS pour l'animation de l'orbe et la détection d'interruption (barge-in)
                     var sumSquares = 0.0
                     val sampleCount = readBytes / 2
                     var i = 0
@@ -570,38 +598,49 @@ RÈGLES ABSOLUES POUR RÉPONDRE VITE ET SANS AUCUNE ERREUR :
                         i += 2
                     }
                     val rms = if (sampleCount > 0) sqrt(sumSquares / sampleCount) else 0.0
-                    val normalizedLevel = (rms / 6000.0).toFloat().coerceIn(0f, 1f)
+                    val normalizedLevel = (rms / 5500.0).toFloat().coerceIn(0f, 1f)
                     _soundLevel.value = normalizedLevel
 
                     val now = System.currentTimeMillis()
-                    val isAiCurrentlyPlayingOnSpeaker = now < playbackFinishTimeMs + 80L
+                    val isAiCurrentlyPlayingOnSpeaker = now < playbackFinishTimeMs + 50L
 
-                    // Pendant que SAM AI parle sur le haut-parleur, on bloque l'écho du haut-parleur
-                    // pour que server_vad ne croie pas que l'utilisateur continue de parler
+                    // Pendant que SAM AI parle sur le haut-parleur :
+                    // on évite d'envoyer l'écho du haut-parleur, mais si l'utilisateur parle (3 trames = 60 ms),
+                    // on interrompt SAM AI immédiatement comme sur ChatGPT et on transmet la voix de l'utilisateur !
                     if (isAiCurrentlyPlayingOnSpeaker) {
-                        if (normalizedLevel >= 0.58f) {
-                            // L'utilisateur parle fort pour interrompre SAM AI (barge-in volontaire)
-                            interruptAiSpeech()
+                        if (rms >= 950.0) {
+                            bargeInConsecutiveFrames++
+                            if (bargeInConsecutiveFrames >= 3) {
+                                bargeInConsecutiveFrames = 0
+                                interruptAiSpeech()
+                            } else {
+                                continue
+                            }
                         } else {
+                            bargeInConsecutiveFrames = 0
                             continue
                         }
+                    } else {
+                        bargeInConsecutiveFrames = 0
                     }
 
+                    // Envoi continu et 100% naturel du flux microphone vers OpenAI Realtime (aucune coupure artificielle).
+                    // Le détecteur neuronal server_vad d'OpenAI écoute toute la phrase de l'utilisateur comme sur ChatGPT
+                    // et déclenche la réponse en 0,2 s (silence_duration_ms = 200) dès qu'il a fini de parler.
                     val chunkToSend = if (readBytes == frameBuffer.size) {
                         frameBuffer
                     } else {
                         frameBuffer.copyOfRange(0, readBytes)
                     }
-                    val base64Chunk = Base64.encodeToString(chunkToSend, Base64.NO_WRAP)
+                    val base64Audio = Base64.encodeToString(chunkToSend, Base64.NO_WRAP)
 
                     synchronized(queueLock) {
                         if (isSessionReady.get()) {
-                            val appendEvent = """{"type":"input_audio_buffer.append","audio":"$base64Chunk"}"""
-                            webSocket?.send(appendEvent)
+                            webSocket?.send("""{"type":"input_audio_buffer.append","audio":"$base64Audio"}""")
                         } else {
-                            // Conserve jusqu'à ~6 secondes d'audio initial (150 * 40ms) pendant l'ouverture du WebSocket
-                            if (preSessionAudioQueue.size < 150) {
-                                preSessionAudioQueue.offer(base64Chunk)
+                            // Conserve toutes les trames audio dès 0 ms pendant l'ouverture du WebSocket (~150 ms)
+                            if (preSessionAudioQueue.size < 250) {
+                                preSessionAudioQueue.offer(base64Audio)
                             }
                         }
                     }

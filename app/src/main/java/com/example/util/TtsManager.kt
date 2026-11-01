@@ -43,17 +43,19 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     private val httpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(5000, TimeUnit.MILLISECONDS)
-            .readTimeout(7000, TimeUnit.MILLISECONDS)
-            .callTimeout(8000, TimeUnit.MILLISECONDS)
+            .connectTimeout(3500, TimeUnit.MILLISECONDS)
+            .readTimeout(5000, TimeUnit.MILLISECONDS)
+            .callTimeout(6000, TimeUnit.MILLISECONDS)
             .build()
     }
 
     companion object {
-        // Voix humaine unique et constante ("coral") partagée avec l'API OpenAI Realtime
-        private const val UNIFIED_OPENAI_VOICE = "coral"
+        // Voix d'homme humaine naturelle ("ash") partagée avec l'API OpenAI Realtime
+        private const val UNIFIED_OPENAI_MALE_VOICE = "ash"
+        // Voix d'homme humaine grave et naturelle ("onyx") compatible avec tts-1 et tts-1-hd
+        private const val FALLBACK_TTS1_MALE_VOICE = "onyx"
         private const val HUMAN_VOICE_INSTRUCTIONS =
-            "Parle exactement comme un véritable être humain chaleureux, naturel, vivant et spontané au téléphone en français, avec des intonations humaines fluides et expressives, sans aucun ton robotique ni mécanique."
+            "Voix d'homme humain naturel, chaleureux, posé et spontané lors d'un véritable appel téléphonique en français. Intonation masculine réaliste, fluide et vivante, jamais robotique."
     }
 
     private var activeOnDoneCallback: (() -> Unit)? = null
@@ -71,8 +73,8 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     private fun getCachedVoiceFile(spokenText: String, isMoore: Boolean): File {
         val dir = File(appContext.cacheDir, "tts_voice_cache").apply { if (!exists()) mkdirs() }
-        val key = "fr_human_${UNIFIED_OPENAI_VOICE}_${spokenText.lowercase(Locale.ROOT).trim()}".hashCode().toUInt().toString(16)
-        return File(dir, "sam_tts_human_${UNIFIED_OPENAI_VOICE}_$key.mp3")
+        val key = "fr_human_male_${UNIFIED_OPENAI_MALE_VOICE}_${spokenText.lowercase(Locale.ROOT).trim()}".hashCode().toUInt().toString(16)
+        return File(dir, "sam_tts_male_${UNIFIED_OPENAI_MALE_VOICE}_$key.mp3")
     }
 
     private fun prewarmEssentialMooreAudioCache() {
@@ -83,17 +85,24 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         if (status == TextToSpeech.SUCCESS) {
             try {
                 tts?.language = Locale.FRENCH
-                // Verrouille une seule voix française stable sur le moteur Android local
-                val fixedFrenchVoice = tts?.voices?.firstOrNull { v ->
-                    v.locale.language.equals("fr", ignoreCase = true) && !v.isNetworkConnectionRequired
-                } ?: tts?.voices?.firstOrNull { v ->
+                // Sélectionne prioritairement une voix masculine française si le moteur local est sollicité hors-ligne
+                val frenchVoices = tts?.voices?.filter { v ->
                     v.locale.language.equals("fr", ignoreCase = true)
+                }.orEmpty()
+                val preferredMaleFrenchVoice = frenchVoices.firstOrNull { v ->
+                    val n = v.name.lowercase(Locale.ROOT)
+                    !v.isNetworkConnectionRequired && (n.contains("frd") || n.contains("male") || n.contains("iom") || n.contains("thomas") || n.contains("cfb"))
+                } ?: frenchVoices.firstOrNull { v ->
+                    val n = v.name.lowercase(Locale.ROOT)
+                    n.contains("frd") || n.contains("male") || n.contains("iom") || n.contains("thomas") || n.contains("cfb")
+                } ?: frenchVoices.firstOrNull { !it.isNetworkConnectionRequired }
+                    ?: frenchVoices.firstOrNull()
+
+                if (preferredMaleFrenchVoice != null) {
+                    tts?.voice = preferredMaleFrenchVoice
                 }
-                if (fixedFrenchVoice != null) {
-                    tts?.voice = fixedFrenchVoice
-                }
-                tts?.setPitch(1.0f)
-                tts?.setSpeechRate(1.0f)
+                tts?.setPitch(0.92f)
+                tts?.setSpeechRate(1.03f)
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
                         mainHandler.post {
@@ -200,25 +209,26 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         isMoore: Boolean,
         speed: Float
     ): ByteArray? = withContext(Dispatchers.IO) {
-        // Priorité absolue à `gpt-4o-mini-tts` avec instructions de prosodie humaine naturelle et voix unique "coral"
+        // Priorité à `gpt-4o-mini-tts` avec la voix humaine masculine "ash" et instructions d'appel téléphonique naturel
         val humanPayload = buildJsonObject {
             put("model", "gpt-4o-mini-tts")
             put("input", spokenText.take(2500))
-            put("voice", UNIFIED_OPENAI_VOICE)
+            put("voice", UNIFIED_OPENAI_MALE_VOICE)
             put("instructions", HUMAN_VOICE_INSTRUCTIONS)
             put("response_format", "mp3")
-            put("speed", 1.0f)
+            put("speed", 1.05f)
         }.toString()
 
         var audioBytes = requestOpenAiAudioBytes(humanPayload, apiKey)
 
         if (audioBytes == null) {
+            // Repli ultra-rapide (~200 ms) sur `tts-1` avec la voix masculine humaine "onyx" (compatible tts-1)
             val fallbackPayload = buildJsonObject {
                 put("model", "tts-1")
                 put("input", spokenText.take(2500))
-                put("voice", UNIFIED_OPENAI_VOICE)
+                put("voice", FALLBACK_TTS1_MALE_VOICE)
                 put("response_format", "mp3")
-                put("speed", 1.0f)
+                put("speed", 1.05f)
             }.toString()
             audioBytes = requestOpenAiAudioBytes(fallbackPayload, apiKey)
         }
@@ -232,11 +242,11 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         rate: Float
     ): Boolean = withContext(Dispatchers.IO) {
         try {
-            val speed = 1.0f
+            val speed = 1.05f
             val cachedFile = getCachedVoiceFile(spokenText, false)
 
             if (!cachedFile.exists() || cachedFile.length() < 200) {
-                val audioBytes = kotlinx.coroutines.withTimeoutOrNull(7500L) {
+                val audioBytes = kotlinx.coroutines.withTimeoutOrNull(6500L) {
                     synthesizeNeuralBytes(spokenText, apiKey, false, speed)
                 }
                 if (audioBytes == null || audioBytes.size < 200) {
@@ -347,15 +357,15 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                         }
                     }
                     "mooré", "moore", "dioula" -> {
-                        tts?.setSpeechRate((rate * 1.06f).coerceIn(0.85f, 1.6f))
-                        tts?.setPitch(1.08f)
+                        tts?.setSpeechRate((rate * 1.03f).coerceIn(0.85f, 1.5f))
+                        tts?.setPitch(0.92f)
                         Locale.FRENCH
                     }
                     else -> Locale.FRENCH
                 }
                 if (language.lowercase(Locale.ROOT) !in listOf("mooré", "moore", "dioula")) {
-                    tts?.setSpeechRate((rate * 1.05f).coerceIn(0.85f, 1.6f))
-                    tts?.setPitch(1.08f)
+                    tts?.setSpeechRate((rate * 1.03f).coerceIn(0.85f, 1.5f))
+                    tts?.setPitch(0.92f)
                 }
                 tts?.language = targetLocale
             } else {

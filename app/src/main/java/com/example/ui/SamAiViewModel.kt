@@ -2561,39 +2561,61 @@ class SamAiViewModel(
             if (!isMooreVoice) {
                 val searchDecision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
                 if (searchDecision.isSearchNeeded) {
-                    try {
-                        val newsResult = kotlinx.coroutines.withTimeoutOrNull(1600L) {
-                            liveNewsFeedService.fetchLiveNews(searchDecision.cleanSearchQuery.ifBlank { userText })
-                        }
-                        if (newsResult != null && newsResult.hasNews) {
-                            liveContextSummary = newsResult.contextSummary
-                            liveSources = newsResult.sources
+                    val cleanQuery = searchDecision.cleanSearchQuery.ifBlank { userText }
+                    if (isVoiceCall) {
+                        // En appel vocal : priorité absolue à la vitesse (0 ms via le cache mémoire pré-chargé)
+                        val instantCached = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
+                        if (instantCached.isNotBlank()) {
+                            liveContextSummary = instantCached
+                            // Rafraîchit en arrière-plan pour la question suivante sans bloquer la voix
+                            viewModelScope.launch(Dispatchers.IO) {
+                                try {
+                                    liveNewsFeedService.fetchLiveNews(cleanQuery)
+                                } catch (_: Throwable) {}
+                            }
                         } else {
-                            // Repli instantané (0 ms) sur le cache mémoire pour éviter tout ralentissement
-                            val fallbackArticles = _newsArticles.value.ifEmpty {
-                                com.example.data.repository.NewsRepository.getDefaultBurkinaNews()
+                            val fastNews = kotlinx.coroutines.withTimeoutOrNull(650L) {
+                                liveNewsFeedService.fetchLiveNews(cleanQuery)
                             }
-                            if (fallbackArticles.isNotEmpty()) {
-                                liveContextSummary = buildString {
-                                    append("ACTUALITÉS EN DIRECT RÉCENTES :\n")
-                                    fallbackArticles.take(6).forEachIndexed { idx, art ->
-                                        append("${idx + 1}. [${art.source}] ${art.title} - ${art.summary}\n")
-                                    }
-                                }
-                                liveSources = fallbackArticles.take(5).map { art ->
-                                    com.example.data.local.WebSource(
-                                        title = art.title,
-                                        url = art.url.ifBlank { "https://lefaso.net" },
-                                        domain = art.source
-                                    )
-                                }
-                            } else {
-                                liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
+                            if (fastNews != null && fastNews.hasNews) {
+                                liveContextSummary = fastNews.contextSummary
+                                liveSources = fastNews.sources
                             }
                         }
-                    } catch (e: Throwable) {
-                        android.util.Log.w("SamAiViewModel", "Notice actualités en direct: ${e.message}")
-                        liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
+                    } else {
+                        try {
+                            val newsResult = kotlinx.coroutines.withTimeoutOrNull(1600L) {
+                                liveNewsFeedService.fetchLiveNews(cleanQuery)
+                            }
+                            if (newsResult != null && newsResult.hasNews) {
+                                liveContextSummary = newsResult.contextSummary
+                                liveSources = newsResult.sources
+                            } else {
+                                val fallbackArticles = _newsArticles.value.ifEmpty {
+                                    com.example.data.repository.NewsRepository.getDefaultBurkinaNews()
+                                }
+                                if (fallbackArticles.isNotEmpty()) {
+                                    liveContextSummary = buildString {
+                                        append("ACTUALITÉS EN DIRECT RÉCENTES :\n")
+                                        fallbackArticles.take(6).forEachIndexed { idx, art ->
+                                            append("${idx + 1}. [${art.source}] ${art.title} - ${art.summary}\n")
+                                        }
+                                    }
+                                    liveSources = fallbackArticles.take(5).map { art ->
+                                        com.example.data.local.WebSource(
+                                            title = art.title,
+                                            url = art.url.ifBlank { "https://lefaso.net" },
+                                            domain = art.source
+                                        )
+                                    }
+                                } else {
+                                    liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
+                                }
+                            }
+                        } catch (e: Throwable) {
+                            android.util.Log.w("SamAiViewModel", "Notice actualités en direct: ${e.message}")
+                            liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
+                        }
                     }
                 }
             }

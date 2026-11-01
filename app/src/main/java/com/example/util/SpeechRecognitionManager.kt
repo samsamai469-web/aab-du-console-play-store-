@@ -178,9 +178,9 @@ class SpeechRecognitionManager(private val context: Context) {
                         break
                     }
 
-                    // Fin de phrase ultra-réactive (~420-500 ms de silence) pour répondre sans attente
-                    val requiredSilenceMs = if (totalSpeechDuration <= 2000L) 420L else 500L
-                    if ((speechDetected && silenceDuration >= requiredSilenceMs && totalSpeechDuration >= 140L) ||
+                    // Laisse l'utilisateur finir toute sa phrase naturellement sans le couper entre deux mots
+                    val requiredSilenceMs = if (totalSpeechDuration <= 1800L) 520L else 580L
+                    if ((speechDetected && silenceDuration >= requiredSilenceMs && totalSpeechDuration >= 120L) ||
                         (speechDetected && totalSpeechDuration >= 15000L)
                     ) {
                         withContext(Dispatchers.Main) {

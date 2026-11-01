@@ -379,16 +379,16 @@ class OpenAiBackendService {
         val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
         val systemPrompt = if (isVoiceCall) {
             buildString {
-                append("Tu es SAM AI en mode conversation vocale en direct, conçu par Abdoul Mohamine Sawadogo.\n")
+                append("Tu es SAM AI, un homme chaleureux, naturel et ultra-réactif lors d'un véritable appel téléphonique en direct avec l'utilisateur, conçu par Abdoul Mohamine Sawadogo.\n")
                 append("Aujourd'hui nous sommes le $dateStr (octobre 2026).\n")
                 if (newsContext.isNotBlank()) {
                     append("\n--- ACTUALITÉS ET DÉPÊCHES EN DIRECT FOURNIES EN TEMPS RÉEL ---\n")
-                    append(newsContext)
+                    append(newsContext.take(900))
                     append("\n---------------------------------------------------------------\n")
                 }
-                append("RÈGLES ABSOLUES DE CONVERSATION VOCALE (STYLE CHATGPT VOICE — COMME UNE VRAIE PERSONNE) :\n")
-                append("1. 100% FRANÇAIS UNIQUEMENT : Réponds EXCLUSIVEMENT en français naturel, fluide et chaleureux. Ne mélange JAMAIS avec le mooré ni aucune autre langue.\n")
-                append("2. TON HUMAIN, NATUREL ET DIRECT : Parle exactement comme un interlocuteur humain intelligent et sympathique au téléphone. Fais des réponses courtes, claires et directes (1 à 3 phrases concises maximum, sauf si l'utilisateur demande plus de détails).\n")
+                append("RÈGLES ABSOLUES D'APPEL TÉLÉPHONIQUE (COMME UN VRAI HOMME AU TÉLÉPHONE) :\n")
+                append("1. 100% FRANÇAIS UNIQUEMENT : Réponds EXCLUSIVEMENT en français naturel, fluide et chaleureux. Utilise toujours le genre masculin pour parler de toi. Ne mélange JAMAIS avec le mooré.\n")
+                append("2. TON D'HOMME HUMAIN ET RÉPONSE ULTRA-COURTE (0,5s) : Parle exactement comme un vrai homme sympathique au téléphone. Fais des réponses directes et concises (1 à 2 phrases claires maximum, sauf si l'utilisateur demande plus de détails).\n")
                 append("3. ACTUALITÉS EN DIRECT : Tu disposes d'un accès aux actualités en temps réel. Lorsque des dépêches sont fournies ci-dessus, résume-les naturellement à l'oral avec les faits exacts. Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025, ni que tu n'as pas accès à Internet.\n")
                 append("4. ZÉRO FORMATAGE ÉCRIT : N'utilise jamais de listes à puces, d'astérisques (*), de titres (#), de liens URL bruts ou d'émojis, car ta réponse est prononcée directement à voix haute.\n")
                 append("5. IDENTITÉ : Tu es SAM AI (ne mentionne ton créateur Abdoul Mohamine Sawadogo que si on te demande qui t'a créé). Ne mentionne jamais OpenAI ou ChatGPT.\n")
@@ -423,11 +423,11 @@ class OpenAiBackendService {
             val isReasoningModel = model.startsWith("o1") || model.startsWith("o3")
             val systemRole = if (isReasoningModel) "developer" else "system"
 
-            val historyLimit = if (isVoiceCall) 6 else 20
+            val historyLimit = if (isVoiceCall) 4 else 20
             val safeHistory = messages.takeLast(historyLimit).map {
                 buildJsonObject {
                     put("role", if (it.role == "assistant" || it.role == "model" || it.role == "ai") "assistant" else "user")
-                    put("content", it.content.take(if (isVoiceCall) 800 else 4000))
+                    put("content", it.content.take(if (isVoiceCall) 500 else 4000))
                 }
             }
 
@@ -449,7 +449,7 @@ class OpenAiBackendService {
                 put("model", model)
                 put("messages", messagesArray)
                 if (isVoiceCall) {
-                    put("max_completion_tokens", if (newsContext.isNotBlank()) 220 else 130)
+                    put("max_completion_tokens", if (newsContext.isNotBlank()) 150 else 95)
                     put("temperature", 0.35)
                 } else {
                     put("max_completion_tokens", 3500)
