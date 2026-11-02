@@ -179,9 +179,15 @@ class AudioRecorderHelper(private val context: Context) {
                     for (i in 0 until readShorts) {
                         val rawSample = audioData[i].toInt()
                         sumSquares += (rawSample.toDouble() * rawSample.toDouble())
-                        // Pré-amplification vocale 100 % linéaire (x1.35) avec limiteur doux :
-                        // Préserve intégralement la prononciation, les liaisons et les consonnes sourdes sans hachage.
-                        val boosted = ((rawSample * 27) / 20).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                        // Pré-amplification vocale linéaire douce (x1.65) avec soft-knee :
+                        // Garantit une captation cristalline à 35-45 cm (mode appel vocal / dictée)
+                        // sans jamais saturer ni couper les consonnes sourdes (p, t, k, s, f, ch).
+                        val amplified = (rawSample * 33) / 20
+                        val boosted = when {
+                            amplified > 24000 -> 24000 + ((amplified - 24000) / 3).coerceAtMost(8767)
+                            amplified < -24000 -> -24000 + ((amplified + 24000) / 3).coerceAtLeast(-8768)
+                            else -> amplified
+                        }.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
                         frameBytes[i * 2] = (boosted and 0xFF).toByte()
                         frameBytes[i * 2 + 1] = ((boosted shr 8) and 0xFF).toByte()
                     }

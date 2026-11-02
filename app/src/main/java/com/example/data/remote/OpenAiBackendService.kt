@@ -87,13 +87,16 @@ class OpenAiBackendService {
             .replace(Regex("(?i)\\bOpenAI\\b"), "SAM AI")
             .trim()
 
-        val qLower = userQuestion.lowercase(java.util.Locale.ROOT)
-        val userSaidOrRequestedGreeting = qLower.contains("bonjour") ||
-            qLower.contains("salut") ||
-            qLower.contains("bonsoir")
-        if (!userSaidOrRequestedGreeting) {
+        val qLower = userQuestion.lowercase(java.util.Locale.ROOT).trim()
+        val userExplicitlyCommandedGreeting = Regex(
+            "(?i)\\b(dis|dire|répète|répéter|prononce|prononcer|écris|écrire)\\b.{0,25}\\b(bonjour|salut|bonsoir)\\b"
+        ).containsMatchIn(qLower)
+        if (!userExplicitlyCommandedGreeting) {
             cleaned = cleaned.replace(
-                Regex("^(?i)(bonjour|salut|bonsoir)\\s*[!,.?:;\\-]*\\s+"),
+                Regex("^(?i)(bonjour|salut|bonsoir)(\\s+à\\s+vous|\\s+tout\\s+le\\s+monde)?\\s*[!,.?:;\\-—]*\\s*"),
+                ""
+            ).replace(
+                Regex("^(?i)(comment\\s+puis-je\\s+vous\\s+aider(\\s+aujourd'hui)?\\s*[?.,!]*\\s*)"),
                 ""
             ).replaceFirstChar { if (it.isLowerCase()) it.titlecase(java.util.Locale.FRENCH) else it.toString() }
         }
