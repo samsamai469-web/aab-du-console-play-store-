@@ -4,6 +4,7 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.audiofx.LoudnessEnhancer
+import android.media.audiofx.Visualizer
 import android.os.Handler
 import android.os.Looper
 import android.speech.tts.TextToSpeech
@@ -14,6 +15,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
@@ -26,15 +30,20 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
 import java.util.concurrent.TimeUnit
+import kotlin.math.sqrt
 
 class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     private val appContext: Context = context.applicationContext
     private var tts: TextToSpeech? = null
     private var mediaPlayer: MediaPlayer? = null
     private var loudnessEnhancer: LoudnessEnhancer? = null
+    private var audioVisualizer: Visualizer? = null
     private var isReady = false
     private var isNeuralPlaying = false
     private var currentSpeechRate: Float = 1.0f
+
+    private val _ttsSoundLevel = MutableStateFlow(0f)
+    val ttsSoundLevel: StateFlow<Float> = _ttsSoundLevel.asStateFlow()
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -145,8 +154,27 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                         }
                     }
 
+                    override fun onAudioAvailable(utteranceId: String?, audio: ByteArray?) {
+                        if (audio != null && audio.size >= 4) {
+                            var sumSq = 0.0
+                            val samples = audio.size / 2
+                            var idx = 0
+                            while (idx + 1 < audio.size) {
+                                val low = audio[idx].toInt() and 0xFF
+                                val high = audio[idx + 1].toInt()
+                                val sample = (high shl 8) or low
+                                sumSq += (sample * sample).toDouble()
+                                idx += 2
+                            }
+                            val rms = if (samples > 0) sqrt(sumSq / samples) else 0.0
+                            val linear = ((rms - 45.0).coerceAtLeast(0.0) / 1650.0).coerceIn(0.0, 1.0)
+                            _ttsSoundLevel.value = sqrt(linear).toFloat().coerceIn(0f, 1f)
+                        }
+                    }
+
                     override fun onDone(utteranceId: String?) {
                         isGlobalTtsSpeaking = false
+                        _ttsSoundLevel.value = 0f
                         lastGlobalTtsEndTimeMs = System.currentTimeMillis()
                         val callback = activeOnDoneCallback
                         activeOnDoneCallback = null
@@ -157,6 +185,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
                     override fun onError(utteranceId: String?) {
                         isGlobalTtsSpeaking = false
+                        _ttsSoundLevel.value = 0f
                         lastGlobalTtsEndTimeMs = System.currentTimeMillis()
                         val callback = activeOnErrorCallback
                         activeOnErrorCallback = null
@@ -321,12 +350,53 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                                     enabled = true
                                 }
                             } catch (_: Exception) {}
+                            try {
+                                audioVisualizer = Visualizer(mp.audioSessionId).apply {
+                                    captureSize = Visualizer.getCaptureSizeRange()[0]
+                                    setDataCaptureListener(
+                                        object : Visualizer.OnDataCaptureListener {
+                                            override fun onWaveFormDataCapture(
+                                                visualizer: Visualizer?,
+                                                waveform: ByteArray?,
+                                                samplingRate: Int
+                                            ) {
+                                                if (waveform != null && waveform.isNotEmpty() && isNeuralPlaying) {
+                                                    var sumSq = 0.0
+                                                    for (b in waveform) {
+                                                        val centered = (b.toInt() and 0xFF) - 128
+                                                        sumSq += (centered * centered).toDouble()
+                                                    }
+                                                    val rms = sqrt(sumSq / waveform.size)
+                                                    val level = if (rms >= 2.8) {
+                                                        val linear = ((rms - 2.8) / 28.0).coerceIn(0.0, 1.0)
+                                                        sqrt(linear).toFloat().coerceIn(0f, 1f)
+                                                    } else {
+                                                        0f
+                                                    }
+                                                    _ttsSoundLevel.value = level
+                                                }
+                                            }
+
+                                            override fun onFftDataCapture(
+                                                visualizer: Visualizer?,
+                                                fft: ByteArray?,
+                                                samplingRate: Int
+                                            ) {}
+                                        },
+                                        Visualizer.getMaxCaptureRate(),
+                                        true,
+                                        false
+                                    )
+                                    enabled = true
+                                }
+                            } catch (_: Exception) {}
                             activeOnStartCallback?.invoke()
                             mp.start()
                         }
                         setOnCompletionListener {
                             isNeuralPlaying = false
                             isGlobalTtsSpeaking = false
+                            _ttsSoundLevel.value = 0f
                             lastGlobalTtsEndTimeMs = System.currentTimeMillis()
                             releaseMediaPlayer()
                             val cb = activeOnDoneCallback
@@ -336,6 +406,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                         setOnErrorListener { _, _, _ ->
                             isNeuralPlaying = false
                             isGlobalTtsSpeaking = false
+                            _ttsSoundLevel.value = 0f
                             lastGlobalTtsEndTimeMs = System.currentTimeMillis()
                             releaseMediaPlayer()
                             cachedFile.delete()
@@ -782,6 +853,11 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     private fun releaseMediaPlayer() {
         try {
+            audioVisualizer?.enabled = false
+            audioVisualizer?.release()
+        } catch (_: Exception) {}
+        audioVisualizer = null
+        try {
             loudnessEnhancer?.enabled = false
             loudnessEnhancer?.release()
         } catch (_: Exception) {}
@@ -801,6 +877,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 lastGlobalTtsEndTimeMs = System.currentTimeMillis()
             }
             isGlobalTtsSpeaking = false
+            _ttsSoundLevel.value = 0f
             speechJob?.cancel()
             speechJob = null
             isNeuralPlaying = false

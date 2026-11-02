@@ -170,7 +170,12 @@ class OpenAiWhisperService(private val context: Context) {
             "www.",
             "transcris exactement",
             "transcris fidèlement",
-            "transcription vocale en langue"
+            "transcription vocale en langue",
+            "burkina faso, ouagadougou, bobo-dioulasso",
+            "ouagadougou, bobo-dioulasso, abdoul mohamine",
+            "bobo-dioulasso, abdoul mohamine sawadogo",
+            "sam ai, burkina faso",
+            "bonjour, bonsoir, comment ça va, sam ai"
         )
     }
 
@@ -277,18 +282,11 @@ class OpenAiWhisperService(private val context: Context) {
             else -> "audio/m4a".toMediaType()
         }
 
-        val contextPrompt = when {
-            model == GPT4O_FLAGSHIP_TRANSCRIBE_MODEL || model == GPT4O_MINI_TRANSCRIBE_MODEL -> FRENCH_GPT4O_PROMPT
-            whisperLangCode == "en" -> "Accurate speech-to-text transcription."
-            else -> "Bonjour, bonsoir, comment ça va, SAM AI."
-        }
-
         val multipartBuilder = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
             .addFormDataPart("model", model)
             .addFormDataPart("response_format", "json")
             .addFormDataPart("temperature", "0")
-            .addFormDataPart("prompt", contextPrompt)
             .addFormDataPart(
                 "file",
                 audioFile.name,

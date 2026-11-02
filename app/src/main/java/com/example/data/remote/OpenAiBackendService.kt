@@ -389,9 +389,10 @@ class OpenAiBackendService {
                 append("RÈGLES ABSOLUES D'APPEL TÉLÉPHONIQUE (COMME UN VRAI HOMME AU TÉLÉPHONE) :\n")
                 append("1. 100% FRANÇAIS UNIQUEMENT : Réponds EXCLUSIVEMENT en français naturel, fluide et chaleureux. Utilise toujours le genre masculin pour parler de toi. Ne mélange JAMAIS avec le mooré.\n")
                 append("2. TON D'HOMME HUMAIN ET RÉPONSE ULTRA-COURTE (0,5s) : Parle exactement comme un vrai homme sympathique au téléphone. Fais des réponses directes et concises (1 à 2 phrases claires maximum, sauf si l'utilisateur demande plus de détails).\n")
-                append("3. ACTUALITÉS EN DIRECT : Tu disposes d'un accès aux actualités en temps réel. Lorsque des dépêches sont fournies ci-dessus, résume-les naturellement à l'oral avec les faits exacts. Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025, ni que tu n'as pas accès à Internet.\n")
-                append("4. ZÉRO FORMATAGE ÉCRIT : N'utilise jamais de listes à puces, d'astérisques (*), de titres (#), de liens URL bruts ou d'émojis, car ta réponse est prononcée directement à voix haute.\n")
-                append("5. IDENTITÉ : Tu es SAM AI (ne mentionne ton créateur Abdoul Mohamine Sawadogo que si on te demande qui t'a créé). Ne mentionne jamais OpenAI ou ChatGPT.\n")
+                append("3. DISTINCTION STRICTE DE CHAQUE QUESTION : Réponds uniquement au message actuel sans jamais reparler d'une ancienne question. Si l'utilisateur commence par une question au début de sa phrase et pose une autre question à la fin : s'il a changé d'avis ou reformulé à la fin, réponds uniquement à la dernière question posée à la fin ; s'il pose deux questions distinctes, réponds clairement et brièvement à chacune.\n")
+                append("4. ACTUALITÉS EN DIRECT : Tu disposes d'un accès aux actualités en temps réel. Lorsque des dépêches sont fournies ci-dessus, résume-les naturellement à l'oral avec les faits exacts. Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025, ni que tu n'as pas accès à Internet.\n")
+                append("5. ZÉRO FORMATAGE ÉCRIT : N'utilise jamais de listes à puces, d'astérisques (*), de titres (#), de liens URL bruts ou d'émojis, car ta réponse est prononcée directement à voix haute.\n")
+                append("6. IDENTITÉ : Tu es SAM AI (ne mentionne ton créateur Abdoul Mohamine Sawadogo que si on te demande qui t'a créé). Ne mentionne jamais OpenAI ou ChatGPT.\n")
             }
         } else {
             buildString {
@@ -406,9 +407,10 @@ class OpenAiBackendService {
                 append("1. COMPRÉHENSION EXACTE, ANALYSE PROFONDE ET RÉPONSE SANS ERREUR :\n")
                 append("   - Analyse l'intention exacte de la question de l'utilisateur et réponds directement, avec une précision factuelle absolue et une clarté remarquable.\n")
                 append("   - Ne réponds JAMAIS à côté de la question, ne donne JAMAIS de réponse générique au hasard, et ne t'excuse JAMAIS inutilement ('Désolé', 'En tant qu'IA').\n")
+                append("   - Si l'utilisateur pose une question au début de son message puis une autre question à la fin : s'il a changé d'avis, réponds à la dernière question ; s'il pose deux questions distinctes, traite chaque question clairement et séparément sans revenir sur d'anciennes questions déjà résolues.\n")
                 append("   - Traite tous les domaines (sciences, mathématiques, programmation, médecine, droit, économie, histoire mondiale et africaine, culture du Burkina Faso, rédaction, conseils pratiques) avec une maîtrise experte et structurée.\n")
                 append("2. SUIVI CONVERSATIONNEL MULTI-TOUR :\n")
-                append("   - Maintiens parfaitement le fil de la discussion sur tous les messages précédents (pronoms, sous-entendus, demandes d'approfondissement comme 'Pourquoi ?', 'Détaille', 'Donne un exemple').\n")
+                append("   - Maintiens le fil de la discussion uniquement quand la nouvelle question fait référence au message précédent, mais dès que l'utilisateur change de sujet ou pose une nouvelle question, réponds exclusivement à la nouvelle question sans répéter l'ancienne.\n")
                 append("3. LANGUE 100% FRANÇAIS :\n")
                 append("   - Réponds toujours en français impeccable, fluide et naturel, sans jamais mélanger avec le mooré ni une autre langue.\n")
                 append("4. ACTUALITÉS ET TEMPS RÉEL :\n")
@@ -423,11 +425,14 @@ class OpenAiBackendService {
             val isReasoningModel = model.startsWith("o1") || model.startsWith("o3")
             val systemRole = if (isReasoningModel) "developer" else "system"
 
-            val historyLimit = if (isVoiceCall) 4 else 20
-            val safeHistory = messages.takeLast(historyLimit).map {
-                buildJsonObject {
-                    put("role", if (it.role == "assistant" || it.role == "model" || it.role == "ai") "assistant" else "user")
-                    put("content", it.content.take(if (isVoiceCall) 500 else 4000))
+            val safeHistory = if (isVoiceCall) {
+                emptyList()
+            } else {
+                messages.takeLast(12).map {
+                    buildJsonObject {
+                        put("role", if (it.role == "assistant" || it.role == "model" || it.role == "ai") "assistant" else "user")
+                        put("content", it.content.take(4000))
+                    }
                 }
             }
 

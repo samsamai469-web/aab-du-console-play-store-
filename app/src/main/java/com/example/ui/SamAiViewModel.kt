@@ -2478,8 +2478,14 @@ class SamAiViewModel(
                 .replace("û", "u")
                 .replace("ç", "c")
 
-            // Détection STRICTE d'une question visant spécifiquement la création de SAM AI
-            val isExplicitCreatorQuestion = (
+            // Détecte si l'utilisateur a posé plusieurs questions ou changé de question à la fin de sa phrase
+            val hasMultipleOrTrailingQuestion = qNorm.length > 65 ||
+                qNorm.count { it == '?' } > 1 ||
+                Regex("\\b(et|mais|puis|sinon|plutot|finalement|attends|non|ou)\\s+(qui|que|quoi|quel|quelle|quels|quelles|comment|pourquoi|ou|combien|quand|explique|dis|donne|parle|est-ce)\\b")
+                    .containsMatchIn(qNorm)
+
+            // Détection STRICTE d'une question unique visant spécifiquement la création de SAM AI
+            val isExplicitCreatorQuestion = !hasMultipleOrTrailingQuestion && (
                 qNorm.contains("qui t'a cree") || qNorm.contains("qui vous a cree") ||
                 qNorm.contains("qui t'a fait") || qNorm.contains("qui vous a fait") ||
                 qNorm.contains("qui t'a concu") || qNorm.contains("qui vous a concu") ||
@@ -2493,14 +2499,14 @@ class SamAiViewModel(
                 qNorm.contains("qui a invente sam ai") || qNorm.contains("qui a concu sam ai")
             )
 
-            val isExplicitWhyCreatedQuestion = (
+            val isExplicitWhyCreatedQuestion = !hasMultipleOrTrailingQuestion && (
                 qNorm.contains("pourquoi sam ai") || qNorm.contains("pourquoi as-tu ete cree") ||
                 qNorm.contains("pourquoi tu as ete cree") || qNorm.contains("pourquoi avez-vous ete cree") ||
                 qNorm.contains("quel est le but de sam ai") || qNorm.contains("quelle est la mission de sam ai") ||
                 qNorm.contains("quel est l'objectif de sam ai") || qNorm.contains("pourquoi existe sam ai")
             )
 
-            val isExplicitModelOrOpenAiQuestion = (
+            val isExplicitModelOrOpenAiQuestion = !hasMultipleOrTrailingQuestion && (
                 qNorm.contains("openai") || qNorm.contains("open ai") ||
                 qNorm.contains("chatgpt") || qNorm.contains("chat gpt") ||
                 qNorm.contains("gpt-4") || qNorm.contains("gpt4") ||
@@ -2546,13 +2552,18 @@ class SamAiViewModel(
                 return@launch
             }
 
-            // Construction de l'historique complet de la session (jusqu'aux 20 derniers messages)
+            // En appel vocal (isVoiceCall), chaque question est traitée indépendamment sans historique précédent
+            // pour que SAM AI ne reparle jamais d'une ancienne question.
             val nonSystemMessages = currentList.filter { !it.isError && it.id != "welcome_msg" && it.text.isNotBlank() }
-            val currentHistory = nonSystemMessages.takeLast(20).map { msg ->
-                com.example.data.repository.ChatMessage(
-                    role = if (msg.sender == "user") "user" else "model",
-                    content = msg.text.trim()
-                )
+            val currentHistory = if (isVoiceCall) {
+                emptyList()
+            } else {
+                nonSystemMessages.takeLast(20).map { msg ->
+                    com.example.data.repository.ChatMessage(
+                        role = if (msg.sender == "user") "user" else "model",
+                        content = msg.text.trim()
+                    )
+                }
             }
 
             var liveContextSummary = ""
@@ -2678,6 +2689,12 @@ class SamAiViewModel(
         val cleanUser = userQuestion.trim()
         val cleanAi = aiResponse.trim()
         if (cleanUser.isBlank() || cleanAi.isBlank()) return
+        val lowerUser = cleanUser.lowercase(java.util.Locale.ROOT)
+        if (lowerUser.contains("burkina faso, ouagadougou, bobo-dioulasso") ||
+            lowerUser.contains("bobo-dioulasso, abdoul mohamine")
+        ) {
+            return
+        }
 
         val now = System.currentTimeMillis()
         val userMsg = SamAiChatMessage(
