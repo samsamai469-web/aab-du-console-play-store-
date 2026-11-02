@@ -57,27 +57,29 @@ class OpenAiRealtimeCallManager(
     companion object {
         private const val TAG = "OpenAiRealtimeCall"
         private const val SAMPLE_RATE = 24000
-        // Modèles officiels OpenAI Realtime GA actifs (~200 ms de réponse avec la voix humaine masculine "ash")
-        private const val REALTIME_MODEL_PRIMARY = "gpt-realtime-mini"
-        private const val REALTIME_MODEL_FALLBACK = "gpt-realtime"
+        // Modèles officiels OpenAI Realtime GA actifs (priorité à gpt-realtime haute précision + voix humaine masculine "ash")
+        private const val REALTIME_MODEL_PRIMARY = "gpt-realtime"
+        private const val REALTIME_MODEL_FALLBACK = "gpt-realtime-mini"
         private const val REALTIME_VOICE = "ash"
 
         private const val SAM_AI_REALTIME_INSTRUCTIONS = """
-Tu es SAM AI, un homme chaleureux, naturel, cultivé et ultra-réactif au téléphone avec l'utilisateur.
+Tu es SAM AI, un homme chaleureux, naturel, cultivé et ultra-précis. L'appel téléphonique avec l'utilisateur a DÉJÀ commencé et les salutations ont DÉJÀ été faites.
 Nous sommes en octobre 2026 et tu disposes des actualités en direct ci-dessous.
-RÈGLES ABSOLUES :
-1. VOIX D'HOMME HUMAINE NATURELLE ET CONSTANTE :
-   - Tu es un homme : utilise toujours les accords masculins ("je suis ravi", "je suis prêt", "je suis attentif").
-   - Parle comme un vrai homme au téléphone avec un ton posé, vivant, fluide et naturel, en gardant strictement la même voix masculine du début à la fin.
-2. LANGUE 100% FRANÇAIS :
-   - Comprends et réponds EXCLUSIVEMENT en français (100% français). N'utilise jamais de mooré ni aucune autre langue.
-3. RÉPONSE DIRECTE, COURTE ET SANS ERREUR :
-   - Réponds immédiatement avec exactitude, en 1 à 2 phrases claires et naturelles, sauf si l'utilisateur demande plus de détails.
-4. DISTINCTION STRICTE DE CHAQUE QUESTION (NE JAMAIS REPARLER DE L'ANCIENNE QUESTION) :
-   - Chaque prise de parole est une nouvelle demande indépendante : ne reviens JAMAIS sur une ancienne question déjà répondue et ne répète jamais un sujet précédent.
-   - Si l'utilisateur commence sa prise de parole par une question au début et pose une autre question à la fin :
-     * S'il a changé d'avis, hésité ou reformulé à la fin, réponds UNIQUEMENT à la dernière question posée à la fin (ignore l'ancienne question du début).
-     * S'il pose volontairement deux questions distinctes dans la même phrase (une au début et une à la fin), distingue clairement chaque question et réponds brièvement à chacune, en veillant à bien répondre à la question de la fin.
+RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
+1. INTERDICTION TOTALE DE DIRE "BONJOUR", "SALUT" OU "BONSOIR" :
+   - Les salutations d'ouverture sont déjà terminées : ne commence JAMAIS tes réponses par « Bonjour », « Salut », « Bonsoir » ou « Ravie/Ravi de vous entendre ».
+   - Réponds directement dès le premier mot au contenu exact de la demande de l'utilisateur, sans aucune formule de salutation.
+   - Ne dis le mot « Bonjour » que si l'utilisateur te donne l'ordre explicite « Dis bonjour » ou s'il a prononcé uniquement le seul mot « Bonjour » sans aucune autre question.
+2. OBÉISSANCE EXACTE ET LITTÉRALE À CE QUE L'UTILISATEUR DEMANDE DE DIRE OU DE FAIRE (ZÉRO ERREUR) :
+   - Écoute très attentivement la prononciation exacte et chaque mot prononcé par l'utilisateur.
+   - Si l'utilisateur te demande de DIRE, RÉPÉTER, PRONONCER ou LIRE quelque chose de précis (ex : « Dis ... », « Répète ... », « Prononce exactement ... »), prononce EXACTEMENT et UNIQUEMENT les mots demandés par l'utilisateur, mot pour mot, sans ajouter « Bonjour », sans ajouter « D'accord » ou « Bien sûr », et sans aucune erreur.
+   - Si l'utilisateur te demande de FAIRE quelque chose (répondre à une question, calculer, traduire, expliquer, citer), fais exactement ce qu'il a demandé avec une exactitude absolue (0% d'erreur) et sans jamais dévier du sujet.
+3. VOIX D'HOMME HUMAINE NATURELLE ET 100% FRANÇAIS :
+   - Tu es un homme : utilise toujours les accords masculins ("je suis attentif", "je suis prêt").
+   - Parle et réponds en français clair et naturel (sauf si l'utilisateur te demande explicitement de dire ou traduire une phrase dans une autre langue).
+4. DISTINCTION STRICTE DE CHAQUE QUESTION :
+   - Ne reviens JAMAIS sur une ancienne question déjà répondue.
+   - Si l'utilisateur pose une question au début puis une autre à la fin, ou se corrige en cours de phrase, réponds avec précision à sa demande finale.
 5. ACTUALITÉS & IDENTITÉ :
    - Utilise directement les actualités ci-dessous sans jamais dire que tes connaissances s'arrêtent en 2023, 2024 ou 2025.
    - Tu t'appelles uniquement SAM AI. Si l'utilisateur demande qui t'a créé, réponds que tu as été créé par Abdoul Mohamine Sawadogo, un jeune développeur burkinabè.
@@ -296,8 +298,8 @@ RÈGLES ABSOLUES :
             }
         }
 
-        // Schéma officiel OpenAI Realtime GA (/v1/realtime) SANS aucun prompt de transcription
-        // pour éliminer 100% des hallucinations à l'ouverture de l'appel vocal.
+        // Schéma officiel OpenAI Realtime GA (/v1/realtime) avec gpt-4o-transcribe haute fidélité
+        // et réduction de bruit near_field pour capter chaque syllabe et consonne prononcée sans déformation.
         val sessionPayload = buildJsonObject {
             put("type", "session.update")
             putJsonObject("session") {
@@ -313,20 +315,19 @@ RÈGLES ABSOLUES :
                             put("rate", SAMPLE_RATE)
                         }
                         putJsonObject("transcription") {
-                            put("model", "gpt-4o-mini-transcribe")
+                            put("model", "gpt-4o-transcribe")
                             put("language", "fr")
                         }
                         putJsonObject("noise_reduction") {
-                            // "far_field" est optimisé pour les appels mains-libres sur téléphone (30 à 50 cm du micro)
-                            put("type", "far_field")
+                            // "near_field" préserve toutes les consonnes douces (s, f, p, t, k, c) et la prononciation exacte de l'utilisateur
+                            put("type", "near_field")
                         }
                         putJsonObject("turn_detection") {
                             put("type", "server_vad")
-                            put("threshold", 0.55)
-                            put("prefix_padding_ms", 220)
-                            // 680 ms laisse l'utilisateur respirer ou poser une question au début puis une autre à la fin
-                            // sans être coupé au milieu de sa phrase
-                            put("silence_duration_ms", 680)
+                            put("threshold", 0.50)
+                            put("prefix_padding_ms", 300)
+                            // 820 ms laisse l'utilisateur articuler chaque mot ou donner une consigne complète sans jamais être coupé
+                            put("silence_duration_ms", 820)
                             put("create_response", true)
                             put("interrupt_response", false)
                         }
@@ -337,7 +338,7 @@ RÈGLES ABSOLUES :
                             put("rate", SAMPLE_RATE)
                         }
                         put("voice", REALTIME_VOICE)
-                        put("speed", 1.05)
+                        put("speed", 1.03)
                     }
                 }
             }
@@ -779,11 +780,11 @@ RÈGLES ABSOLUES :
                 AudioFormat.ENCODING_PCM_16BIT
             ).coerceAtLeast(3840)
 
-            // Priorité à VOICE_COMMUNICATION pour activer l'annulation d'écho matérielle DSP (AEC)
-            // liée au haut-parleur sur Android et empêcher le micro de capter la voix de SAM AI
+            // Priorité à VOICE_RECOGNITION pour une courbe de réponse vocale linéaire haute fidélité
+            // qui préserve 100 % des consonnes et de la prononciation exacte de l'utilisateur
             val recorder = listOf(
-                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                 MediaRecorder.AudioSource.MIC
             ).firstNotNullOfOrNull { src ->
                 try {
@@ -811,20 +812,16 @@ RÈGLES ABSOLUES :
 
             audioRecord = recorder
 
-            // Activation de l'annulation d'écho matérielle Android (AEC + NoiseSuppressor)
+            // Activation de l'annulation d'écho matérielle Android (AEC uniquement ; pas de NoiseSuppressor
+            // matériel doublonné pour ne jamais étouffer les consonnes douces de l'utilisateur)
             try {
                 if (AcousticEchoCanceler.isAvailable()) {
                     echoCanceler = AcousticEchoCanceler.create(recorder.audioSessionId)?.apply {
                         enabled = true
                     }
                 }
-                if (NoiseSuppressor.isAvailable()) {
-                    noiseSuppressor = NoiseSuppressor.create(recorder.audioSessionId)?.apply {
-                        enabled = true
-                    }
-                }
             } catch (e: Exception) {
-                Log.w(TAG, "Effets audio matériels non disponibles: ${e.message}")
+                Log.w(TAG, "Effet AEC matériel non disponible: ${e.message}")
             }
 
             try {
@@ -837,11 +834,11 @@ RÈGLES ABSOLUES :
 
             // Trames temps réel de 20 ms à 24000 Hz (480 échantillons = 960 octets PCM16)
             val frameBuffer = ByteArray(960)
-            val onsetPreRoll = java.util.ArrayDeque<String>(6)
+            val onsetPreRoll = java.util.ArrayDeque<String>(12)
             var initialFramesSkipped = 0
             var wasAiSpeakingOrGuarded = false
             var postAiFlushFramesRemaining = 0
-            var ambientFloor = 75.0
+            var ambientFloor = 65.0
             var voiceHoldFrames = 0
             var consecutiveVoiceFrames = 0
             var silenceTailFramesRemaining = 0
@@ -849,9 +846,9 @@ RÈGLES ABSOLUES :
             while (isActive && isActiveCall.get()) {
                 val readBytes = recorder.read(frameBuffer, 0, frameBuffer.size)
                 if (readBytes > 0) {
-                    // Ignore les 20 premières trames (400 ms) à l'ouverture de l'appel pour éliminer
+                    // Ignore les 16 premières trames (320 ms) à l'ouverture de l'appel pour éliminer
                     // totalement le bruit du doigt sur l'écran et le clic d'activation audio Android
-                    if (initialFramesSkipped < 20) {
+                    if (initialFramesSkipped < 16) {
                         initialFramesSkipped++
                         _soundLevel.value = 0f
                         continue
@@ -867,8 +864,8 @@ RÈGLES ABSOLUES :
                     }
 
                     val now = System.currentTimeMillis()
-                    // Ignore les 250 premières millisecondes après session.updated pour stabiliser le flux
-                    if (sessionReadyAtMs > 0L && now - sessionReadyAtMs < 250L) {
+                    // Ignore les 200 premières millisecondes après session.updated pour stabiliser le flux
+                    if (sessionReadyAtMs > 0L && now - sessionReadyAtMs < 200L) {
                         _soundLevel.value = 0f
                         continue
                     }
@@ -891,10 +888,10 @@ RÈGLES ABSOLUES :
                         continue
                     } else if (wasAiSpeakingOrGuarded) {
                         // Dès que SAM AI a fini de parler et que l'écho du haut-parleur s'est éteint,
-                        // on purge le tampon serveur et on ignore 15 trames (300 ms) du tampon matériel AudioRecord
+                        // on purge le tampon serveur et on ignore 14 trames (280 ms) du tampon matériel AudioRecord
                         // pour éliminer 100 % des résidus acoustiques du haut-parleur.
                         wasAiSpeakingOrGuarded = false
-                        postAiFlushFramesRemaining = 15
+                        postAiFlushFramesRemaining = 14
                         _soundLevel.value = 0f
                         onsetPreRoll.clear()
                         consecutiveVoiceFrames = 0
@@ -929,36 +926,31 @@ RÈGLES ABSOLUES :
                     val rawRms = if (sampleCount > 0) sqrt(rawSumSquares / sampleCount) else 0.0
 
                     // Adaptation douce du bruit ambiant uniquement hors parole pour isoler la voix humaine
-                    if (!serverSpeechActive.get() && voiceHoldFrames == 0 && rawRms in 1.0..155.0) {
-                        ambientFloor = ((ambientFloor * 0.90) + (rawRms * 0.10)).coerceIn(45.0, 155.0)
+                    if (!serverSpeechActive.get() && voiceHoldFrames == 0 && rawRms in 1.0..135.0) {
+                        ambientFloor = ((ambientFloor * 0.92) + (rawRms * 0.08)).coerceIn(40.0, 135.0)
                     }
-                    val vocalGate = maxOf(135.0, ambientFloor * 1.55).coerceAtMost(245.0)
+                    val vocalGate = maxOf(95.0, ambientFloor * 1.38).coerceAtMost(190.0)
                     val isVoiceFrame = rawRms >= vocalGate
 
-                    // 2. Courbe de gain à fort contraste vocal :
-                    // - Voix détectée (>= vocalGate) : amplifiée x2.0 (voix douce) ou x1.4 (voix normale)
-                    // - Silence / bruit de fond (< vocalGate) : divisé par 6
+                    // 2. Pré-amplification vocale 100 % LINÉAIRE et CONTINUE (x1.35 avec limiteur doux) :
+                    // Ne hache JAMAIS les consonnes douces (s, f, p, t, k, ch, d) ni les fins de mots
+                    // pour que le modèle comprenne parfaitement la prononciation exacte de la personne.
                     val processedBuffer = ByteArray(readBytes)
                     var j = 0
                     while (j + 1 < readBytes) {
                         val low = frameBuffer[j].toInt() and 0xFF
                         val high = frameBuffer[j + 1].toInt()
                         val rawSample = (high shl 8) or low
-                        val outSample = when {
-                            !isVoiceFrame && voiceHoldFrames <= 0 -> rawSample / 6
-                            rawRms < 1000.0 -> (rawSample * 2).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                            rawRms < 2200.0 -> (rawSample * 7 / 5).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                            else -> rawSample
-                        }
+                        val outSample = ((rawSample * 27) / 20).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
                         processedBuffer[j] = (outSample and 0xFF).toByte()
                         processedBuffer[j + 1] = ((outSample shr 8) and 0xFF).toByte()
                         j += 2
                     }
 
                     // Niveau audio temps réel de la voix utilisateur (réaction instantanée dès le seuil vocal)
-                    val visualGate = maxOf(85.0, ambientFloor * 1.22)
+                    val visualGate = maxOf(75.0, ambientFloor * 1.20)
                     val normalizedLevel = if (rawRms >= visualGate || isVoiceFrame || voiceHoldFrames > 0) {
-                        val linear = ((rawRms - ambientFloor * 0.95).coerceAtLeast(0.0) / 1450.0).coerceIn(0.0, 1.0)
+                        val linear = ((rawRms - ambientFloor * 0.90).coerceAtLeast(0.0) / 1450.0).coerceIn(0.0, 1.0)
                         sqrt(linear).toFloat().coerceIn(0f, 1f)
                     } else {
                         0f
@@ -973,21 +965,17 @@ RÈGLES ABSOLUES :
                             if (isVoiceFrame) {
                                 consecutiveVoiceFrames++
                                 currentTurnVoiceFrames++
-                                if (consecutiveVoiceFrames >= 2 || serverSpeechActive.get() || voiceHoldFrames > 0) {
-                                    // Dès que la voix humaine est confirmée (40 ms), envoie le pré-roll de 120 ms + la trame vocale
-                                    while (onsetPreRoll.isNotEmpty()) {
-                                        val pre = onsetPreRoll.pollFirst() ?: break
-                                        ws.send("""{"type":"input_audio_buffer.append","audio":"$pre"}""")
-                                    }
-                                    // Maintient le pont vocal pendant 14 trames (280 ms) entre les mots d'une même phrase
-                                    voiceHoldFrames = 14
-                                    // Prévoit 40 trames (800 ms) de queue de silence après la fin de la parole pour fermer server_vad
-                                    silenceTailFramesRemaining = 40
-                                    ws.send("""{"type":"input_audio_buffer.append","audio":"$base64Audio"}""")
-                                } else {
-                                    if (onsetPreRoll.size >= 6) onsetPreRoll.pollFirst()
-                                    onsetPreRoll.addLast(base64Audio)
+                                // Dès la 1re trame vocale confirmée, envoie le pré-roll complet de 240 ms (12 trames)
+                                // afin qu'aucune première syllabe ou consonne d'attaque ne soit jamais perdue
+                                while (onsetPreRoll.isNotEmpty()) {
+                                    val pre = onsetPreRoll.pollFirst() ?: break
+                                    ws.send("""{"type":"input_audio_buffer.append","audio":"$pre"}""")
                                 }
+                                // Maintient le pont vocal linéaire pendant 25 trames (500 ms) entre les mots et syllabes
+                                voiceHoldFrames = 25
+                                // Prévoit 45 trames (900 ms) de queue de silence après la fin de la parole pour fermer server_vad
+                                silenceTailFramesRemaining = 45
+                                ws.send("""{"type":"input_audio_buffer.append","audio":"$base64Audio"}""")
                             } else {
                                 consecutiveVoiceFrames = 0
                                 if (voiceHoldFrames > 0) {
@@ -999,9 +987,8 @@ RÈGLES ABSOLUES :
                                         ws.send("""{"type":"input_audio_buffer.append","audio":"$silenceFrame20msBase64"}""")
                                     }
                                 } else {
-                                    // Silence total (l'utilisateur n'a pas encore parlé) :
-                                    // on conserve uniquement 6 trames (120 ms) en mémoire locale sans envoyer de bruit au serveur !
-                                    if (onsetPreRoll.size >= 6) onsetPreRoll.pollFirst()
+                                    // Silence total avant prise de parole : conserve 12 trames (240 ms) de pré-roll linéaire
+                                    if (onsetPreRoll.size >= 12) onsetPreRoll.pollFirst()
                                     onsetPreRoll.addLast(base64Audio)
                                 }
                             }
@@ -1199,11 +1186,23 @@ RÈGLES ABSOLUES :
     }
 
     private fun sanitizeSamAiPersona(raw: String): String {
-        return raw
+        var cleaned = raw
             .replace(Regex("(?i)\\bChatGPT\\b"), "SAM AI")
             .replace(Regex("(?i)\\bGPT-4(\\.1|\\.5|o)?(-mini|-turbo|-preview|-realtime)?\\b"), "SAM AI")
             .replace(Regex("(?i)\\bOpenAI\\b"), "SAM AI")
             .trim()
+
+        val userSpokenLower = (_userTranscript.value.ifBlank { lastCompletedUserTranscript }).lowercase(java.util.Locale.ROOT)
+        val userSaidGreetingOrAskedToSayBonjour = userSpokenLower.contains("bonjour") ||
+            userSpokenLower.contains("salut") ||
+            userSpokenLower.contains("bonsoir")
+        if (!userSaidGreetingOrAskedToSayBonjour) {
+            cleaned = cleaned.replace(
+                Regex("^(?i)(bonjour|salut|bonsoir)\\s*[!,.?:;\\-]*\\s+"),
+                ""
+            ).replaceFirstChar { if (it.isLowerCase()) it.titlecase(java.util.Locale.FRENCH) else it.toString() }
+        }
+        return cleaned.trim()
     }
 
     private fun notifyFallback(reason: String) {

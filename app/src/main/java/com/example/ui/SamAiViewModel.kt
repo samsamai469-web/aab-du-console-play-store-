@@ -2478,8 +2478,12 @@ class SamAiViewModel(
                 .replace("û", "u")
                 .replace("ç", "c")
 
-            // Détecte si l'utilisateur a posé plusieurs questions ou changé de question à la fin de sa phrase
-            val hasMultipleOrTrailingQuestion = qNorm.length > 65 ||
+            // Détecte si l'utilisateur donne une consigne directe ("dis...", "répète...", "prononce...", "fais...")
+            // ou pose plusieurs questions / change de question à la fin de sa phrase
+            val isDirectUserCommand = Regex("\\b(dis|dites|repete|répète|prononce|lis|ecris|écris|fais|faites|traduis)\\b")
+                .containsMatchIn(qNorm)
+            val hasMultipleOrTrailingQuestion = isDirectUserCommand ||
+                qNorm.length > 65 ||
                 qNorm.count { it == '?' } > 1 ||
                 Regex("\\b(et|mais|puis|sinon|plutot|finalement|attends|non|ou)\\s+(qui|que|quoi|quel|quelle|quels|quelles|comment|pourquoi|ou|combien|quand|explique|dis|donne|parle|est-ce)\\b")
                     .containsMatchIn(qNorm)
@@ -2631,12 +2635,12 @@ class SamAiViewModel(
                 }
             }
 
-            // Envoi direct à l'API OpenAI (gpt-4o-mini ultra-rapide en appel vocal, gpt-4o en chat écrit)
+            // Envoi direct à l'API OpenAI (gpt-4o haute précision pour zéro erreur en appel vocal comme en chat écrit)
             val openAiResult = openAiBackendService.sendChatMessage(
                 messages = currentHistory,
                 userQuestion = userText,
                 enableWebSearch = liveSources.isNotEmpty(),
-                preferredModel = if (isVoiceCall) "gpt-4o-mini" else "gpt-4o",
+                preferredModel = "gpt-4o",
                 newsContext = liveContextSummary,
                 sources = liveSources,
                 isMooreVoice = false,

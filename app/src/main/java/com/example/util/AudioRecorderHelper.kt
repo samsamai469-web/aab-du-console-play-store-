@@ -55,8 +55,8 @@ class AudioRecorderHelper(private val context: Context) {
 
         // 2. Repli : MediaRecorder (AAC .m4a)
         val sourcesToTry = listOf(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             MediaRecorder.AudioSource.MIC
         )
 
@@ -75,7 +75,7 @@ class AudioRecorderHelper(private val context: Context) {
                 recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
                 recorder.setAudioChannels(1)
                 recorder.setAudioSamplingRate(16000)
-                recorder.setAudioEncodingBitRate(64000)
+                recorder.setAudioEncodingBitRate(96000)
                 recorder.setOutputFile(file.absolutePath)
                 recorder.prepare()
                 recorder.start()
@@ -99,9 +99,10 @@ class AudioRecorderHelper(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     private fun startPcmWavRecording(): File? {
+        // Priorité à VOICE_RECOGNITION : courbe de fréquence plate dédiée à la dictée vocale haute précision
         val sources = listOf(
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             MediaRecorder.AudioSource.VOICE_RECOGNITION,
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             MediaRecorder.AudioSource.MIC
         )
         val minBufSize = AudioRecord.getMinBufferSize(
@@ -147,13 +148,8 @@ class AudioRecorderHelper(private val context: Context) {
     }
 
     private fun attachHardwareAudioEffects(audioSessionId: Int) {
-        try {
-            if (NoiseSuppressor.isAvailable()) {
-                noiseSuppressor = NoiseSuppressor.create(audioSessionId)?.apply { enabled = true }
-            }
-        } catch (_: Exception) {}
-        // Note: AutomaticGainControl est volontairement désactivé car il amplifie le bruit de fond
-        // après la parole et empêche la détection instantanée de fin de phrase (VAD).
+        // Note: NoiseSuppressor et AutomaticGainControl matériels sont désactivés afin de préserver
+        // 100 % des consonnes douces (s, f, p, t, k, ch) et la prononciation exacte de la personne.
         try {
             if (AcousticEchoCanceler.isAvailable()) {
                 echoCanceler = AcousticEchoCanceler.create(audioSessionId)?.apply { enabled = true }
@@ -178,33 +174,19 @@ class AudioRecorderHelper(private val context: Context) {
                 val readShorts = record.read(audioData, 0, frameShorts)
                 if (readShorts > 0) {
                     var sumSquares = 0.0
-                    var peakSample = 0
                     val frameBytes = ByteArray(readShorts * 2)
 
                     for (i in 0 until readShorts) {
                         val rawSample = audioData[i].toInt()
-                        val absRaw = kotlin.math.abs(rawSample)
-                        if (absRaw > peakSample) peakSample = absRaw
                         sumSquares += (rawSample.toDouble() * rawSample.toDouble())
-                    }
-
-                    val rms = kotlin.math.sqrt(sumSquares / readShorts).toInt()
-                    for (i in 0 until readShorts) {
-                        val rawSample = audioData[i].toInt()
-                        // Courbe de gain vocale à fort contraste ("Soft-Knee") :
-                        // - Silence / bruit ambiant (< 115 RMS) : divisé par 5 pour éliminer le souffle de fond
-                        // - Voix douce ou normale (115..1000 RMS) : amplifiée x2.2 pour détection immédiate dès la 1re syllabe
-                        // - Voix soutenue (1000..2200 RMS) : amplifiée x1.5
-                        val boosted = when {
-                            rms < 115 -> rawSample / 5
-                            rms < 1000 -> (rawSample * 11 / 5).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                            rms < 2200 -> (rawSample * 3 / 2).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                            else -> rawSample
-                        }
+                        // Pré-amplification vocale 100 % linéaire (x1.35) avec limiteur doux :
+                        // Préserve intégralement la prononciation, les liaisons et les consonnes sourdes sans hachage.
+                        val boosted = ((rawSample * 27) / 20).coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
                         frameBytes[i * 2] = (boosted and 0xFF).toByte()
                         frameBytes[i * 2 + 1] = ((boosted shr 8) and 0xFF).toByte()
                     }
 
+                    val rms = kotlin.math.sqrt(sumSquares / readShorts).toInt()
                     currentPcmAmplitude = rms.coerceAtMost(32767)
 
                     // Écriture directe dès la milliseconde 0 pour ne jamais couper le début de la parole

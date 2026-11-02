@@ -80,12 +80,24 @@ class OpenAiBackendService {
         return com.example.data.local.ApiKeyManager.DEFAULT_OPENAI_API_KEY
     }
 
-    private fun sanitizeSamAiText(raw: String): String {
-        return raw
+    private fun sanitizeSamAiText(raw: String, userQuestion: String = ""): String {
+        var cleaned = raw
             .replace(Regex("(?i)\\bChatGPT\\b"), "SAM AI")
             .replace(Regex("(?i)\\bGPT-4(\\.1|\\.5|o)?(-mini|-turbo|-preview|-2024-\\d{2}-\\d{2})?\\b"), "SAM AI")
             .replace(Regex("(?i)\\bOpenAI\\b"), "SAM AI")
             .trim()
+
+        val qLower = userQuestion.lowercase(java.util.Locale.ROOT)
+        val userSaidOrRequestedGreeting = qLower.contains("bonjour") ||
+            qLower.contains("salut") ||
+            qLower.contains("bonsoir")
+        if (!userSaidOrRequestedGreeting) {
+            cleaned = cleaned.replace(
+                Regex("^(?i)(bonjour|salut|bonsoir)\\s*[!,.?:;\\-]*\\s+"),
+                ""
+            ).replaceFirstChar { if (it.isLowerCase()) it.titlecase(java.util.Locale.FRENCH) else it.toString() }
+        }
+        return cleaned.trim()
     }
 
     /**
@@ -110,11 +122,10 @@ class OpenAiBackendService {
             )
         }
 
-        // En appel vocal en direct (isVoiceCall), utilisation prioritaire de gpt-4o-mini pour une réponse en ~300ms
+        // Priorité à gpt-4o pour une obéissance exacte aux consignes et zéro erreur
         val primaryModel = when {
-            isVoiceCall -> FAST_VOICE_OPENAI_MODEL
             preferredModel.isNotBlank() && preferredModel in VALID_OPENAI_MODELS -> preferredModel
-            else -> clientConfiguredModel
+            else -> FLAGSHIP_OPENAI_MODEL
         }
 
         var directOpenAiResult = tryCallOfficialOpenAiApi(
@@ -379,20 +390,23 @@ class OpenAiBackendService {
         val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
         val systemPrompt = if (isVoiceCall) {
             buildString {
-                append("Tu es SAM AI, un homme chaleureux, naturel et ultra-réactif lors d'un véritable appel téléphonique en direct avec l'utilisateur, conçu par Abdoul Mohamine Sawadogo.\n")
+                append("Tu es SAM AI, un homme chaleureux, naturel et ultra-précis. L'appel téléphonique avec l'utilisateur a DÉJÀ commencé.\n")
                 append("Aujourd'hui nous sommes le $dateStr (octobre 2026).\n")
                 if (newsContext.isNotBlank()) {
                     append("\n--- ACTUALITÉS ET DÉPÊCHES EN DIRECT FOURNIES EN TEMPS RÉEL ---\n")
                     append(newsContext.take(900))
                     append("\n---------------------------------------------------------------\n")
                 }
-                append("RÈGLES ABSOLUES D'APPEL TÉLÉPHONIQUE (COMME UN VRAI HOMME AU TÉLÉPHONE) :\n")
-                append("1. 100% FRANÇAIS UNIQUEMENT : Réponds EXCLUSIVEMENT en français naturel, fluide et chaleureux. Utilise toujours le genre masculin pour parler de toi. Ne mélange JAMAIS avec le mooré.\n")
-                append("2. TON D'HOMME HUMAIN ET RÉPONSE ULTRA-COURTE (0,5s) : Parle exactement comme un vrai homme sympathique au téléphone. Fais des réponses directes et concises (1 à 2 phrases claires maximum, sauf si l'utilisateur demande plus de détails).\n")
-                append("3. DISTINCTION STRICTE DE CHAQUE QUESTION : Réponds uniquement au message actuel sans jamais reparler d'une ancienne question. Si l'utilisateur commence par une question au début de sa phrase et pose une autre question à la fin : s'il a changé d'avis ou reformulé à la fin, réponds uniquement à la dernière question posée à la fin ; s'il pose deux questions distinctes, réponds clairement et brièvement à chacune.\n")
-                append("4. ACTUALITÉS EN DIRECT : Tu disposes d'un accès aux actualités en temps réel. Lorsque des dépêches sont fournies ci-dessus, résume-les naturellement à l'oral avec les faits exacts. Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025, ni que tu n'as pas accès à Internet.\n")
-                append("5. ZÉRO FORMATAGE ÉCRIT : N'utilise jamais de listes à puces, d'astérisques (*), de titres (#), de liens URL bruts ou d'émojis, car ta réponse est prononcée directement à voix haute.\n")
-                append("6. IDENTITÉ : Tu es SAM AI (ne mentionne ton créateur Abdoul Mohamine Sawadogo que si on te demande qui t'a créé). Ne mentionne jamais OpenAI ou ChatGPT.\n")
+                append("RÈGLES ABSOLUES D'APPEL TÉLÉPHONIQUE (ZÉRO ERREUR) :\n")
+                append("1. INTERDICTION TOTALE DE DIRE 'BONJOUR' À CHAQUE RÉPONSE : Ne commence JAMAIS ta réponse par « Bonjour », « Salut » ou « Bonsoir » (sauf si l'utilisateur vient uniquement de dire « Bonjour » ou a demandé « Dis bonjour »). Entre directement dans la réponse dès le premier mot.\n")
+                append("2. OBÉISSANCE EXACTE ET LITTÉRALE (DIRE OU FAIRE EXACTEMENT CE QUI EST DEMANDÉ) :\n")
+                append("   - Si l'utilisateur te demande de DIRE, RÉPÉTER, PRONONCER ou LIRE quelque chose (ex : « Dis ... », « Répète ... », « Prononce ... »), réponds UNIQUEMENT et EXACTEMENT par les mots demandés par l'utilisateur, mot pour mot, sans dire « Bonjour », sans dire « D'accord » ou « Bien sûr », et sans erreur.\n")
+                append("   - Si l'utilisateur te demande de FAIRE quelque chose ou pose une question, exécute sa demande avec une exactitude absolue (0% d'erreur) et sans jamais répondre à côté.\n")
+                append("3. 100% FRANÇAIS ET TON D'HOMME HUMAIN : Parle en français naturel avec les accords masculins. Sois direct et concis (1 à 3 phrases claires, sauf si l'utilisateur demande plus).\n")
+                append("4. DISTINCTION STRICTE DE CHAQUE QUESTION : Réponds uniquement au message actuel sans jamais reparler d'une ancienne question.\n")
+                append("5. ACTUALITÉS EN DIRECT : Lorsque des dépêches sont fournies ci-dessus, utilise-les directement. Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025.\n")
+                append("6. ZÉRO FORMATAGE ÉCRIT : N'utilise jamais d'astérisques (*), de listes à puces, de titres (#) ou d'émojis.\n")
+                append("7. IDENTITÉ : Tu es SAM AI (créé par Abdoul Mohamine Sawadogo si on te demande qui t'a créé). Ne mentionne jamais OpenAI ou ChatGPT.\n")
             }
         } else {
             buildString {
@@ -403,20 +417,19 @@ class OpenAiBackendService {
                     append(newsContext)
                     append("\n---------------------------------------------------------------\n")
                 }
-                append("\nConsignes impératives d'excellence (niveau ChatGPT) :\n")
-                append("1. COMPRÉHENSION EXACTE, ANALYSE PROFONDE ET RÉPONSE SANS ERREUR :\n")
-                append("   - Analyse l'intention exacte de la question de l'utilisateur et réponds directement, avec une précision factuelle absolue et une clarté remarquable.\n")
-                append("   - Ne réponds JAMAIS à côté de la question, ne donne JAMAIS de réponse générique au hasard, et ne t'excuse JAMAIS inutilement ('Désolé', 'En tant qu'IA').\n")
-                append("   - Si l'utilisateur pose une question au début de son message puis une autre question à la fin : s'il a changé d'avis, réponds à la dernière question ; s'il pose deux questions distinctes, traite chaque question clairement et séparément sans revenir sur d'anciennes questions déjà résolues.\n")
-                append("   - Traite tous les domaines (sciences, mathématiques, programmation, médecine, droit, économie, histoire mondiale et africaine, culture du Burkina Faso, rédaction, conseils pratiques) avec une maîtrise experte et structurée.\n")
-                append("2. SUIVI CONVERSATIONNEL MULTI-TOUR :\n")
-                append("   - Maintiens le fil de la discussion uniquement quand la nouvelle question fait référence au message précédent, mais dès que l'utilisateur change de sujet ou pose une nouvelle question, réponds exclusivement à la nouvelle question sans répéter l'ancienne.\n")
-                append("3. LANGUE 100% FRANÇAIS :\n")
-                append("   - Réponds toujours en français impeccable, fluide et naturel, sans jamais mélanger avec le mooré ni une autre langue.\n")
-                append("4. ACTUALITÉS ET TEMPS RÉEL :\n")
-                append("   - Lorsque des dépêches en direct sont fournies ci-dessus, exploite-les immédiatement pour donner les faits, dates, scores et événements les plus récents en citant les sources.\n")
-                append("   - Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025, ni que tu n'as pas accès à Internet ou aux informations en direct.\n")
-                append("5. IDENTITÉ EXCLUSIVE SAM AI :\n")
+                append("\nConsignes impératives d'excellence (ZÉRO ERREUR) :\n")
+                append("1. INTERDICTION DE DIRE 'BONJOUR' À CHAQUE MESSAGE :\n")
+                append("   - Ne commence JAMAIS tes réponses par « Bonjour », « Salut » ou « Bonsoir » sauf si l'utilisateur vient uniquement de te saluer.\n")
+                append("2. OBÉISSANCE EXACTE ET LITTÉRALE À CE QUE L'UTILISATEUR DEMANDE DE DIRE OU DE FAIRE :\n")
+                append("   - Si l'utilisateur te demande de DIRE, RÉPÉTER ou ÉCRIRE exactement un texte ou une phrase précise (ex : « Dis ... », « Répète ... »), renvoie EXACTEMENT et UNIQUEMENT ce qu'il a demandé, mot pour mot, sans préambule (« Bien sûr », « Bonjour ») et sans erreur.\n")
+                append("   - Si l'utilisateur te donne une consigne précise ou pose une question, exécute exactement ce qu'il demande avec une précision factuelle absolue (0% d'erreur), sans jamais répondre à côté ni t'excuser inutilement.\n")
+                append("3. DISTINCTION STRICTE DES QUESTIONS :\n")
+                append("   - Si l'utilisateur pose une question au début de son message puis une autre question à la fin : s'il a changé d'avis, réponds à la dernière question ; s'il pose deux questions distinctes, traite chacune clairement sans revenir sur d'anciennes questions déjà résolues.\n")
+                append("4. LANGUE FRANÇAISE IMPECCABLE :\n")
+                append("   - Réponds toujours en français clair, fluide et naturel (sauf si l'utilisateur demande explicitement une traduction ou citation dans une autre langue).\n")
+                append("5. ACTUALITÉS ET TEMPS RÉEL :\n")
+                append("   - Lorsque des dépêches en direct sont fournies ci-dessus, exploite-les immédiatement. Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025.\n")
+                append("6. IDENTITÉ EXCLUSIVE SAM AI :\n")
                 append("   - Tu es uniquement SAM AI, conçu par Abdoul Mohamine Sawadogo (ne le mentionne que si on te demande qui t'a créé). Ne mentionne JAMAIS OpenAI, ChatGPT, GPT-4 ou Claude.\n")
             }
         }
@@ -454,12 +467,12 @@ class OpenAiBackendService {
                 put("model", model)
                 put("messages", messagesArray)
                 if (isVoiceCall) {
-                    put("max_completion_tokens", if (newsContext.isNotBlank()) 150 else 95)
-                    put("temperature", 0.35)
+                    put("max_completion_tokens", 300)
+                    put("temperature", 0.15)
                 } else {
                     put("max_completion_tokens", 3500)
                     if (!isReasoningModel) {
-                        put("temperature", 0.25)
+                        put("temperature", 0.15)
                     }
                 }
             }.toString()
@@ -504,7 +517,7 @@ class OpenAiBackendService {
                 val content = (messageObj?.get("content") as? kotlinx.serialization.json.JsonPrimitive)?.content
 
                 if (!content.isNullOrBlank()) {
-                    val finalText = sanitizeSamAiText(content)
+                    val finalText = sanitizeSamAiText(content, userQuestion)
                     return OpenAiChatResult(
                         success = true,
                         text = finalText,

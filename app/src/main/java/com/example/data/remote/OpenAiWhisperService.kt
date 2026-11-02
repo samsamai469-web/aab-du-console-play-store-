@@ -213,11 +213,11 @@ class OpenAiWhisperService(private val context: Context) {
                 )
             }
 
-            // Priorité directe à gpt-4o-mini-transcribe (zéro hallucination "Amara.org" et un seul appel réseau rapide)
+            // Priorité directe à gpt-4o-transcribe (modèle phare OpenAI à précision phonétique et lexicale maximale)
             val primaryResult = executeTranscriptionRequest(
                 audioFile = audioFile,
                 apiKey = apiKey,
-                model = GPT4O_MINI_TRANSCRIBE_MODEL,
+                model = GPT4O_FLAGSHIP_TRANSCRIBE_MODEL,
                 whisperLangCode = whisperLangCode,
                 isMooreHint = false
             )
@@ -225,13 +225,24 @@ class OpenAiWhisperService(private val context: Context) {
             val rawTranscriptResult = if (primaryResult.isSuccess && !primaryResult.getOrNull().isNullOrBlank()) {
                 primaryResult
             } else {
-                executeTranscriptionRequest(
+                val miniResult = executeTranscriptionRequest(
                     audioFile = audioFile,
                     apiKey = apiKey,
-                    model = WHISPER_FAST_MODEL,
+                    model = GPT4O_MINI_TRANSCRIBE_MODEL,
                     whisperLangCode = whisperLangCode,
                     isMooreHint = false
                 )
+                if (miniResult.isSuccess && !miniResult.getOrNull().isNullOrBlank()) {
+                    miniResult
+                } else {
+                    executeTranscriptionRequest(
+                        audioFile = audioFile,
+                        apiKey = apiKey,
+                        model = WHISPER_FAST_MODEL,
+                        whisperLangCode = whisperLangCode,
+                        isMooreHint = false
+                    )
+                }
             }
 
             if (rawTranscriptResult.isFailure) {
