@@ -334,7 +334,12 @@ class SamAiViewModel(
             kotlinx.coroutines.delay(400L)
             launch {
                 try {
-                    liveNewsFeedService.fetchLiveNews("actualités")
+                    liveNewsFeedService.fetchLiveNews("Burkina Faso")
+                } catch (_: Throwable) {}
+            }
+            launch {
+                try {
+                    liveNewsFeedService.fetchLiveNews("actualités monde")
                 } catch (_: Throwable) {}
             }
             loadLiveNews(forceRefresh = false)
@@ -731,6 +736,17 @@ class SamAiViewModel(
         _userProfile.value = newProfile
         _isLoggedIn.value = true
         authSessionManager?.saveUserProfile(newProfile)
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                com.example.data.remote.FirebaseAuthService.syncUserToFirestore(
+                    uid = targetUserId,
+                    name = derivedName,
+                    email = cleanEmail,
+                    photoUrl = finalPhoto
+                )
+            } catch (_: Throwable) {}
+        }
 
         if (isSuperAdmin) {
             val token = SecurityUtils.generateAdminToken(cleanEmail)
@@ -2610,7 +2626,7 @@ class SamAiViewModel(
                         .joinToString("\n") { it.text }
 
                     if (isVoiceCall) {
-                        val fastNews = kotlinx.coroutines.withTimeoutOrNull(2200L) {
+                        val fastNews = kotlinx.coroutines.withTimeoutOrNull(3500L) {
                             liveNewsFeedService.fetchLiveNews(
                                 query = effectiveQuery,
                                 alreadyMentionedText = alreadyMentionedInChat
@@ -2620,11 +2636,14 @@ class SamAiViewModel(
                             liveContextSummary = fastNews.contextSummary
                             liveSources = fastNews.sources
                         } else {
-                            liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
+                            liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(
+                                query = effectiveQuery,
+                                fallbackBurkinaArticles = _newsArticles.value
+                            )
                         }
                     } else {
                         try {
-                            val newsResult = kotlinx.coroutines.withTimeoutOrNull(4500L) {
+                            val newsResult = kotlinx.coroutines.withTimeoutOrNull(7500L) {
                                 liveNewsFeedService.fetchLiveNews(
                                     query = effectiveQuery,
                                     alreadyMentionedText = alreadyMentionedInChat
@@ -2634,11 +2653,17 @@ class SamAiViewModel(
                                 liveContextSummary = newsResult.contextSummary
                                 liveSources = newsResult.sources
                             } else {
-                                liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
+                                liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(
+                                    query = effectiveQuery,
+                                    fallbackBurkinaArticles = _newsArticles.value
+                                )
                             }
                         } catch (e: Throwable) {
                             android.util.Log.w("SamAiViewModel", "Notice actualités en direct: ${e.message}")
-                            liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
+                            liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(
+                                query = effectiveQuery,
+                                fallbackBurkinaArticles = _newsArticles.value
+                            )
                         }
                     }
                 }

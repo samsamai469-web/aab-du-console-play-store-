@@ -1,6 +1,11 @@
 package com.example.ui.screens
 
+import android.accounts.AccountManager
+import android.app.Activity
+import android.os.Build
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -692,6 +697,51 @@ fun SamAiWelcomeAuthSection(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var resetConfirmationMessage by remember { mutableStateOf<String?>(null) }
 
+    // Sélecteur officiel de compte Google du téléphone Android (ne dépend pas du SHA-1 et renvoie la vraie adresse choisie)
+    val googleAccountPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { activityResult ->
+        isGoogleLoading = false
+        if (activityResult.resultCode == Activity.RESULT_OK) {
+            val selectedEmail = activityResult.data
+                ?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
+                ?.trim()
+                ?.lowercase()
+                .orEmpty()
+
+            val validationErr = com.example.data.remote.FirebaseAuthService.validateEmailWithGoogleRules(selectedEmail)
+            if (selectedEmail.isBlank() || validationErr != null) {
+                errorMessage = validationErr ?: "Aucune adresse Google valide n'a été sélectionnée."
+            } else if (viewModel != null) {
+                val derivedName = nameInput.trim().takeIf { it.isNotBlank() }
+                    ?: selectedEmail.substringBefore("@")
+                        .replace(".", " ")
+                        .replace("_", " ")
+                        .split(" ")
+                        .filter { it.isNotBlank() }
+                        .joinToString(" ") { part ->
+                            part.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
+                        }
+                        .ifBlank { selectedEmail.substringBefore("@") }
+
+                coroutineScope.launch {
+                    isGoogleLoading = true
+                    val (ok, msg) = viewModel.loginWithGoogle(
+                        email = selectedEmail,
+                        name = derivedName
+                    )
+                    isGoogleLoading = false
+                    if (ok) {
+                        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                        onAuthSuccess()
+                    } else {
+                        errorMessage = msg
+                    }
+                }
+            }
+        }
+    }
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -1166,50 +1216,78 @@ fun SamAiWelcomeAuthSection(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
-                // Bouton "Continuer avec Google" (Connexion réelle uniquement si un vrai compte Google est sélectionné)
+                // Bouton "Continuer avec Google" (Ouvre le sélecteur officiel des comptes Google du téléphone)
                 Surface(
                     onClick = {
                         if (isGoogleLoading) return@Surface
                         if (viewModel == null) return@Surface
-                        coroutineScope.launch {
-                            try {
-                                isGoogleLoading = true
-                                errorMessage = null
-                                resetConfirmationMessage = null
-                                val result = com.example.util.GoogleAuthManager.launchCredentialManagerSignIn(context)
-                                isGoogleLoading = false
-                                when (result) {
-                                    is com.example.util.GoogleAuthResult.Success -> {
-                                        val googleEmail = result.account.email.trim()
-                                        val validationErr = com.example.data.remote.FirebaseAuthService.validateEmailWithGoogleRules(googleEmail)
-                                        if (googleEmail.isBlank() || validationErr != null) {
-                                            errorMessage = validationErr ?: "Aucune adresse email Google valide n'a été reçue."
-                                        } else {
-                                            val (ok, msg) = viewModel.loginWithGoogle(
-                                                email = googleEmail,
-                                                name = result.account.displayName,
-                                                photoUrl = result.account.photoUrl,
-                                                googleSubjectId = result.account.googleId,
-                                                idToken = result.account.idToken
-                                            )
-                                            if (ok) {
-                                                Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                                onAuthSuccess()
+                        errorMessage = null
+                        resetConfirmationMessage = null
+                        try {
+                            isGoogleLoading = true
+                            val pickerIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                AccountManager.newChooseAccountIntent(
+                                    null,
+                                    null,
+                                    arrayOf("com.google"),
+                                    null,
+                                    null,
+                                    null,
+                                    null
+                                )
+                            } else {
+                                @Suppress("DEPRECATION")
+                                AccountManager.newChooseAccountIntent(
+                                    null,
+                                    null,
+                                    arrayOf("com.google"),
+                                    false,
+                                    null,
+                                    null,
+                                    null,
+                                    null
+                                )
+                            }
+                            googleAccountPickerLauncher.launch(pickerIntent)
+                        } catch (t: Throwable) {
+                            // Repli sur CredentialManager si le sélecteur système n'est pas disponible
+                            coroutineScope.launch {
+                                try {
+                                    val result = com.example.util.GoogleAuthManager.launchCredentialManagerSignIn(context)
+                                    isGoogleLoading = false
+                                    when (result) {
+                                        is com.example.util.GoogleAuthResult.Success -> {
+                                            val googleEmail = result.account.email.trim()
+                                            val validationErr = com.example.data.remote.FirebaseAuthService.validateEmailWithGoogleRules(googleEmail)
+                                            if (googleEmail.isBlank() || validationErr != null) {
+                                                errorMessage = validationErr ?: "Aucune adresse email Google valide n'a été reçue."
                                             } else {
-                                                errorMessage = msg
+                                                val (ok, msg) = viewModel.loginWithGoogle(
+                                                    email = googleEmail,
+                                                    name = result.account.displayName,
+                                                    photoUrl = result.account.photoUrl,
+                                                    googleSubjectId = result.account.googleId,
+                                                    idToken = result.account.idToken
+                                                )
+                                                if (ok) {
+                                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                                    onAuthSuccess()
+                                                } else {
+                                                    errorMessage = msg
+                                                }
                                             }
                                         }
+                                        is com.example.util.GoogleAuthResult.Cancelled -> {
+                                            errorMessage = null
+                                        }
+                                        is com.example.util.GoogleAuthResult.Error -> {
+                                            errorMessage = "Aucun compte Google détecté sur cet appareil. Veuillez utiliser votre adresse email ci-dessus."
+                                        }
                                     }
-                                    is com.example.util.GoogleAuthResult.Cancelled -> {
-                                        errorMessage = "Connexion Google annulée. Aucune adresse Google n'a été sélectionnée."
-                                    }
-                                    is com.example.util.GoogleAuthResult.Error -> {
-                                        errorMessage = "Aucun compte Google détecté sur cet appareil. Veuillez vous inscrire ou vous connecter avec votre adresse email."
-                                    }
+                                } catch (_: Throwable) {
+                                    isGoogleLoading = false
+                                    errorMessage = "Aucun compte Google détecté sur cet appareil. Veuillez utiliser votre adresse email ci-dessus."
                                 }
-                            } catch (t: Throwable) {
-                                isGoogleLoading = false
-                                errorMessage = "Aucun compte Google disponible sur cet appareil. Veuillez utiliser votre adresse email et mot de passe."
                             }
                         }
                     },

@@ -457,13 +457,21 @@ object FirebaseAuthService {
                     }
                 }
             } catch (e: com.google.firebase.auth.FirebaseAuthUserCollisionException) {
-                return@withContext Result.failure(Exception("Cette adresse email est déjà associée à un compte. Utilisez l'onglet 'Se connecter'."))
+                val loginAttempt = loginWithEmail(cleanEmail, password, context)
+                if (loginAttempt.isSuccess) {
+                    return@withContext loginAttempt
+                }
+                return@withContext Result.failure(Exception("Cette adresse email est déjà associée à un compte. Basculez sur l'onglet « Se connecter » ou cliquez sur « Mot de passe oublié ? »."))
             } catch (e: Exception) {
                 val msg = e.message ?: ""
                 if (msg.contains("email-already-in-use", ignoreCase = true) ||
                     msg.contains("ERROR_EMAIL_ALREADY_IN_USE", ignoreCase = true)
                 ) {
-                    return@withContext Result.failure(Exception("Cette adresse email est déjà associée à un compte. Utilisez l'onglet 'Se connecter'."))
+                    val loginAttempt = loginWithEmail(cleanEmail, password, context)
+                    if (loginAttempt.isSuccess) {
+                        return@withContext loginAttempt
+                    }
+                    return@withContext Result.failure(Exception("Cette adresse email est déjà associée à un compte. Basculez sur l'onglet « Se connecter » ou cliquez sur « Mot de passe oublié ? »."))
                 }
                 Log.w(TAG, "Repli inscription sécurisée locale/Firestore suite à: ${e.message}")
             }

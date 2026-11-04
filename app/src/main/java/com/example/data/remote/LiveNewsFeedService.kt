@@ -42,25 +42,68 @@ class LiveNewsFeedService {
         // tout en sélectionnant à chaque question de NOUVEAUX articles non encore cités dans le chat)
         private val rawArticlesCache = ConcurrentHashMap<String, Pair<Long, List<LiveNewsArticle>>>()
         private val topicRotationIndex = ConcurrentHashMap<String, AtomicInteger>()
-        private const val CACHE_TTL_MS = 2 * 60 * 1000L // 2 minutes max pour garantir la fraîcheur
+        private const val CACHE_TTL_MS = 3 * 60 * 1000L // 3 minutes max pour garantir la fraîcheur
 
         private val sharedHttpClient by lazy {
             OkHttpClient.Builder()
-                .connectTimeout(3500, TimeUnit.MILLISECONDS)
-                .readTimeout(3500, TimeUnit.MILLISECONDS)
-                .callTimeout(4200, TimeUnit.MILLISECONDS)
+                .connectTimeout(6000, TimeUnit.MILLISECONDS)
+                .readTimeout(6500, TimeUnit.MILLISECONDS)
+                .callTimeout(8000, TimeUnit.MILLISECONDS)
                 .followRedirects(true)
                 .build()
         }
 
+        private fun isBurkinaTopicStatic(query: String): Boolean {
+            val q = query.lowercase(java.util.Locale.ROOT)
+            val burkinaMarkers = listOf(
+                "burkina", "faso", "ouaga", "bobo", "koudougou", "banfora", "ouahigouya",
+                "kaya", "fada", "dedougou", "tenkodogo", "traore", "ibrahim traore",
+                "aib", "rtb", "sidwaya", "lefaso", "burkina24", "etalons", "étalons",
+                "sahel", "aes", "ouagadougou", "siao", "fespaco", "burkinabe", "burkinabè"
+            )
+            return burkinaMarkers.any { q.contains(it) }
+        }
+
         /**
-         * Renvoie instantanément un lot varié de dépêches réelles en mémoire (sans jamais utiliser de fausses actualités codées en dur).
+         * Renvoie instantanément un lot varié de dépêches réelles adapté au sujet demandé (Burkina Faso vs Monde),
+         * sans jamais mélanger les dépêches mondiales lorsqu'on demande le Burkina Faso.
          */
-        fun getInstantCachedSummary(): String {
-            val pool = rawArticlesCache.values.firstOrNull { it.second.isNotEmpty() }?.second ?: return ""
-            val cursor = topicRotationIndex.getOrPut("instant") { AtomicInteger(0) }.getAndIncrement()
-            val rotated = rotateArticles(pool, cursor, count = 6)
-            return buildSummaryFromArticles(rotated)
+        fun getInstantCachedSummary(
+            query: String = "",
+            fallbackBurkinaArticles: List<com.example.data.local.NewsArticle> = emptyList()
+        ): String {
+            val isBurkina = isBurkinaTopicStatic(query)
+            if (isBurkina) {
+                val burkinaPool = rawArticlesCache.entries
+                    .firstOrNull { it.key.startsWith("burkina_") && it.value.second.isNotEmpty() }
+                    ?.value?.second
+                    ?: run {
+                        val repoArticles = fallbackBurkinaArticles.ifEmpty {
+                            com.example.data.repository.NewsRepository.getDefaultBurkinaNews()
+                        }
+                        repoArticles.map { art ->
+                            LiveNewsArticle(
+                                title = art.title,
+                                link = art.url.ifBlank { "https://www.aib.media" },
+                                sourceName = art.source.ifBlank { "AIB / Presse du Faso" },
+                                pubDate = art.date,
+                                snippet = art.summary
+                            )
+                        }
+                    }
+                if (burkinaPool.isEmpty()) return ""
+                val cursor = topicRotationIndex.getOrPut("instant_burkina") { AtomicInteger(0) }.getAndIncrement()
+                val rotated = rotateArticles(burkinaPool, cursor, count = 6)
+                return buildSummaryFromArticles(rotated, scopeLabel = "BURKINA FASO")
+            } else {
+                val worldPool = rawArticlesCache.entries
+                    .firstOrNull { !it.key.startsWith("burkina_") && it.value.second.isNotEmpty() }
+                    ?.value?.second
+                    ?: return ""
+                val cursor = topicRotationIndex.getOrPut("instant_world") { AtomicInteger(0) }.getAndIncrement()
+                val rotated = rotateArticles(worldPool, cursor, count = 6)
+                return buildSummaryFromArticles(rotated, scopeLabel = "MONDE & INTERNATIONAL")
+            }
         }
 
         private fun rotateArticles(
@@ -74,11 +117,11 @@ class LiveNewsFeedService {
             return rotated.take(count)
         }
 
-        private fun buildSummaryFromArticles(articles: List<LiveNewsArticle>): String {
+        private fun buildSummaryFromArticles(articles: List<LiveNewsArticle>, scopeLabel: String = "EN DIRECT"): String {
             if (articles.isEmpty()) return ""
             val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
             return buildString {
-                append("=== DÉPÊCHES ET ACTUALITÉS EN DIRECT ($dateStr) ===\n")
+                append("=== DÉPÊCHES ET ACTUALITÉS EN DIRECT [$scopeLabel] ($dateStr) ===\n")
                 articles.forEachIndexed { idx, art ->
                     append("${idx + 1}. [${art.sourceName}] ${art.title}")
                     if (art.pubDate.isNotBlank()) append(" (${art.pubDate})")
@@ -107,15 +150,19 @@ class LiveNewsFeedService {
             "quel", "quelle", "quels", "quelles", "est", "sont", "les", "des", "une", "un", "le", "la",
             "du", "de", "dans", "sur", "pour", "avec", "par", "au", "aux", "en", "ce", "cet", "cette",
             "ces", "mon", "ton", "son", "notre", "votre", "leur", "qui", "que", "quoi", "ou", "où",
-            "comment", "pourquoi", "quand", "donne", "donner", "donnez", "moi", "nous", "dis", "dire",
-            "parle", "parler", "cherche", "chercher", "recherche", "rechercher", "trouve", "trouver",
-            "fais", "faire", "peux", "peut", "tu", "vous", "je", "veux", "voudrais", "savoir", "connaitre",
-            "connaître", "actualite", "actualites", "actualité", "actualités", "actu", "actus", "nouvelle",
+            "comment", "pourquoi", "quand", "donne", "donnes", "donner", "donnez", "moi", "nous",
+            "dis", "dites", "dire", "parle", "parles", "parlez", "parler", "montre", "montres", "montrez", "montrer",
+            "raconte", "racontes", "racontez", "raconter", "explique", "expliques", "expliquez", "expliquer",
+            "cherche", "cherches", "chercher", "recherche", "recherches", "rechercher", "trouve", "trouves", "trouver",
+            "fais", "fait", "faire", "peux", "peut", "pourrais", "pourrait", "tu", "vous", "je",
+            "veux", "voudrais", "aimerais", "savoir", "connaitre", "connaître",
+            "actualite", "actualites", "actualité", "actualités", "actu", "actus", "nouvelle",
             "nouvelles", "info", "infos", "information", "informations", "recent", "recente", "recents",
             "recentes", "récent", "récente", "récents", "récentes", "dernier", "derniere", "derniers",
             "dernieres", "dernière", "dernières", "aujourd", "hui", "aujourdhui", "jour", "direct",
-            "passe", "passer", "il", "elle", "on", "y", "a", "t", "neuf", "internet", "web",
-            "sam", "ai", "stp", "svp", "s'il", "plait", "plaît", "autre", "autres", "encore", "plus"
+            "passe", "passent", "passer", "il", "elle", "on", "y", "a", "t", "neuf", "internet", "web",
+            "sam", "ai", "stp", "svp", "s'il", "plait", "plaît", "autre", "autres", "encore", "plus",
+            "concernant", "sujet", "propos", "actuellement", "moment", "pays", "quelques", "tous", "toutes", "tout", "toute"
         )
         val tokens = rawQuery
             .replace(Regex("['’`\"«»?!.,;:()\\[\\]-]"), " ")
@@ -157,42 +204,42 @@ class LiveNewsFeedService {
         val now = System.currentTimeMillis()
         val cachedPool = rawArticlesCache[topicBucket]?.takeIf { (now - it.first) < CACHE_TTL_MS }?.second
 
-        val allDistinctArticles = if (!cachedPool.isNullOrEmpty()) {
+        var allDistinctArticles = if (!cachedPool.isNullOrEmpty()) {
             cachedPool
         } else {
             val fetched = supervisorScope {
                 when {
                     isBurkinaSpecific -> {
                         val extraKeywords = coreKeywords
-                            .replace(Regex("(?i)\\b(burkina|faso)\\b"), "")
+                            .replace(Regex("(?i)\\b(burkina|faso|burkinabe|burkinabè)\\b"), "")
                             .trim()
 
                         val dGoogleRecent3d = async {
-                            withTimeoutOrNull(3600L) {
+                            withTimeoutOrNull(5500L) {
                                 val q = if (extraKeywords.isNotBlank()) {
                                     "Burkina Faso $extraKeywords when:7d"
                                 } else {
-                                    "\"Burkina Faso\" OR Ouagadougou when:3d"
+                                    "\"Burkina Faso\" OR Ouagadougou when:7d"
                                 }
                                 fetchGoogleNewsRss(q, fallbackSource = "Presse du Faso")
                             } ?: emptyList()
                         }
                         val dGoogleMedia = async {
-                            withTimeoutOrNull(3600L) {
+                            withTimeoutOrNull(5500L) {
                                 val q = "(site:lefaso.net OR site:burkina24.com OR site:sidwaya.info OR site:aib.media) when:7d"
                                 fetchGoogleNewsRss(q, fallbackSource = "Médias du Faso")
                             } ?: emptyList()
                         }
                         val dGoogle7d = async {
-                            withTimeoutOrNull(3600L) {
+                            withTimeoutOrNull(5500L) {
                                 fetchGoogleNewsRss("Burkina Faso actualités when:7d", fallbackSource = "Actualités Faso")
                             } ?: emptyList()
                         }
                         val dLefaso = async {
-                            withTimeoutOrNull(3500L) { fetchLefasoFeed() } ?: emptyList()
+                            withTimeoutOrNull(5000L) { fetchLefasoFeed() } ?: emptyList()
                         }
                         val dBurkina24 = async {
-                            withTimeoutOrNull(3500L) { fetchBurkina24Feed() } ?: emptyList()
+                            withTimeoutOrNull(5000L) { fetchBurkina24Feed() } ?: emptyList()
                         }
 
                         val list = mutableListOf<LiveNewsArticle>()
@@ -206,20 +253,20 @@ class LiveNewsFeedService {
 
                     isWorldSpecific || isGeneralNews -> {
                         val dWorldTopic = async {
-                            withTimeoutOrNull(3600L) {
+                            withTimeoutOrNull(5500L) {
                                 fetchGoogleWorldHeadlinesRss()
                             } ?: emptyList()
                         }
                         val dWorldSearch = async {
-                            withTimeoutOrNull(3600L) {
-                                fetchGoogleNewsRss("actualité internationale OR monde when:2d", fallbackSource = "Presse Internationale")
+                            withTimeoutOrNull(5500L) {
+                                fetchGoogleNewsRss("actualité internationale OR monde when:3d", fallbackSource = "Presse Internationale")
                             } ?: emptyList()
                         }
                         val dFrance24 = async {
-                            withTimeoutOrNull(3500L) { fetchFrance24WorldFeed() } ?: emptyList()
+                            withTimeoutOrNull(5000L) { fetchFrance24WorldFeed() } ?: emptyList()
                         }
                         val dRfiWorld = async {
-                            withTimeoutOrNull(3500L) { fetchRfiWorldFeed() } ?: emptyList()
+                            withTimeoutOrNull(5000L) { fetchRfiWorldFeed() } ?: emptyList()
                         }
 
                         val list = mutableListOf<LiveNewsArticle>()
@@ -233,17 +280,17 @@ class LiveNewsFeedService {
                     else -> {
                         val effectiveQuery = coreKeywords.ifBlank { cleanQuery }
                         val dRecent = async {
-                            withTimeoutOrNull(3600L) {
+                            withTimeoutOrNull(5500L) {
                                 fetchGoogleNewsRss("$effectiveQuery when:7d", fallbackSource = "Actualités en direct")
                             } ?: emptyList()
                         }
                         val dBroad = async {
-                            withTimeoutOrNull(3600L) {
+                            withTimeoutOrNull(5500L) {
                                 fetchGoogleNewsRss(effectiveQuery, fallbackSource = "Presse en direct")
                             } ?: emptyList()
                         }
                         val dFrance24 = async {
-                            withTimeoutOrNull(3200L) { fetchFrance24WorldFeed() } ?: emptyList()
+                            withTimeoutOrNull(4500L) { fetchFrance24WorldFeed() } ?: emptyList()
                         }
                         val list = mutableListOf<LiveNewsArticle>()
                         list.addAll(dRecent.await())
@@ -261,8 +308,24 @@ class LiveNewsFeedService {
 
             if (deduped.isNotEmpty()) {
                 rawArticlesCache[topicBucket] = Pair(now, deduped)
+                if (isBurkinaSpecific && topicBucket != "burkina_general" && !rawArticlesCache.containsKey("burkina_general")) {
+                    rawArticlesCache["burkina_general"] = Pair(now, deduped)
+                }
             }
             deduped
+        }
+
+        // Si la connexion mobile est lente et que l'utilisateur demande le Burkina Faso, utiliser le pool Burkina vérifié de NewsRepository
+        if (allDistinctArticles.isEmpty() && isBurkinaSpecific) {
+            allDistinctArticles = com.example.data.repository.NewsRepository.getDefaultBurkinaNews().map { art ->
+                LiveNewsArticle(
+                    title = art.title,
+                    link = art.url.ifBlank { "https://www.aib.media" },
+                    sourceName = art.source.ifBlank { "AIB / Presse du Faso" },
+                    pubDate = art.date,
+                    snippet = art.summary
+                )
+            }
         }
 
         if (allDistinctArticles.isEmpty()) {
