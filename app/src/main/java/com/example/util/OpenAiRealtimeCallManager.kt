@@ -276,15 +276,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
 
     private fun sendSessionUpdate(ws: WebSocket, liveHeadlines: String = "") {
         val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
-        val effectiveHeadlines = liveHeadlines.ifBlank {
-            try {
-                com.example.data.repository.NewsRepository.getDefaultBurkinaNews()
-                    .take(5)
-                    .joinToString("\n") { "- [${it.source}] ${it.title}: ${it.summary}" }
-            } catch (_: Throwable) {
-                ""
-            }
-        }
+        val effectiveHeadlines = liveHeadlines.trim()
         val fullInstructions = buildString {
             append("Date actuelle : $dateStr (octobre 2026).\n")
             append(SAM_AI_REALTIME_INSTRUCTIONS.trim())
@@ -382,7 +374,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         }
     }
 
-    private fun buildPerTurnRealtimeInstructions(userTranscript: String): String {
+    private fun buildPerTurnRealtimeInstructions(userTranscript: String, liveNewsContext: String = ""): String {
         val clean = userTranscript.trim()
         if (clean.isBlank()) {
             return """
@@ -393,6 +385,11 @@ RÈGLE STRICTE : L'appel est déjà en cours. Ne dis JAMAIS « Bonjour », « Sa
         val allowBonjour = didUserExplicitlyCommandToSayBonjour(clean)
         return buildString {
             append("TRANSCRIPTION VÉRIFIÉE DE CE QUE L'UTILISATEUR VIENT DE DIRE : « $clean ».\n")
+            if (liveNewsContext.isNotBlank()) {
+                append("\n--- ACTUALITÉS EN DIRECT POUR CETTE QUESTION ---\n")
+                append(liveNewsContext.take(1100))
+                append("\n------------------------------------------------\n")
+            }
             append("CONSIGNES IMPÉRATIVES POUR CETTE RÉPONSE (ZÉRO ERREUR) :\n")
             if (!allowBonjour) {
                 append("1. INTERDICTION ABSOLUE DE DIRE 'BONJOUR', 'SALUT' OU 'BONSOIR' : L'appel a déjà commencé. Ne prononce JAMAIS « Bonjour », « Salut » ou « Bonsoir » au début ni au milieu de ta réponse.\n")
@@ -402,6 +399,7 @@ RÈGLE STRICTE : L'appel est déjà en cours. Ne dis JAMAIS « Bonjour », « Sa
             append("2. OBÉISSANCE EXACTE ET LITTÉRALE :\n")
             append("   - Si l'utilisateur demande de DIRE, RÉPÉTER ou PRONONCER une phrase ou un mot (ex: « Dis ... », « Répète ... », « Prononce ... »), prononce UNIQUEMENT et EXACTEMENT ce qu'il a demandé de dire, mot pour mot, sans ajouter « D'accord », « Bien sûr » ou « Bonjour ».\n")
             append("   - Si l'utilisateur demande de FAIRE quelque chose ou pose une question (ex: « Dis-moi ... », « Explique ... », « Calcule ... », « Fais ... »), exécute ou réponds directement dès le premier mot avec 0% d'erreur.\n")
+            append("   - Si la question porte sur les actualités, donne directement les vraies nouvelles récentes fournies ci-dessus sans jamais répéter les mêmes phrases.\n")
             append("3. Si le message contient une question au début puis une autre à la fin, réponds à la demande finale.")
         }
     }
@@ -423,45 +421,58 @@ RÈGLE STRICTE : L'appel est déjà en cours. Ne dis JAMAIS « Bonjour », « Sa
             _callState.value = VoiceCallState.THINKING
         }
 
-        synchronized(queueLock) {
-            val ws = webSocket ?: return
-            if (!isSessionReady.get()) return
-
-            // 1. Vide immédiatement le tampon d'entrée micro pour isoler la réponse de SAM AI
-            ws.send("""{"type":"input_audio_buffer.clear"}""")
-
-            if (cleanTranscript.isNotBlank()) {
-                // 2. Supprime tous les anciens items (y compris l'item audio brut) et injecte la transcription
-                // exacte de gpt-4o-transcribe sous forme de message texte clair pour garantir 0% d'erreur de compréhension
-                purgePreviousConversationItems()
-                if (rawAudioItemId.isNotBlank()) {
-                    ws.send("""{"type":"conversation.item.delete","item_id":"$rawAudioItemId"}""")
+        scope.launch(Dispatchers.IO) {
+            val isNewsQuestion = cleanTranscript.isNotBlank() &&
+                WebSearchClassifier.classify(cleanTranscript).isSearchNeeded
+            val turnNewsContext = if (isNewsQuestion) {
+                val res = kotlinx.coroutines.withTimeoutOrNull(2200L) {
+                    liveNewsFeedService.fetchLiveNews(cleanTranscript)
                 }
-
-                val createTextItemPayload = buildJsonObject {
-                    put("type", "conversation.item.create")
-                    putJsonObject("item") {
-                        put("type", "message")
-                        put("role", "user")
-                        put("content", buildJsonArray {
-                            add(buildJsonObject {
-                                put("type", "input_text")
-                                put("text", buildUserTurnPrompt(cleanTranscript))
-                            })
-                        })
-                    }
-                }.toString()
-                ws.send(createTextItemPayload)
+                if (res != null && res.hasNews) res.contextSummary else ""
+            } else {
+                ""
             }
 
-            // 3. Déclenche la réponse vocale avec les consignes strictes dédiées à cette phrase
-            val responseCreatePayload = buildJsonObject {
-                put("type", "response.create")
-                putJsonObject("response") {
-                    put("instructions", buildPerTurnRealtimeInstructions(cleanTranscript))
+            synchronized(queueLock) {
+                val ws = webSocket ?: return@launch
+                if (!isSessionReady.get() || !isActiveCall.get()) return@launch
+
+                // 1. Vide immédiatement le tampon d'entrée micro pour isoler la réponse de SAM AI
+                ws.send("""{"type":"input_audio_buffer.clear"}""")
+
+                if (cleanTranscript.isNotBlank()) {
+                    // 2. Supprime tous les anciens items (y compris l'item audio brut) et injecte la transcription
+                    // exacte de gpt-4o-transcribe sous forme de message texte clair pour garantir 0% d'erreur de compréhension
+                    purgePreviousConversationItems()
+                    if (rawAudioItemId.isNotBlank()) {
+                        ws.send("""{"type":"conversation.item.delete","item_id":"$rawAudioItemId"}""")
+                    }
+
+                    val createTextItemPayload = buildJsonObject {
+                        put("type", "conversation.item.create")
+                        putJsonObject("item") {
+                            put("type", "message")
+                            put("role", "user")
+                            put("content", buildJsonArray {
+                                add(buildJsonObject {
+                                    put("type", "input_text")
+                                    put("text", buildUserTurnPrompt(cleanTranscript))
+                                })
+                            })
+                        }
+                    }.toString()
+                    ws.send(createTextItemPayload)
                 }
-            }.toString()
-            ws.send(responseCreatePayload)
+
+                // 3. Déclenche la réponse vocale avec les consignes strictes dédiées à cette phrase
+                val responseCreatePayload = buildJsonObject {
+                    put("type", "response.create")
+                    putJsonObject("response") {
+                        put("instructions", buildPerTurnRealtimeInstructions(cleanTranscript, turnNewsContext))
+                    }
+                }.toString()
+                ws.send(responseCreatePayload)
+            }
         }
     }
 
@@ -473,10 +484,10 @@ RÈGLE STRICTE : L'appel est déjà en cours. Ne dis JAMAIS « Bonjour », « Sa
                 argsObj["query"]?.jsonPrimitive?.content?.trim().orEmpty()
             } catch (_: Throwable) {
                 ""
-            }.ifBlank { "actualités Burkina Faso Afrique" }
+            }.ifBlank { "actualités" }
 
             val newsSummary = try {
-                val liveResult = kotlinx.coroutines.withTimeoutOrNull(1100L) {
+                val liveResult = kotlinx.coroutines.withTimeoutOrNull(2500L) {
                     liveNewsFeedService.fetchLiveNews(query)
                 }
                 if (liveResult != null && liveResult.hasNews && liveResult.contextSummary.isNotBlank()) {

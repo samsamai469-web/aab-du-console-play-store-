@@ -112,40 +112,37 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // User Avatar & Identity Header
-            Box(contentAlignment = Alignment.BottomEnd) {
-                Surface(
-                    modifier = Modifier.size(88.dp),
-                    shape = CircleShape,
-                    color = if (userProfile.isLoggedIn) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                    border = BorderStroke(
-                        2.dp,
-                        if (userProfile.isLoggedIn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-                    )
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        if (userProfile.isLoggedIn && !userProfile.photoUrl.isNullOrBlank()) {
-                            AsyncImage(
-                                model = userProfile.photoUrl,
-                                contentDescription = "Photo de profil",
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .clip(CircleShape),
-                                contentScale = ContentScale.Crop
-                            )
-                        } else {
-                            Icon(
-                                if (userProfile.isLoggedIn) Icons.Default.Person else Icons.Default.PersonOutline,
-                                contentDescription = "Avatar",
-                                modifier = Modifier.size(48.dp),
-                                tint = if (userProfile.isLoggedIn) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+            if (userProfile.isLoggedIn) {
+                // User Avatar & Identity Header (when logged in)
+                Box(contentAlignment = Alignment.BottomEnd) {
+                    Surface(
+                        modifier = Modifier.size(88.dp),
+                        shape = CircleShape,
+                        color = MaterialTheme.colorScheme.primaryContainer,
+                        border = BorderStroke(2.dp, MaterialTheme.colorScheme.primary)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            if (!userProfile.photoUrl.isNullOrBlank()) {
+                                AsyncImage(
+                                    model = userProfile.photoUrl,
+                                    contentDescription = "Photo de profil",
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .clip(CircleShape),
+                                    contentScale = ContentScale.Crop
+                                )
+                            } else {
+                                Icon(
+                                    Icons.Default.Person,
+                                    contentDescription = "Avatar",
+                                    modifier = Modifier.size(48.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
-                }
 
-                // Provider Badge if logged in
-                if (userProfile.isLoggedIn) {
+                    // Provider Badge
                     Surface(
                         shape = CircleShape,
                         color = when (userProfile.provider) {
@@ -181,18 +178,16 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                         }
                     }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
-            Text(
-                text = if (userProfile.isLoggedIn) userProfile.name else "Compte Invité",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onBackground
-            )
+                Text(
+                    text = userProfile.name,
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
 
-            if (userProfile.isLoggedIn) {
                 val displaySubtitle = when {
                     (userProfile.provider == AuthProvider.WHATSAPP || userProfile.provider == AuthProvider.PHONE) && !userProfile.phoneNumber.isNullOrBlank() -> userProfile.phoneNumber ?: ""
                     userProfile.email.isNotBlank() && !userProfile.email.endsWith("@whatsapp.auth") && !userProfile.email.endsWith("@phone.auth") -> userProfile.email
@@ -221,18 +216,17 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
                     )
                 }
             } else {
-                Text(
-                    text = "Mode découverte (Inscription non obligatoire)",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
+                // Lorsqu'une personne a ignoré la connexion à l'ouverture, elle retrouve ici l'interface "Bienvenue sur Sam AI"
+                // pour se connecter ou créer son compte à tout moment.
+                SamAiWelcomeAuthSection(
+                    viewModel = viewModel
                 )
             }
 
-            // Indicateur : Présentation terminée (cliquable pour revoir la vidéo et la présentation)
+            // Indicateur : Présentation terminée (cliquable pour revoir la présentation)
             val isOnboardingDone by viewModel.isOnboardingCompleted.collectAsState()
             if (isOnboardingDone) {
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(12.dp))
                 Surface(
                     onClick = {
                         viewModel.replayOnboarding()
@@ -264,213 +258,6 @@ fun ProfileScreen(viewModel: SamAiViewModel, navController: NavController) {
             }
 
             Spacer(modifier = Modifier.height(20.dp))
-
-            // AUTHENTICATION / ACCOUNT CREATION CARD (Displayed when not logged in)
-            if (!userProfile.isLoggedIn) {
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("card_auth_options"),
-                    shape = RoundedCornerShape(22.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.surface
-                    ),
-                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f))
-                ) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(20.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Surface(
-                                shape = CircleShape,
-                                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        Icons.Default.AccountCircle,
-                                        contentDescription = null,
-                                        tint = MaterialTheme.colorScheme.primary,
-                                        modifier = Modifier.size(22.dp)
-                                    )
-                                }
-                            }
-                            Spacer(modifier = Modifier.width(12.dp))
-                            Column {
-                                Text(
-                                    text = "Créer un compte ou Se connecter",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Text(
-                                    text = "Optionnel : Sauvegardez vos progrès",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(18.dp))
-
-                        // 1. Bouton Connexion Google (Mis en avant & Officiel)
-                        Surface(
-                            onClick = { 
-                                if (!isGoogleLoading) {
-                                    coroutineScope.launch {
-                                        try {
-                                            isGoogleLoading = true
-                                            val result = com.example.util.GoogleAuthManager.launchCredentialManagerSignIn(context)
-                                            isGoogleLoading = false
-                                            when (result) {
-                                                is com.example.util.GoogleAuthResult.Success -> {
-                                                    val (ok, msg) = viewModel.loginWithGoogle(
-                                                        email = result.account.email,
-                                                        name = result.account.displayName,
-                                                        photoUrl = result.account.photoUrl,
-                                                        googleSubjectId = result.account.googleId,
-                                                        idToken = result.account.idToken
-                                                    )
-                                                    Toast.makeText(context, if (ok) msg else "Connecté avec succès !", Toast.LENGTH_SHORT).show()
-                                                }
-                                                is com.example.util.GoogleAuthResult.Cancelled -> {
-                                                    // Quand l'utilisateur clique son adresse mais que Google Play Services annule (rejet SHA-1)
-                                                    val detectedEmail = try {
-                                                        val am = android.accounts.AccountManager.get(context)
-                                                        am.getAccountsByType("com.google").firstOrNull()?.name
-                                                    } catch (_: Throwable) { null } ?: "samsamai469@gmail.com"
-
-                                                    val detectedName = detectedEmail.substringBefore("@").replace(".", " ")
-                                                        .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
-
-                                                    viewModel.loginWithGoogle(
-                                                        email = detectedEmail,
-                                                        name = detectedName
-                                                    )
-                                                    Toast.makeText(context, "Connecté avec succès !", Toast.LENGTH_SHORT).show()
-                                                }
-                                                is com.example.util.GoogleAuthResult.Error -> {
-                                                    // Connexion directe automatique et transparente avec le compte Google
-                                                    val detectedEmail = try {
-                                                        val am = android.accounts.AccountManager.get(context)
-                                                        am.getAccountsByType("com.google").firstOrNull()?.name
-                                                    } catch (_: Throwable) { null } ?: "samsamai469@gmail.com"
-
-                                                    val detectedName = detectedEmail.substringBefore("@").replace(".", " ")
-                                                        .replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
-
-                                                    viewModel.loginWithGoogle(
-                                                        email = detectedEmail,
-                                                        name = detectedName
-                                                    )
-                                                    Toast.makeText(context, "Connecté avec succès !", Toast.LENGTH_SHORT).show()
-                                                }
-                                            }
-                                        } catch (t: Throwable) {
-                                            isGoogleLoading = false
-                                            viewModel.loginWithGoogle(
-                                                email = "samsamai469@gmail.com",
-                                                name = "SAM AI"
-                                            )
-                                            Toast.makeText(context, "Connecté avec succès !", Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                }
-                            },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp)
-                                .testTag("btn_auth_google"),
-                            shape = RoundedCornerShape(14.dp),
-                            color = MaterialTheme.colorScheme.surface,
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)),
-                            shadowElevation = 1.dp
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .padding(horizontal = 16.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                if (isGoogleLoading) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(20.dp),
-                                        strokeWidth = 2.dp,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Text(
-                                        text = "Connexion Google en cours...",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                } else {
-                                    Icon(
-                                        painter = painterResource(id = R.drawable.ic_google_logo),
-                                        contentDescription = "Google",
-                                        tint = Color.Unspecified,
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(12.dp))
-                                    Text(
-                                        text = "Continuer avec Google",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                }
-                            }
-                        }
-
-
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // 1. Bouton Connexion Email & Mot de passe
-                        Button(
-                            onClick = { showEmailAuthDialog = true },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(50.dp)
-                                .testTag("btn_auth_email"),
-                            shape = RoundedCornerShape(14.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary
-                            ),
-                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.Center
-                            ) {
-                                Icon(
-                                    Icons.Default.Email,
-                                    contentDescription = "Email",
-                                    tint = MaterialTheme.colorScheme.onPrimary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(12.dp))
-                                Text(
-                                    text = "Continuer avec Email / Mot de passe",
-                                    style = MaterialTheme.typography.labelLarge,
-                                    fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(18.dp))
-            }
 
             // Learning Stats Card (Accessible by all users, including guest mode)
             Card(

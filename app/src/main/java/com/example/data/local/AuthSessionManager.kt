@@ -52,7 +52,7 @@ class AuthSessionManager(context: Context) {
      */
     fun saveUserProfile(profile: UserProfile) {
         try {
-            if (!profile.isLoggedIn) {
+            if (!profile.isLoggedIn || com.example.data.remote.FirebaseAuthService.isFakeOrPlaceholderEmail(profile.email)) {
                 clearSession()
                 return
             }
@@ -79,7 +79,7 @@ class AuthSessionManager(context: Context) {
             } ?: return null
 
             // Essai de décodage JSON direct (EncryptedSharedPreferences)
-            try {
+            val decoded = try {
                 json.decodeFromString<UserProfile>(stored)
             } catch (_: Throwable) {
                 // Rétrocompatibilité : déchiffrement legacy si le blob était précédemment chiffré avec SecurityUtils
@@ -88,6 +88,13 @@ class AuthSessionManager(context: Context) {
                     json.decodeFromString<UserProfile>(decrypted)
                 } else null
             }
+
+            if (decoded != null && com.example.data.remote.FirebaseAuthService.isFakeOrPlaceholderEmail(decoded.email)) {
+                Log.w("AuthSessionManager", "Suppression automatique d'une session avec adresse fictive: ${decoded.email}")
+                clearSession()
+                return null
+            }
+            decoded
         } catch (e: Throwable) {
             Log.w("AuthSessionManager", "Échec de restauration du profil utilisateur", e)
             null

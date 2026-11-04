@@ -173,6 +173,7 @@ class MainActivity : ComponentActivity() {
           
           if (!hasCompletedOnboarding) {
               OnboardingScreen(
+                  viewModel = viewModel,
                   onFinish = {
                       try {
                         val prefs = getSharedPreferences("SamAiPrefs", Context.MODE_PRIVATE)

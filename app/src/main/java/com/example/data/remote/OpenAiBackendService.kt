@@ -47,10 +47,13 @@ class OpenAiBackendService {
 
     companion object {
         const val FLAGSHIP_OPENAI_MODEL = "gpt-4o"
+        const val WEB_SEARCH_OPENAI_MODEL = "gpt-4o-search-preview"
         const val FAST_VOICE_OPENAI_MODEL = "gpt-4o-mini"
         private val VALID_OPENAI_MODELS = setOf(
             "gpt-4o",
+            "gpt-4o-search-preview",
             "gpt-4o-mini",
+            "gpt-4o-mini-search-preview",
             "gpt-4.1",
             "gpt-4.1-mini",
             "chatgpt-4o-latest",
@@ -83,7 +86,7 @@ class OpenAiBackendService {
     private fun sanitizeSamAiText(raw: String, userQuestion: String = ""): String {
         var cleaned = raw
             .replace(Regex("(?i)\\bChatGPT\\b"), "SAM AI")
-            .replace(Regex("(?i)\\bGPT-4(\\.1|\\.5|o)?(-mini|-turbo|-preview|-2024-\\d{2}-\\d{2})?\\b"), "SAM AI")
+            .replace(Regex("(?i)\\bGPT-4(\\.1|\\.5|o)?(-mini|-turbo|-preview|-search-preview|-2024-\\d{2}-\\d{2})?\\b"), "SAM AI")
             .replace(Regex("(?i)\\bOpenAI\\b"), "SAM AI")
             .trim()
 
@@ -105,7 +108,7 @@ class OpenAiBackendService {
 
     /**
      * Envoie une question ou un historique complet de discussion à SAM AI
-     * en injectant si disponible le contexte des dépêches d'actualités en direct.
+     * en activant la recherche Web en direct et le contexte de dépêches fraîches.
      */
     suspend fun sendChatMessage(
         messages: List<ChatMessage>,
@@ -125,35 +128,34 @@ class OpenAiBackendService {
             )
         }
 
-        // Priorité à gpt-4o pour une obéissance exacte aux consignes et zéro erreur
-        val primaryModel = when {
-            preferredModel.isNotBlank() && preferredModel in VALID_OPENAI_MODELS -> preferredModel
-            else -> FLAGSHIP_OPENAI_MODEL
-        }
+        // Si une recherche d'actualité en direct est demandée dans le chat écrit, on tente d'abord
+        // le modèle de recherche Web en temps réel (gpt-4o-search-preview), puis repli sur gpt-4o
+        val candidateModels = buildList {
+            if (enableWebSearch && !isVoiceCall) {
+                add(WEB_SEARCH_OPENAI_MODEL)
+            }
+            if (preferredModel.isNotBlank() && preferredModel in VALID_OPENAI_MODELS) {
+                add(preferredModel)
+            }
+            add(FLAGSHIP_OPENAI_MODEL)
+            add(FAST_VOICE_OPENAI_MODEL)
+        }.distinct()
 
-        var directOpenAiResult = tryCallOfficialOpenAiApi(
-            messages = messages,
-            userQuestion = cleanQuestion,
-            model = primaryModel,
-            newsContext = newsContext,
-            sources = sources,
-            isMooreVoice = false,
-            isVoiceCall = isVoiceCall
-        )
-
-        if (directOpenAiResult == null || !directOpenAiResult.success) {
-            val fallbackModel = if (primaryModel != FLAGSHIP_OPENAI_MODEL) FLAGSHIP_OPENAI_MODEL else "gpt-4o-mini"
-            val fallbackResult = tryCallOfficialOpenAiApi(
+        var directOpenAiResult: OpenAiChatResult? = null
+        for (candidateModel in candidateModels) {
+            val attemptResult = tryCallOfficialOpenAiApi(
                 messages = messages,
                 userQuestion = cleanQuestion,
-                model = fallbackModel,
+                model = candidateModel,
                 newsContext = newsContext,
                 sources = sources,
+                enableWebSearch = enableWebSearch,
                 isMooreVoice = false,
                 isVoiceCall = isVoiceCall
             )
-            if (fallbackResult != null && fallbackResult.success) {
-                directOpenAiResult = fallbackResult
+            if (attemptResult != null && attemptResult.success && attemptResult.text.isNotBlank()) {
+                directOpenAiResult = attemptResult
+                break
             }
         }
 
@@ -174,198 +176,7 @@ class OpenAiBackendService {
 
     @Suppress("unused")
     private fun legacyResolveDeterministicMooreLessonReply(rawQuestion: String, isMooreVoice: Boolean): String? {
-        val cleaned = rawQuestion
-            .replace(Regex("\\[.*?\\]"), " ")
-            .trim()
-        if (cleaned.isBlank()) return null
-
-        val deprolonged = com.example.data.engine.DictionaryLookupEngine.normalizeMooreProlongations(cleaned)
-        val norm = deprolonged.lowercase(java.util.Locale.ROOT)
-            .replace("’", "'")
-            .replace("‘", "'")
-            .replace(Regex("[^a-zàâäéèêëîïôöùûüçñãẽĩõũʋɩɛ'\\s-]"), " ")
-            .replace(Regex("\\s+"), " ")
-            .trim()
-
-        if (!isMooreVoice && norm !in setOf(
-                "nii yi beogo", "ni yibeogo", "ni yi beogo", "ne y beogo", "ne yibeogo",
-                "nii zabre", "nii zaabre", "ni zabre", "ni zaabre", "ne zabre", "ne zaabre",
-                "nii windga", "ni windga", "ne windga", "ne y windga",
-                "niyungo", "nii yungo", "ni yungo", "ne yungo",
-                "wind da ganeg laafi", "wend na ganeg laafi", "neewôgô", "neewogo", "nindaaré", "nindaare"
-            )
-        ) {
-            return null
-        }
-
-        // 1. SALUTATIONS COMPOSÉES + QUESTIONS (ex: "Nii yi beogo, fo be laafi ?")
-        if (norm.startsWith("nii yi beogo") && (norm.contains("laafi") || norm.contains("kibare") || norm.contains("kibaré"))) {
-            return "Yibeo kibare ! Laafi bala, ya sonma. Fo data bõe tɩ m sõng-fo ?"
-        }
-        if (norm.startsWith("nii zabre") && (norm.contains("laafi") || norm.contains("kibare") || norm.contains("kibaré"))) {
-            return "Zabre kibare ! Laafi bala, ya sonma. Fo data bõe tɩ m sõng-fo ?"
-        }
-        if (norm.startsWith("nii windga") && (norm.contains("laafi") || norm.contains("kibare") || norm.contains("kibaré"))) {
-            return "Windga kibare ! Laafi bala, ya sonma. Fo data bõe tɩ m sõng-fo ?"
-        }
-        if ((norm.startsWith("niyungo") || norm.startsWith("nii yungo")) && (norm.contains("laafi") || norm.contains("kibare") || norm.contains("kibaré"))) {
-            return "Yungo kibare ! Laafi bala, ya sonma. Fo data bõe tɩ m sõng-fo ?"
-        }
-
-        // 2. SALUTATIONS, QUESTIONS ET DIALOGUES EXACTS DES 50 AUDIOS DE RÉFÉRENCE (0% d'erreur)
-        when {
-            // Audio #1 (Matin) : "Nii yi beogo" (= Bonjour) -> Réponse obligatoire : "Yibeo kibare"
-            norm in setOf(
-                "nii yi beogo", "ni yibeogo", "ni yi beogo", "ne y beogo", "ne yibeogo",
-                "ni beogo", "ne beogo", "ney beogo", "n'yibeogo", "nei beogo", "ne yeogo",
-                "nii yibeogo", "ni ibeogo", "ni ibéogo", "ni yibeo", "yibeogo", "ni i bogo", "ni bogo"
-            ) -> return "Yibeo kibare"
-
-            // Audio #2 (Soir) : "Nii zabre" (= Bonsoir) -> Réponse obligatoire : "Zabre kibare"
-            norm in setOf(
-                "nii zabre", "nii zaabre", "ni zabre", "ni zaabre", "ne zabre", "ne zaabre",
-                "ne y zabre", "ne y zaabre", "ney zabre", "ney zaabre", "nezaabre", "ni sabre", "ni zabré"
-            ) -> return "Zabre kibare"
-
-            // Audio #3 (Midi / Après-midi) : "Nii windga" (= Midi / Bon après-midi) -> Réponse obligatoire : "Windga kibare"
-            norm in setOf(
-                "nii windga", "ni windga", "ne windga", "ne y windga", "ne y wĩndga",
-                "niwinga", "ne winga", "ne wĩnga", "nii ouindga", "ni ouindga", "ni winga", "nii winga"
-            ) -> return "Windga kibare"
-
-            // Audio #4 (Nuit) : "Niyungo" / "Nii yungo" (= Bonsoir de nuit) -> Réponse obligatoire : "Yungo kibare"
-            norm in setOf(
-                "niyungo", "nii yungo", "ni yungo", "ne yungo", "ne y yungo", "ne y yʋngo",
-                "n'yungo", "nii youngo", "ni youngo", "ni yougo"
-            ) -> return "Yungo kibare"
-
-            // Audio #5 (Bonne nuit) : "Wind da ganeg laafi"
-            norm in setOf(
-                "wind da ganeg laafi", "wend na ganeg laafi", "wẽnd na gãneg laafi",
-                "gang laafi", "gãng laafi", "ouenda ganag lafi", "winda ganeg lafi"
-            ) -> return "Amiina ! Wind da ganeg laafi."
-
-            // Audio #6 (Bienvenue) : "Neewôgô" / "Ne waongo"
-            norm in setOf("neewôgô", "neewogo", "ne waongo", "ne waogo", "ne y waoongo", "waoongo", "newogo") ->
-                return if (isMooreVoice) "Barka ! Laafi bala ? Fo data bõe tɩ m sõng-fo ?" else "Barka ! Laafi bala ?"
-
-            // Audio #7 (Réponse aux nouvelles) : "Kibare" / "Yibeo kibare" / "Zabre kibare" / "Windga kibare" / "Yungo kibare"
-            norm in setOf(
-                "kibare", "kibaré", "kibaare", "yibeo kibare", "yibéo kibaré", "zabre kibare", "zaabre kibare",
-                "windga kibare", "yungo kibare", "fo laafi", "fo be laafi", "laafi beeme", "lafi beme", "lafi bémé"
-            ) -> return if (isMooreVoice) "Laafi bala ! Ya sonma. Fo data bõe tɩ m sõng-fo ?" else "Laafi bala ! Ya sonma."
-
-            // Audio #9 (Ça va bien) : "Ya sonma" / "Laafi bala"
-            norm in setOf("ya sonma", "ya soma", "yaa sõama", "yaa soama", "laafi bala", "lafi bala", "mam be laafi") ->
-                return if (isMooreVoice) "Wẽnd na kõ-d laafi ! Fo data bõe tɩ m sõng-fo ?" else "Wẽnd na kõ-d laafi !"
-
-            // Audio #10 (Merci) : "Barka" / "Barka wʋsgo"
-            norm in setOf("barka", "barka wusgo", "barka wʋsgo", "barka woto", "barka ousgo") ->
-                return if (isMooreVoice) "Kaseto ka be ye ! Mam pʋsda fo. Fo me data bõe ?" else "Kaseto ka be ye ! Mam pʋsda fo."
-
-            // Audio #11 (Au revoir) : "Nindaaré"
-            norm in setOf("nindaare", "nindaaré", "bilmãse", "bilmase", "nindare") ->
-                return "Wënd-na kô-d nindaare !"
-
-            // Audio #12 (Adieu / À la prochaine) : "Wënd-na kô-d nindaare"
-            norm in setOf("wënd-na kô-d nindaare", "wend na ko-d nindaare", "wẽnd na kõ-d nindaare", "wenda kod nindaare") ->
-                return "Amiina ! Nindaaré."
-
-            // Audio #13 (Je vais dormir) : "M nan gounsam"
-            norm in setOf("m nan gounsam", "m na n gʋsame", "m na goussom", "m na goussem", "m'na goussom") ->
-                return "Wind da ganeg laafi !"
-
-            // Audio #14 (Je vais à la maison) : "M debda zakin wan"
-            norm in setOf("m debda zakin wan", "m debda zakin", "m debda zakẽ wã", "m'debda zakouan") ->
-                return "Wẽnd na taase laafi ! Nindaaré."
-
-            // Audio #15 (Je veux l'argent) : "M data ligdi"
-            norm in setOf("m data ligdi", "mam data ligdi", "mam rata ligdi", "m'data ligdi") ->
-                return "Wẽnd na kõ-f ligdi la laafi ! Fo data bõe yɛsa ?"
-
-            // Audio #16 (L'actualité du jour / Nouvelles) : "Sên na be" / "Rũndã kibaaya"
-            norm in setOf("sên na be", "sen na be", "rũndã kibaaya", "runda kibaya", "kibare boe n be runda", "kibare bôe n be rũndã") ->
-                return "Rũndã kibaaya yaa sõama Burkina Faso pʋgẽ ! Laafi beeme. Fo data bõe ?"
-
-            // Questions courantes en Mooré : Comment tu t'appelles / Qui es-tu / Qui t'a créé / Que peux-tu faire / Parle-moi du Burkina
-            norm in setOf("fo yʋʋre la bõe", "fo yuure la boe", "fo yʋʋre la boe", "fo yuure la bõe") ->
-                return "Mam yʋʋre la SAM AI ! Abdoul Mohamine Sawadogo n naan maam. Fo data bõe tɩ m sõng-fo ?"
-
-            norm in setOf("fo yaa anda", "fo yaa ãnda", "anda n naan fo", "ãnda n naan fo", "anda n naan-fo", "ãnda n naan-fo") ->
-                return "Maam yaa SAM AI, Abdoul Mohamine Sawadogo n naan maam Burkina Faso pʋgẽ. Fo data bõe tɩ m sõng-fo ?"
-
-            norm in setOf("boe la sam ai toe n maane", "bôe la sam ai tõe n maane", "bõe la fo tõe n maane", "boe la fo toe n maane") ->
-                return "Maam tõe n leoka fo sokdsã fãa ne Mooré, n sõng-fo ne Burkina Faso kibaya la gom-biisi ! Fo data bõe tɩ m sõng-fo ?"
-
-            norm in setOf("fo data bõe", "fo data boe", "bõe la fo data", "boe la fo data") ->
-                return "Maam data n sõng-fo ! Sok-m fo sokrã tɩ m leok-fo sân-sân."
-
-            norm in setOf("yel-mam kibare ne burkina faso", "yel mam kibare ne burkina faso", "burkina faso teng-zugu la ye", "burkina faso tẽng-zugu la yɛ") ->
-                return "Burkina Faso yaa nin-tɩrs tẽnga ! A tẽng-zugu yaa Ouagadougou, la Bobo-Dioulasso yaa tẽng-kãsenga. Tond nongda Burkina Faso wʋsgo !"
-
-            // Vocabulaire des 50 leçons audio du créateur (réponses exactes en Mooré lors de l'appel vocal)
-            norm in setOf("maam", "mam") -> return "N-ye, maam la fo zoodo SAM AI ! Fo data bõe ?"
-            norm in setOf("fõ", "fo") -> return "N-ye, fõ yaa mam zoodo ! Fo data bõe tɩ m sõng-fo ?"
-            norm in setOf("tond", "tondo") -> return "N-ye, tond be laafi bala ! Fo data bõe ?"
-            norm in setOf("m'ma", "mma", "m ma") -> return "Wẽnd na kõ m'ma laafi la nindaaré !"
-            norm in setOf("m'baaba", "mbaaba", "m baaba") -> return "Wẽnd na kõ m'baaba laafi !"
-            norm in setOf("nikiemam", "nikieman", "nin-kẽema") -> return "Tond pʋʋsda nikieman ne waoogre !"
-            norm in setOf("poug yaanga", "pug yaanga") -> return "Wẽnd na kõ poug yaanga laafi !"
-            norm in setOf("paga", "pagba") -> return "Burkina Faso paga tʋmda tʋʋm-sõama wʋsgo !"
-            norm in setOf("rawa", "raoa") -> return "Rawa yaa nin-tɩrga ! Laafi bala ?"
-            norm in setOf("biiga", "biga") -> return "Wẽnd na gũ biiga la a kõ-a laafi !"
-            norm in setOf("poug sada", "pug sada") -> return "Poug sada be laafi bala !"
-            norm in setOf("kakouada", "kakuada") -> return "Kakouada yaa sõama !"
-            norm in setOf("tandaogo", "tãndaogo") -> return "Tandaogo pãnga yaa kãsenga !"
-            norm in setOf("raaga", "raga") -> return "Fo debda raaga pʋgẽ bɩ ? Wẽnd na kõ-f raab sõama !"
-            norm in setOf("zom-kom", "zom kom") -> return "Zom-kom noomame wʋsgo ! Neewôgô."
-            norm in setOf("monteur", "monter") -> return "Monteur wã tʋmda sõama !"
-            norm in setOf("monbile", "mobili") -> return "Monbile wã kẽnda sõama !"
-            norm in setOf("pnous", "pinou") -> return "Pnous wã yaa sõama !"
-            norm in setOf("nanwoudre", "naodr") -> return "Nanwoudre be laafi !"
-            norm in setOf("weefo", "wefo") -> return "Weefo wã zoeta tao-tao !"
-            norm in setOf("moncoroni", "makoroni") -> return "Moncoroni rɩɩbo noomame !"
-            norm in setOf("foūgou", "fougou", "fugu") -> return "Foūgou Faso Dan Fani yaa neere wʋsgo !"
-            norm in setOf("son kaam", "soun kaam") -> return "Son kaam yaa sõama !"
-            norm in setOf("bidou", "bidu") -> return "Bidou be zakẽ wã !"
-            norm in setOf("mougne", "munyu") -> return "Mougne yaa sõama wʋsgo !"
-            norm in setOf("beinga", "benga") -> return "Beinga rɩɩbo noomame wʋsgo !"
-            norm in setOf("touayga", "toega") -> return "Touayga tɩɩga yaa kãsenga !"
-            norm in setOf("banga") -> return "Banga be laafi !"
-            norm in setOf("yagre", "yakre") -> return "Yagre yaa sõama !"
-        }
-
         return null
-    }
-
-    /**
-     * Nettoie la réponse vocale Mooré en retirant toute note entre parenthèses/crochets
-     * sans jamais supprimer ni tronquer la réponse à la question posée par l'utilisateur.
-     */
-    private fun cleanMooreVoiceFormatting(raw: String): String {
-        var text = raw.trim()
-        if (text.isBlank()) return "Laafi bala ! Fo data bõe tɩ m sõng-fo ?"
-
-        // 1. Supprimer uniquement les traductions entre parenthèses ou crochets (ex: "(Bonjour...)")
-        text = text.replace(Regex("\\([^)]*\\)"), " ")
-            .replace(Regex("\\[[^]]*\\]"), " ")
-            .replace(Regex("(?i)\\b(traduction|en français|signification)\\s*:\\s*.*$"), " ")
-            .replace(Regex("\\s+"), " ")
-            .trim()
-
-        return text.ifBlank { raw.trim() }
-    }
-
-    private fun containsFrenchPhrases(text: String): Boolean {
-        val lower = text.lowercase(java.util.Locale.ROOT)
-        val frenchMarkers = listOf(
-            "je suis ", "je peux ", "comment puis-je", "que veux-tu", "que voulez-vous",
-            "bonjour ", "bonsoir ", "bienvenue ", "merci beaucoup", "avec plaisir",
-            "désolé", "desole", "je ne comprends pas", "en français",
-            "cela signifie", "ça veut dire", "voici ", "aujourd'hui",
-            "c'est une ", "c'est un ", "vous pouvez", "tu peux", "pour vous aider"
-        )
-        return frenchMarkers.any { lower.contains(it) }
     }
 
     /**
@@ -377,6 +188,7 @@ class OpenAiBackendService {
         model: String,
         newsContext: String = "",
         sources: List<WebSource> = emptyList(),
+        enableWebSearch: Boolean = false,
         isMooreVoice: Boolean = false,
         isVoiceCall: Boolean = false
     ): OpenAiChatResult? {
@@ -407,7 +219,7 @@ class OpenAiBackendService {
                 append("   - Si l'utilisateur te demande de FAIRE quelque chose ou pose une question, exécute sa demande avec une exactitude absolue (0% d'erreur) et sans jamais répondre à côté.\n")
                 append("3. 100% FRANÇAIS ET TON D'HOMME HUMAIN : Parle en français naturel avec les accords masculins. Sois direct et concis (1 à 3 phrases claires, sauf si l'utilisateur demande plus).\n")
                 append("4. DISTINCTION STRICTE DE CHAQUE QUESTION : Réponds uniquement au message actuel sans jamais reparler d'une ancienne question.\n")
-                append("5. ACTUALITÉS EN DIRECT : Lorsque des dépêches sont fournies ci-dessus, utilise-les directement. Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025.\n")
+                append("5. ACTUALITÉS EN DIRECT : Lorsque des dépêches sont fournies ci-dessus, utilise-les directement sans jamais répéter les mêmes phrases. Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025.\n")
                 append("6. ZÉRO FORMATAGE ÉCRIT : N'utilise jamais d'astérisques (*), de listes à puces, de titres (#) ou d'émojis.\n")
                 append("7. IDENTITÉ : Tu es SAM AI (créé par Abdoul Mohamine Sawadogo si on te demande qui t'a créé). Ne mentionne jamais OpenAI ou ChatGPT.\n")
             }
@@ -430,8 +242,11 @@ class OpenAiBackendService {
                 append("   - Si l'utilisateur pose une question au début de son message puis une autre question à la fin : s'il a changé d'avis, réponds à la dernière question ; s'il pose deux questions distinctes, traite chacune clairement sans revenir sur d'anciennes questions déjà résolues.\n")
                 append("4. LANGUE FRANÇAISE IMPECCABLE :\n")
                 append("   - Réponds toujours en français clair, fluide et naturel (sauf si l'utilisateur demande explicitement une traduction ou citation dans une autre langue).\n")
-                append("5. ACTUALITÉS ET TEMPS RÉEL :\n")
-                append("   - Lorsque des dépêches en direct sont fournies ci-dessus, exploite-les immédiatement. Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025.\n")
+                append("5. ACTUALITÉS EN TEMPS RÉEL (BURKINA FASO & MONDE) ET INTERDICTION DE SE RÉPÉTER :\n")
+                append("   - Lorsque l'utilisateur demande les actualités du Burkina Faso ou du monde, donne des informations réelles, récentes, concrètes et détaillées en t'appuyant sur la recherche Web en direct et les dépêches fournies ci-dessus.\n")
+                append("   - Si la question porte sur le Burkina Faso, traite spécifiquement des actualités récentes du Burkina Faso. Si la question porte sur le monde, traite des actualités internationales.\n")
+                append("   - INTERDICTION ABSOLUE DE RÉPÉTER LES MÊMES PHRASES : Vérifie tes réponses précédentes dans la conversation. Ne répète JAMAIS les mêmes phrases, les mêmes titres ni le même résumé déjà donné plus haut. À chaque nouvelle question sur l'actualité, présente de NOUVEAUX faits récents, d'autres dépêches et une rédaction entièrement nouvelle.\n")
+                append("   - Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025, ni que tu n'as pas accès aux actualités en temps réel.\n")
                 append("6. IDENTITÉ EXCLUSIVE SAM AI :\n")
                 append("   - Tu es uniquement SAM AI, conçu par Abdoul Mohamine Sawadogo (ne le mentionne que si on te demande qui t'a créé). Ne mentionne JAMAIS OpenAI, ChatGPT, GPT-4 ou Claude.\n")
             }
@@ -439,6 +254,7 @@ class OpenAiBackendService {
 
         try {
             val isReasoningModel = model.startsWith("o1") || model.startsWith("o3")
+            val isSearchPreviewModel = model.contains("search-preview")
             val systemRole = if (isReasoningModel) "developer" else "system"
 
             val safeHistory = if (isVoiceCall) {
@@ -469,13 +285,18 @@ class OpenAiBackendService {
             val requestBodyJson = buildJsonObject {
                 put("model", model)
                 put("messages", messagesArray)
-                if (isVoiceCall) {
+                if (isSearchPreviewModel) {
+                    put("max_completion_tokens", 3500)
+                    put("web_search_options", buildJsonObject {
+                        put("search_context_size", "medium")
+                    })
+                } else if (isVoiceCall) {
                     put("max_completion_tokens", 300)
-                    put("temperature", 0.15)
+                    put("temperature", if (enableWebSearch || newsContext.isNotBlank()) 0.45 else 0.15)
                 } else {
                     put("max_completion_tokens", 3500)
                     if (!isReasoningModel) {
-                        put("temperature", 0.15)
+                        put("temperature", if (enableWebSearch || newsContext.isNotBlank()) 0.6 else 0.2)
                     }
                 }
             }.toString()
@@ -502,7 +323,7 @@ class OpenAiBackendService {
                         404 -> "Service de génération temporairement indisponible (code 404)."
                         else -> "Erreur de communication avec le serveur SAM AI (${response.code})."
                     }
-                    Log.e("OpenAiBackendService", "Direct call error [${response.code}]: ${parsedError ?: errorDetails}")
+                    Log.w("OpenAiBackendService", "Call status [${response.code}] on $model: ${parsedError ?: errorDetails}")
                     return OpenAiChatResult(
                         success = false,
                         text = "",
@@ -519,14 +340,35 @@ class OpenAiBackendService {
                 val messageObj = firstChoice?.get("message") as? kotlinx.serialization.json.JsonObject
                 val content = (messageObj?.get("content") as? kotlinx.serialization.json.JsonPrimitive)?.content
 
+                val combinedSources = sources.toMutableList()
+                val annotations = messageObj?.get("annotations") as? kotlinx.serialization.json.JsonArray
+                annotations?.forEach { elem ->
+                    val annObj = elem as? kotlinx.serialization.json.JsonObject
+                    val urlCit = annObj?.get("url_citation") as? kotlinx.serialization.json.JsonObject
+                    val url = (urlCit?.get("url") as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty().trim()
+                    val title = (urlCit?.get("title") as? kotlinx.serialization.json.JsonPrimitive)?.content.orEmpty().trim()
+                    if (url.isNotBlank() && combinedSources.none { it.url == url }) {
+                        val domain = try {
+                            java.net.URI(url).host?.removePrefix("www.").orEmpty()
+                        } catch (_: Throwable) { "" }
+                        combinedSources.add(
+                            WebSource(
+                                title = title.ifBlank { domain.ifBlank { "Source Web" } },
+                                url = url,
+                                domain = domain
+                            )
+                        )
+                    }
+                }
+
                 if (!content.isNullOrBlank()) {
                     val finalText = sanitizeSamAiText(content, userQuestion)
                     return OpenAiChatResult(
                         success = true,
                         text = finalText,
-                        sources = sources,
+                        sources = combinedSources,
                         model = "",
-                        searchPerformed = sources.isNotEmpty(),
+                        searchPerformed = combinedSources.isNotEmpty() || isSearchPreviewModel,
                         errorMessage = null
                     )
                 }

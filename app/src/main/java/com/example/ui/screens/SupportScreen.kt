@@ -63,6 +63,9 @@ fun SupportScreen(
     var selectedCategory by remember {
         mutableStateOf(if (initialType == "help") "Suggestions" else "Bug")
     }
+    var senderName by remember(userProfile.isLoggedIn, userProfile.name) {
+        mutableStateOf(if (userProfile.isLoggedIn) userProfile.name else "")
+    }
     var subject by remember { mutableStateOf("") }
     var message by remember { mutableStateOf("") }
     var phoneNumber by remember { mutableStateOf("") }
@@ -76,11 +79,10 @@ fun SupportScreen(
 
     // Submission UI state
     var isSubmitting by remember { mutableStateOf(false) }
-    var submittingStatusText by remember { mutableStateOf("Enregistrement en cours…") }
+    var submittingStatusText by remember { mutableStateOf("Ouverture de WhatsApp…") }
     var submissionSuccess by remember { mutableStateOf(false) }
     var lastFormattedWhatsAppMessage by remember { mutableStateOf<String?>(null) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-    var isGoogleLoading by remember { mutableStateOf(false) }
 
     val categories = remember(selectedType) {
         listOf("Bug", "Traduction", "Compte", "Paiement", "Suggestions", "Autre")
@@ -129,9 +131,9 @@ fun SupportScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = if (userProfile.isLoggedIn) userProfile.name else (if (appLanguage == "en") "Guest session" else "Session Invité"),
+                            text = if (appLanguage == "en") "Direct WhatsApp Support (+226 69 43 46 30)" else "Assistance directe WhatsApp (+226 69 43 46 30)",
                             style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.primary
+                            color = whatsAppGreen
                         )
                     }
                 },
@@ -155,115 +157,7 @@ fun SupportScreen(
                 .padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            // --- BANNIÈRE D'AUTHENTIFICATION SI NON CONNECTÉ ---
-            if (!userProfile.isLoggedIn) {
-                item {
-                    Card(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("card_support_auth_required"),
-                        shape = RoundedCornerShape(18.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.8f)
-                        ),
-                        border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.error)
-                    ) {
-                        Column(modifier = Modifier.padding(18.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    Icons.Default.Lock,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(24.dp)
-                                )
-                                Spacer(modifier = Modifier.width(10.dp))
-                                Text(
-                                    text = if (appLanguage == "en") "Authentication Required" else "Authentification obligatoire",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = MaterialTheme.colorScheme.onErrorContainer
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = if (appLanguage == "en")
-                                    "To submit a report or ask for help, you must sign in with Google so our support team can identify and assist you."
-                                else
-                                    "Pour signaler un problème ou demander de l'aide, vous devez vous connecter avec Google afin que notre équipe puisse vous identifier et vous assister.",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onErrorContainer,
-                                lineHeight = 20.sp
-                            )
-                            Spacer(modifier = Modifier.height(14.dp))
-                            Button(
-                                onClick = {
-                                    if (!isGoogleLoading) {
-                                        isGoogleLoading = true
-                                        coroutineScope.launch {
-                                            when (val authRes = GoogleAuthManager.launchCredentialManagerSignIn(context)) {
-                                                is GoogleAuthResult.Success -> {
-                                                    val (ok, msg) = viewModel.loginWithGoogle(
-                                                        email = authRes.account.email,
-                                                        name = authRes.account.displayName,
-                                                        photoUrl = authRes.account.photoUrl,
-                                                        googleSubjectId = authRes.account.googleId,
-                                                        idToken = authRes.account.idToken
-                                                    )
-                                                    if (ok) {
-                                                        Toast.makeText(
-                                                            context,
-                                                            if (appLanguage == "en") "Connected as ${authRes.account.displayName}" else "Connecté en tant que ${authRes.account.displayName}",
-                                                            Toast.LENGTH_SHORT
-                                                        ).show()
-                                                    } else {
-                                                        Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                                                    }
-                                                }
-                                                is GoogleAuthResult.Error -> {
-                                                    Toast.makeText(context, authRes.message, Toast.LENGTH_LONG).show()
-                                                }
-                                                GoogleAuthResult.Cancelled -> {}
-                                            }
-                                            isGoogleLoading = false
-                                        }
-                                    }
-                                },
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(48.dp)
-                                    .testTag("btn_support_login_google"),
-                                shape = RoundedCornerShape(12.dp),
-                                colors = ButtonDefaults.buttonColors(
-                                    containerColor = MaterialTheme.colorScheme.error
-                                )
-                            ) {
-                                if (isGoogleLoading) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(20.dp),
-                                        color = Color.White,
-                                        strokeWidth = 2.dp
-                                    )
-                                } else {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Icon(
-                                            Icons.Default.AccountCircle,
-                                            contentDescription = null,
-                                            tint = Color.White,
-                                            modifier = Modifier.size(20.dp)
-                                        )
-                                        Spacer(modifier = Modifier.width(8.dp))
-                                        Text(
-                                            text = if (appLanguage == "en") "Sign In with Google" else "Se connecter avec Google",
-                                            fontWeight = FontWeight.Bold,
-                                            color = Color.White
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            } else if (submissionSuccess) {
+            if (submissionSuccess) {
                 // --- CARTE SUCCÈS & REDIRECTION WHATSAPP ---
                 item {
                     Card(
@@ -313,9 +207,9 @@ fun SupportScreen(
 
                             Text(
                                 text = if (appLanguage == "en")
-                                    "Your request has been securely recorded. WhatsApp has opened with your formatted message ready to send to Sam AI Support."
+                                    "WhatsApp has opened directly on +226 69 43 46 30 with your message pre-filled and ready to send."
                                 else
-                                    "Votre demande a été enregistrée avec succès. L'application WhatsApp s'ouvre avec votre message pré-rempli pour l'équipe Sam AI.",
+                                    "WhatsApp s'est ouvert directement sur le numéro +226 69 43 46 30 avec votre message pré-rempli prêt à être envoyé.",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 textAlign = TextAlign.Center,
@@ -328,7 +222,11 @@ fun SupportScreen(
                             Button(
                                 onClick = {
                                     lastFormattedWhatsAppMessage?.let { msg ->
-                                        SupportService.launchWhatsApp(context, msg)
+                                        SupportService.launchWhatsApp(
+                                            context = context,
+                                            message = msg,
+                                            phone = SupportService.OFFICIAL_SUPPORT_WHATSAPP_NUMBER
+                                        )
                                     }
                                 },
                                 modifier = Modifier
@@ -346,7 +244,7 @@ fun SupportScreen(
                                     )
                                     Spacer(modifier = Modifier.width(8.dp))
                                     Text(
-                                        text = if (appLanguage == "en") "Open WhatsApp Again" else "Ouvrir WhatsApp à nouveau",
+                                        text = if (appLanguage == "en") "Open WhatsApp Again (+226 69 43 46 30)" else "Ouvrir WhatsApp à nouveau (+226 69 43 46 30)",
                                         fontWeight = FontWeight.Bold,
                                         color = Color.White
                                     )
@@ -558,7 +456,36 @@ fun SupportScreen(
 
                             Spacer(modifier = Modifier.height(16.dp))
 
-                            // 2. Sujet
+                            // 2. Nom / Prénom de l'expéditeur
+                            Text(
+                                text = if (appLanguage == "en") "Your Name" else "Votre Nom / Prénom",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            OutlinedTextField(
+                                value = senderName,
+                                onValueChange = { senderName = it },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .testTag("input_support_name"),
+                                placeholder = {
+                                    Text(
+                                        if (appLanguage == "en") "e.g. Jean Ouédraogo" else "ex : Jean Ouédraogo",
+                                        fontSize = 14.sp
+                                    )
+                                },
+                                singleLine = true,
+                                leadingIcon = {
+                                    Icon(Icons.Default.Person, contentDescription = null, modifier = Modifier.size(20.dp))
+                                },
+                                shape = RoundedCornerShape(12.dp)
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            // 3. Sujet
                             Text(
                                 text = if (appLanguage == "en") "Subject *" else "Sujet *",
                                 style = MaterialTheme.typography.labelLarge,
@@ -587,7 +514,7 @@ fun SupportScreen(
 
                             Spacer(modifier = Modifier.height(16.dp))
 
-                            // 3. Message / Description détaillée
+                            // 4. Message / Description détaillée
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -600,9 +527,9 @@ fun SupportScreen(
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = "${message.length} / 20 min",
+                                    text = if (message.trim().length >= 5) "Prêt ✓" else "${message.trim().length} / 5 min",
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = if (message.length >= 20) Color(0xFF22C55E) else MaterialTheme.colorScheme.error
+                                    color = if (message.trim().length >= 5) Color(0xFF22C55E) else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                             Spacer(modifier = Modifier.height(6.dp))
@@ -616,9 +543,9 @@ fun SupportScreen(
                                 placeholder = {
                                     Text(
                                         if (appLanguage == "en")
-                                            "Describe the situation clearly (minimum 20 characters)..."
+                                            "Describe the bug or the help you need..."
                                         else
-                                            "Expliquez en détail votre situation (minimum 20 caractères)...",
+                                            "Expliquez en détail le bug rencontré ou l'aide dont vous avez besoin...",
                                         fontSize = 14.sp,
                                         lineHeight = 19.sp
                                     )
@@ -628,7 +555,7 @@ fun SupportScreen(
 
                             Spacer(modifier = Modifier.height(16.dp))
 
-                            // 4. Numéro de téléphone optionnel
+                            // 5. Numéro de téléphone optionnel
                             Text(
                                 text = if (appLanguage == "en") "Your Contact Number (Optional)" else "Votre Numéro de contact (Optionnel)",
                                 style = MaterialTheme.typography.labelLarge,
@@ -652,7 +579,7 @@ fun SupportScreen(
 
                             Spacer(modifier = Modifier.height(18.dp))
 
-                            // 5. Pièce jointe / Capture d'écran
+                            // 6. Pièce jointe / Capture d'écran
                             Text(
                                 text = if (appLanguage == "en") "Screenshot (Max 5MB)" else "Capture d'écran (Max 5 Mo)",
                                 style = MaterialTheme.typography.labelLarge,
@@ -761,14 +688,14 @@ fun SupportScreen(
 
                             Spacer(modifier = Modifier.height(22.dp))
 
-                            // --- BOUTON VERT PRINCIPAL : ENVOYER SUR WHATSAPP ---
+                            // --- BOUTON VERT PRINCIPAL : ENVOYER SUR WHATSAPP DIRECTEMENT AU +22669434630 ---
                             Button(
                                 onClick = {
                                     if (!isSubmitting) {
                                         errorMessage = null
                                         coroutineScope.launch {
                                             isSubmitting = true
-                                            submittingStatusText = if (appLanguage == "en") "Recording request…" else "Enregistrement en cours…"
+                                            submittingStatusText = if (appLanguage == "en") "Opening WhatsApp…" else "Ouverture de WhatsApp…"
 
                                             val submission = SupportService.SupportSubmission(
                                                 type = selectedType,
@@ -776,6 +703,7 @@ fun SupportScreen(
                                                 subject = subject,
                                                 message = message,
                                                 phoneNumber = phoneNumber,
+                                                name = senderName,
                                                 attachmentUri = attachmentUri,
                                                 attachmentBase64 = attachmentBase64,
                                                 attachmentName = attachmentName,
@@ -793,22 +721,24 @@ fun SupportScreen(
                                                 val formattedMsg = result.getOrNull() ?: ""
                                                 lastFormattedWhatsAppMessage = formattedMsg
 
-                                                submittingStatusText = if (appLanguage == "en") "Redirecting to WhatsApp…" else "Redirection vers WhatsApp…"
-                                                delay(450)
-
-                                                SupportService.launchWhatsApp(context, formattedMsg)
+                                                // Ouvre directement WhatsApp dans la discussion avec +22669434630
+                                                SupportService.launchWhatsApp(
+                                                    context = context,
+                                                    message = formattedMsg,
+                                                    phone = SupportService.OFFICIAL_SUPPORT_WHATSAPP_NUMBER
+                                                )
 
                                                 isSubmitting = false
                                                 submissionSuccess = true
                                                 Toast.makeText(
                                                     context,
-                                                    if (appLanguage == "en") "Redirection to WhatsApp…" else "Redirection vers WhatsApp…",
+                                                    if (appLanguage == "en") "Opening WhatsApp (+226 69 43 46 30)…" else "Ouverture de WhatsApp (+226 69 43 46 30)…",
                                                     Toast.LENGTH_SHORT
                                                 ).show()
                                             } else {
                                                 isSubmitting = false
                                                 errorMessage = result.exceptionOrNull()?.message
-                                                    ?: (if (appLanguage == "en") "Unable to process request. Please try again." else "Impossible de traiter votre demande. Réessayez.")
+                                                    ?: (if (appLanguage == "en") "Please fill in the message before sending." else "Veuillez décrire votre demande avant d'envoyer.")
                                             }
                                         }
                                     }

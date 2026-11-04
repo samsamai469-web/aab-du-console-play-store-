@@ -329,16 +329,19 @@ object WebSearchClassifier {
     private fun isRecentNewsOrCurrentEvents(norm: String): Boolean {
         val markers = listOf(
             "derniere nouvelle", "dernieres nouvelles", "les nouvelles", "quelles sont les nouvelles",
-            "actualite", "actualites", "l'actu", "les actus", "actu du", "actu en",
-            "les infos", "quelles sont les infos", "info du jour", "infos du jour", "les news",
+            "nouvelle du", "nouvelles du", "nouvelle de", "nouvelles de", "nouvelles au", "nouvelles dans",
+            "actualite", "actualites", "l'actu", "les actus", "actu du", "actu en", "actu au", "actus du",
+            "les infos", "quelles sont les infos", "info du", "infos du", "infos de", "infos au", "les news",
+            "information sur", "informations sur", "informations du", "informations au",
             "quoi de neuf", "que se passe", "qu'est-ce qui se passe", "qu'est ce qui se passe",
-            "a la une", "titres du jour", "journal", "en direct",
+            "il se passe quoi", "ca se passe comment", "a la une", "titres du jour", "journal", "en direct",
             "ce matin", "hier soir", "aujourd'hui", "hier", "cette semaine", "ce mois",
             "en ce moment", "actuellement", "recemment", "derniere minute", "sommet de",
             "inauguration", "communique de", "ministre actuel", "president actuel",
             "gouvernement actuel", "au burkina faso aujourd'hui", "nouvelles du burkina",
             "evenement recent", "qui dirige actuellement", "situation actuelle",
-            "situation au", "en 2025", "en 2026"
+            "situation au", "situation dans", "en 2025", "en 2026",
+            "autres actualites", "autre actualite", "autres nouvelles", "autres infos"
         )
         return markers.any { norm.contains(it) }
     }
@@ -374,20 +377,23 @@ object WebSearchClassifier {
 
     private fun isFollowUpToSearch(norm: String, raw: String, history: List<ChatMessage>): Boolean {
         if (history.isEmpty()) return false
-        if (raw.length > 50) return false // Les questions de suivi sont généralement courtes
+        if (raw.length > 120) return false
 
-        val lastAssistantMsg = history.lastOrNull { it.role == "model" }?.content.orEmpty()
+        val lastAssistantMsg = history.lastOrNull { it.role == "model" || it.role == "assistant" }?.content.orEmpty()
         val lastUserMsg = history.lastOrNull { it.role == "user" }?.content.orEmpty()
         val prevNorm = normalize(lastUserMsg + " " + lastAssistantMsg)
 
         val followUpTriggers = listOf(
             "et hier", "et aujourd'hui", "et pour", "et le deuxieme", "et le score",
-            "et qui", "donne plus de details", "developpe", "et au burkina", "et en france",
-            "et apres", "quelle source", "lien", "qu'en est-il"
+            "et qui", "donne plus de details", "developpe", "et au burkina", "et dans le monde",
+            "et en france", "et en afrique", "et apres", "quelle source", "lien", "qu'en est-il",
+            "quoi d'autre", "et quoi d'autre", "donne d'autres", "autres infos", "autres nouvelles",
+            "autres actualites", "continue", "ensuite", "encore"
         )
         val hasTrigger = followUpTriggers.any { norm.startsWith(it) || norm.contains(it) }
         val prevHadSearchContext = prevNorm.contains("match") || prevNorm.contains("score") ||
             prevNorm.contains("actualite") || prevNorm.contains("nouvelle") ||
+            prevNorm.contains("burkina") || prevNorm.contains("monde") ||
             prevNorm.contains("http") || prevNorm.contains("source")
 
         return hasTrigger && prevHadSearchContext

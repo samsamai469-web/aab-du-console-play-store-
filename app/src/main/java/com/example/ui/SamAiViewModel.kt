@@ -112,9 +112,12 @@ class SamAiViewModel(
     private val _userProfile = MutableStateFlow(
         run {
             val savedProfile = authSessionManager?.getSavedUserProfile()
-            if (savedProfile != null && savedProfile.isLoggedIn) {
+            if (savedProfile != null && savedProfile.isLoggedIn &&
+                !com.example.data.remote.FirebaseAuthService.isFakeOrPlaceholderEmail(savedProfile.email)
+            ) {
                 savedProfile
             } else {
+                authSessionManager?.clearSession()
                 UserProfile(
                     isLoggedIn = false,
                     userId = "guest",
@@ -630,9 +633,10 @@ class SamAiViewModel(
         idToken: String? = null
     ): Pair<Boolean, String> {
         val cleanEmail = email.trim().lowercase()
-        if (cleanEmail.isBlank() || !cleanEmail.contains("@")) {
-            auditLog("AUTH_GOOGLE_FAILED", "WARNING", "Tentative Google avec email invalide: $cleanEmail")
-            return Pair(false, "Adresse e-mail Google invalide")
+        val emailError = com.example.data.remote.FirebaseAuthService.validateEmailWithGoogleRules(cleanEmail)
+        if (cleanEmail.isBlank() || emailError != null) {
+            auditLog("AUTH_GOOGLE_FAILED", "WARNING", "Tentative Google avec email invalide ou fictif: $cleanEmail")
+            return Pair(false, emailError ?: "Adresse e-mail Google invalide")
         }
 
         if (!idToken.isNullOrBlank()) {
@@ -2572,60 +2576,65 @@ class SamAiViewModel(
 
             var liveContextSummary = ""
             var liveSources = emptyList<com.example.data.local.WebSource>()
+            var isWebSearchNeeded = false
 
             if (!isMooreVoice) {
                 val searchDecision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
+                isWebSearchNeeded = searchDecision.isSearchNeeded
                 if (searchDecision.isSearchNeeded) {
-                    val cleanQuery = searchDecision.cleanSearchQuery.ifBlank { userText }
+                    val baseCleanQuery = searchDecision.cleanSearchQuery.ifBlank { userText }
+                    // Si l'utilisateur pose une question de suivi courte (ex: "Et quoi d'autre ?", "Donne d'autres infos"),
+                    // on conserve le sujet (Burkina Faso ou Monde) de sa question précédente
+                    val lastUserQuestions = currentHistory.filter { it.role == "user" }.takeLast(3).joinToString(" ") { it.content }
+                    val effectiveQuery = if (
+                        !baseCleanQuery.contains("burkina", ignoreCase = true) &&
+                        !baseCleanQuery.contains("faso", ignoreCase = true) &&
+                        !baseCleanQuery.contains("monde", ignoreCase = true) &&
+                        baseCleanQuery.length < 35
+                    ) {
+                        when {
+                            lastUserQuestions.contains("burkina", ignoreCase = true) || lastUserQuestions.contains("faso", ignoreCase = true) ->
+                                "$baseCleanQuery Burkina Faso"
+                            lastUserQuestions.contains("monde", ignoreCase = true) || lastUserQuestions.contains("international", ignoreCase = true) ->
+                                "$baseCleanQuery monde"
+                            else -> baseCleanQuery
+                        }
+                    } else {
+                        baseCleanQuery
+                    }
+
+                    // Texte déjà répondu par SAM AI dans la discussion actuelle pour ne JAMAIS répéter les mêmes nouvelles
+                    val alreadyMentionedInChat = currentList
+                        .filter { it.sender != "user" && it.id != "welcome_msg" }
+                        .takeLast(6)
+                        .joinToString("\n") { it.text }
+
                     if (isVoiceCall) {
-                        // En appel vocal : priorité absolue à la vitesse (0 ms via le cache mémoire pré-chargé)
-                        val instantCached = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
-                        if (instantCached.isNotBlank()) {
-                            liveContextSummary = instantCached
-                            // Rafraîchit en arrière-plan pour la question suivante sans bloquer la voix
-                            viewModelScope.launch(Dispatchers.IO) {
-                                try {
-                                    liveNewsFeedService.fetchLiveNews(cleanQuery)
-                                } catch (_: Throwable) {}
-                            }
+                        val fastNews = kotlinx.coroutines.withTimeoutOrNull(2200L) {
+                            liveNewsFeedService.fetchLiveNews(
+                                query = effectiveQuery,
+                                alreadyMentionedText = alreadyMentionedInChat
+                            )
+                        }
+                        if (fastNews != null && fastNews.hasNews) {
+                            liveContextSummary = fastNews.contextSummary
+                            liveSources = fastNews.sources
                         } else {
-                            val fastNews = kotlinx.coroutines.withTimeoutOrNull(650L) {
-                                liveNewsFeedService.fetchLiveNews(cleanQuery)
-                            }
-                            if (fastNews != null && fastNews.hasNews) {
-                                liveContextSummary = fastNews.contextSummary
-                                liveSources = fastNews.sources
-                            }
+                            liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
                         }
                     } else {
                         try {
-                            val newsResult = kotlinx.coroutines.withTimeoutOrNull(1600L) {
-                                liveNewsFeedService.fetchLiveNews(cleanQuery)
+                            val newsResult = kotlinx.coroutines.withTimeoutOrNull(4500L) {
+                                liveNewsFeedService.fetchLiveNews(
+                                    query = effectiveQuery,
+                                    alreadyMentionedText = alreadyMentionedInChat
+                                )
                             }
                             if (newsResult != null && newsResult.hasNews) {
                                 liveContextSummary = newsResult.contextSummary
                                 liveSources = newsResult.sources
                             } else {
-                                val fallbackArticles = _newsArticles.value.ifEmpty {
-                                    com.example.data.repository.NewsRepository.getDefaultBurkinaNews()
-                                }
-                                if (fallbackArticles.isNotEmpty()) {
-                                    liveContextSummary = buildString {
-                                        append("ACTUALITÉS EN DIRECT RÉCENTES :\n")
-                                        fallbackArticles.take(6).forEachIndexed { idx, art ->
-                                            append("${idx + 1}. [${art.source}] ${art.title} - ${art.summary}\n")
-                                        }
-                                    }
-                                    liveSources = fallbackArticles.take(5).map { art ->
-                                        com.example.data.local.WebSource(
-                                            title = art.title,
-                                            url = art.url.ifBlank { "https://lefaso.net" },
-                                            domain = art.source
-                                        )
-                                    }
-                                } else {
-                                    liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
-                                }
+                                liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary()
                             }
                         } catch (e: Throwable) {
                             android.util.Log.w("SamAiViewModel", "Notice actualités en direct: ${e.message}")
@@ -2635,11 +2644,11 @@ class SamAiViewModel(
                 }
             }
 
-            // Envoi direct à l'API OpenAI (gpt-4o haute précision pour zéro erreur en appel vocal comme en chat écrit)
+            // Envoi direct à l'API OpenAI (avec recherche Web en direct gpt-4o-search-preview + dépêches fraîches non répétées)
             val openAiResult = openAiBackendService.sendChatMessage(
                 messages = currentHistory,
                 userQuestion = userText,
-                enableWebSearch = liveSources.isNotEmpty(),
+                enableWebSearch = isWebSearchNeeded || liveSources.isNotEmpty(),
                 preferredModel = "gpt-4o",
                 newsContext = liveContextSummary,
                 sources = liveSources,
