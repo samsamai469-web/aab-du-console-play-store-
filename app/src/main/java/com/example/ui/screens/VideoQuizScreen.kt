@@ -1202,10 +1202,9 @@ fun DitanyeAuthentiqueView(
     ttsManager: TtsManager? = null,
     onBack: () -> Unit
 ) {
-    val context = LocalContext.current
     var isPlaying by remember { mutableStateOf(false) }
     var currentPosition by remember { mutableIntStateOf(0) }
-    var totalDuration by remember { mutableIntStateOf(107) }
+    var totalDuration by remember { mutableIntStateOf(134) }
     var showControls by remember { mutableStateOf(true) }
     var videoViewInstance by remember { mutableStateOf<VideoView?>(null) }
 
@@ -1238,7 +1237,7 @@ fun DitanyeAuthentiqueView(
                 showControls = !showControls
             }
     ) {
-        // Lecteur Vidéo Plein Écran Unique (Remplacement total de la page)
+        // Lecteur Vidéo Plein Écran Unique
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
