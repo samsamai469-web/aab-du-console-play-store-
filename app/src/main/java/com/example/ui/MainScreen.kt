@@ -2,6 +2,7 @@ package com.example.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -147,7 +148,9 @@ fun MainScreen(viewModel: SamAiViewModel, ttsManager: TtsManager) {
             NavHost(
                 navController = navController,
                 startDestination = Screen.Home,
-                modifier = Modifier.padding(innerPadding)
+                modifier = Modifier
+                    .padding(innerPadding)
+                    .consumeWindowInsets(innerPadding)
             ) {
                 composable<Screen.Home>(deepLinks = listOf(navDeepLink { uriPattern = "sam-ai://home" })) { HomeScreen(viewModel, ttsManager, navController) }
                 composable<Screen.Translation>(deepLinks = listOf(navDeepLink { uriPattern = "sam-ai://translation" })) { backStackEntry ->

@@ -143,199 +143,213 @@ private fun WelcomePage(onNext: () -> Unit) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
 
-    Column(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
             .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceBetween
+            .padding(horizontal = 18.dp, vertical = 10.dp)
     ) {
+        val isCompact = maxHeight < 740.dp
+        val imageHeight = if (isCompact) 102.dp else 120.dp
+        val sectionGap = if (isCompact) 10.dp else 14.dp
+
         Column(
-            modifier = Modifier
-                .weight(1f)
-                .verticalScroll(scrollState),
-            horizontalAlignment = Alignment.CenterHorizontally
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
-            Spacer(modifier = Modifier.height(6.dp))
-
-            // 3 Dots indicator
-            OnboardingDotsIndicator(currentPage = 0)
-
-            Spacer(modifier = Modifier.height(20.dp))
-
-            // Titre Principal
-            Text(
-                text = "Bienvenue sur Sam\nTraduction",
-                style = MaterialTheme.typography.headlineMedium.copy(
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 26.sp,
-                    lineHeight = 32.sp
-                ),
-                color = Color.White,
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Sous-titre
-            Text(
-                text = "Intelligence Artificielle & Langues du Burkina\nFaso",
-                style = MaterialTheme.typography.titleSmall.copy(
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.5.sp,
-                    lineHeight = 18.sp
-                ),
-                color = SamPrimaryLight,
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(22.dp))
-
-            // 1. Carte Descriptif du Projet
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                color = Color(0xFF131720),
-                border = BorderStroke(1.dp, Color(0xFF222836))
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .verticalScroll(scrollState),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.SpaceEvenly
             ) {
-                Text(
-                    text = "Votre compagnon intelligent dédié à l'échange, à la communication et à la traduction instantanée, conçu pour valoriser les langues et le patrimoine culturel burkinabè.",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontSize = 14.sp,
-                        lineHeight = 21.sp,
-                        color = Color.White.copy(alpha = 0.90f)
-                    ),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = 18.dp, vertical = 18.dp)
-                )
-            }
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    OnboardingDotsIndicator(currentPage = 0)
 
-            Spacer(modifier = Modifier.height(14.dp))
+                    Spacer(modifier = Modifier.height(if (isCompact) 12.dp else 18.dp))
 
-            // 2. Carte Images Patrimoine (Famille + Faso Dan Fani)
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(18.dp),
-                color = Color(0xFF131720),
-                border = BorderStroke(1.dp, Color(0xFF222836))
-            ) {
-                Column(
-                    modifier = Modifier.padding(12.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        // Image Famille burkinabè
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(R.drawable.img_burkinabe_family_1786879044801)
-                                .crossfade(true)
-                                .build(),
-                            contentDescription = "Famille burkinabè",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(125.dp)
-                                .clip(RoundedCornerShape(14.dp))
-                        )
-
-                        // Image Faso Dan Fani tissé traditionnel
-                        AsyncImage(
-                            model = ImageRequest.Builder(context)
-                                .data(R.drawable.img_faso_dan_fani_1786953081141)
-                                .crossfade(true)
-                                .build(),
-                            contentDescription = "Faso Dan Fani",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(125.dp)
-                                .clip(RoundedCornerShape(14.dp))
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
+                    // Titre Principal
                     Text(
-                        text = "Valorisation du patrimoine et des langues du Faso",
-                        style = MaterialTheme.typography.labelMedium.copy(
+                        text = "Bienvenue sur Sam\nTraduction",
+                        style = MaterialTheme.typography.headlineMedium.copy(
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = if (isCompact) 23.sp else 25.sp,
+                            lineHeight = if (isCompact) 28.sp else 31.sp
+                        ),
+                        color = Color.White,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(if (isCompact) 6.dp else 8.dp))
+
+                    // Sous-titre
+                    Text(
+                        text = "Intelligence Artificielle & Langues du Burkina\nFaso",
+                        style = MaterialTheme.typography.titleSmall.copy(
                             fontWeight = FontWeight.SemiBold,
-                            fontSize = 12.sp
+                            fontSize = 13.sp,
+                            lineHeight = 17.sp
                         ),
                         color = SamPrimaryLight,
                         textAlign = TextAlign.Center
                     )
                 }
-            }
 
-            Spacer(modifier = Modifier.height(14.dp))
+                Spacer(modifier = Modifier.height(sectionGap))
 
-            // 3. Pastille Langues disponibles
-            Surface(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                color = Color(0xFF131720),
-                border = BorderStroke(1.dp, Color(0xFF222836))
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.Center
+                // 1. Carte Descriptif du Projet
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    color = Color(0xFF131720),
+                    border = BorderStroke(1.dp, Color(0xFF222836))
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Translate,
-                        contentDescription = null,
-                        tint = SamPrimary,
-                        modifier = Modifier.size(19.dp)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = "Mooré • Dioula • Français • Anglais • Allemand",
-                        style = MaterialTheme.typography.bodySmall.copy(
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 12.5.sp
+                        text = "Votre compagnon intelligent dédié à l'échange, à la communication et à la traduction instantanée, conçu pour valoriser les langues et le patrimoine culturel burkinabè.",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontSize = if (isCompact) 13.sp else 13.5.sp,
+                            lineHeight = if (isCompact) 18.sp else 20.sp,
+                            color = Color.White.copy(alpha = 0.90f)
                         ),
-                        color = Color.White.copy(alpha = 0.95f),
-                        textAlign = TextAlign.Center
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.padding(
+                            horizontal = 16.dp,
+                            vertical = if (isCompact) 12.dp else 16.dp
+                        )
                     )
                 }
+
+                Spacer(modifier = Modifier.height(sectionGap))
+
+                // 2. Carte Images Patrimoine (Famille + Faso Dan Fani)
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(18.dp),
+                    color = Color(0xFF131720),
+                    border = BorderStroke(1.dp, Color(0xFF222836))
+                ) {
+                    Column(
+                        modifier = Modifier.padding(if (isCompact) 10.dp else 12.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            // Image Famille burkinabè
+                            AsyncImage(
+                                model = ImageRequest.Builder(context)
+                                    .data(R.drawable.img_burkinabe_family_1786879044801)
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = "Famille burkinabè",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(imageHeight)
+                                    .clip(RoundedCornerShape(14.dp))
+                            )
+
+                            // Image Faso Dan Fani tissé traditionnel
+                            AsyncImage(
+                                model = ImageRequest.Builder(context)
+                                    .data(R.drawable.img_faso_dan_fani_1786953081141)
+                                    .crossfade(true)
+                                    .build(),
+                                contentDescription = "Faso Dan Fani",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(imageHeight)
+                                    .clip(RoundedCornerShape(14.dp))
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text(
+                            text = "Valorisation du patrimoine et des langues du Faso",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 12.sp
+                            ),
+                            color = SamPrimaryLight,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(sectionGap))
+
+                // 3. Pastille Langues disponibles
+                Surface(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    color = Color(0xFF131720),
+                    border = BorderStroke(1.dp, Color(0xFF222836))
+                ) {
+                    Row(
+                        modifier = Modifier.padding(
+                            horizontal = 12.dp,
+                            vertical = if (isCompact) 10.dp else 12.dp
+                        ),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Translate,
+                            contentDescription = null,
+                            tint = SamPrimary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Mooré • Dioula • Français • Anglais • Allemand",
+                            style = MaterialTheme.typography.bodySmall.copy(
+                                fontWeight = FontWeight.Medium,
+                                fontSize = 12.sp
+                            ),
+                            color = Color.White.copy(alpha = 0.95f),
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
             }
 
-            Spacer(modifier = Modifier.height(16.dp))
-        }
-
-        // Bouton Suivant (Orange / Rouge-orangé de l'app)
-        Button(
-            onClick = onNext,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(54.dp)
-                .testTag("btn_welcome_next"),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = SamPrimary,
-                contentColor = Color.White
-            ),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
-        ) {
-            Text(
-                text = "SUIVANT",
-                style = MaterialTheme.typography.titleMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
-                    letterSpacing = 0.5.sp
+            // Bouton Suivant (Orange / Rouge-orangé de l'app)
+            Button(
+                onClick = onNext,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(if (isCompact) 48.dp else 52.dp)
+                    .testTag("btn_welcome_next"),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = SamPrimary,
+                    contentColor = Color.White
+                ),
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
+            ) {
+                Text(
+                    text = "SUIVANT",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.5.sp,
+                        letterSpacing = 0.5.sp
+                    )
                 )
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Icon(
-                Icons.AutoMirrored.Filled.ArrowForward,
-                contentDescription = "Suivant",
-                modifier = Modifier.size(18.dp)
-            )
+                Spacer(modifier = Modifier.width(8.dp))
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = "Suivant",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }
@@ -350,138 +364,154 @@ private fun HowItWorksPage(
 ) {
     val scrollState = rememberScrollState()
 
-    Column(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .statusBarsPadding()
             .navigationBarsPadding()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceBetween
+            .padding(horizontal = 18.dp, vertical = 10.dp)
     ) {
+        val isCompact = maxHeight < 740.dp
+        val cardGap = if (isCompact) 7.dp else 10.dp
+
         Column(
-            modifier = Modifier
-                .weight(1f)
-                .verticalScroll(scrollState),
-            horizontalAlignment = Alignment.CenterHorizontally
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
-            // En-tête : Flèche retour + 3 Dots centrés
-            Box(
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp)
+                    .weight(1f)
+                    .verticalScroll(scrollState),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.SpaceEvenly
             ) {
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier.align(Alignment.CenterStart)
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Retour",
-                        tint = Color.White
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    // En-tête : Flèche retour + 3 Dots centrés
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 2.dp)
+                    ) {
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .size(38.dp)
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Retour",
+                                tint = Color.White
+                            )
+                        }
+
+                        OnboardingDotsIndicator(
+                            currentPage = 1,
+                            modifier = Modifier.align(Alignment.Center)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(if (isCompact) 4.dp else 8.dp))
+
+                    // Titre Principal
+                    Text(
+                        text = "Comment fonctionne\nl'application ?",
+                        style = MaterialTheme.typography.headlineMedium.copy(
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = if (isCompact) 21.sp else 23.sp,
+                            lineHeight = if (isCompact) 26.sp else 28.sp
+                        ),
+                        color = Color.White,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
+                    // Sous-titre
+                    Text(
+                        text = "4 fonctionnalités simples pour vous accompagner",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontSize = 12.5.sp,
+                            color = Color.White.copy(alpha = 0.70f)
+                        ),
+                        textAlign = TextAlign.Center
                     )
                 }
 
-                OnboardingDotsIndicator(
-                    currentPage = 1,
-                    modifier = Modifier.align(Alignment.Center)
+                Spacer(modifier = Modifier.height(if (isCompact) 8.dp else 12.dp))
+
+                // 4 Cartes de fonctionnalités
+                FeatureItemCard(
+                    imageRes = R.drawable.img_burkinabe_family_1786879044801,
+                    badgeIcon = Icons.Default.Translate,
+                    title = "Traduire des langues",
+                    description = "Traduisez rapidement mots, phrases et expressions entre le Français, le Mooré, le Dioula, l'Anglais et l'Allemand.",
+                    isCompact = isCompact
                 )
+
+                Spacer(modifier = Modifier.height(cardGap))
+
+                FeatureItemCard(
+                    imageRes = R.drawable.img_faso_dan_fani_1786953081141,
+                    badgeIcon = Icons.Default.SwapHoriz,
+                    title = "Langue source & Langue cible",
+                    description = "Sélectionnez vos langues en un instant et permutez-les en un seul clic selon vos besoins.",
+                    isCompact = isCompact
+                )
+
+                Spacer(modifier = Modifier.height(cardGap))
+
+                FeatureItemCard(
+                    imageRes = R.drawable.img_burkinabe_child_1786953052232,
+                    badgeIcon = Icons.Default.Mic,
+                    title = "Traduction vocale & Prononciation",
+                    description = "Dictez vos messages au micro et écoutez la lecture audio authentique de vos traductions.",
+                    isCompact = isCompact
+                )
+
+                Spacer(modifier = Modifier.height(cardGap))
+
+                FeatureItemCard(
+                    imageRes = R.drawable.img_burkinabe_house_1786881867414,
+                    badgeIcon = Icons.Default.History,
+                    title = "Historique personnel sécurisé",
+                    description = "Toutes vos traductions et échanges sont automatiquement sauvegardés et consultables à tout moment.",
+                    isCompact = isCompact
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
             }
 
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Titre Principal
-            Text(
-                text = "Comment fonctionne\nl'application ?",
-                style = MaterialTheme.typography.headlineMedium.copy(
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 24.sp,
-                    lineHeight = 30.sp
+            // Bouton Suivant (Orange / Rouge-orangé de l'app)
+            Button(
+                onClick = onNext,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(if (isCompact) 48.dp else 52.dp)
+                    .testTag("btn_how_it_works_next"),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = SamPrimary,
+                    contentColor = Color.White
                 ),
-                color = Color.White,
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(6.dp))
-
-            // Sous-titre
-            Text(
-                text = "4 fonctionnalités simples pour vous accompagner",
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontSize = 13.sp,
-                    color = Color.White.copy(alpha = 0.70f)
-                ),
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(18.dp))
-
-            // 4 Cartes de fonctionnalités
-            FeatureItemCard(
-                imageRes = R.drawable.img_burkinabe_family_1786879044801,
-                badgeIcon = Icons.Default.Translate,
-                title = "Traduire des langues",
-                description = "Traduisez rapidement mots, phrases et expressions entre le Français, le Mooré, le Dioula, l'Anglais et l'Allemand."
-            )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            FeatureItemCard(
-                imageRes = R.drawable.img_faso_dan_fani_1786953081141,
-                badgeIcon = Icons.Default.SwapHoriz,
-                title = "Langue source & Langue cible",
-                description = "Sélectionnez vos langues en un instant et permutez-les en un seul clic selon vos besoins."
-            )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            FeatureItemCard(
-                imageRes = R.drawable.img_burkinabe_child_1786953052232,
-                badgeIcon = Icons.Default.Mic,
-                title = "Traduction vocale & Prononciation",
-                description = "Dictez vos messages au micro et écoutez la lecture audio authentique de vos traductions."
-            )
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            FeatureItemCard(
-                imageRes = R.drawable.img_burkinabe_house_1786881867414,
-                badgeIcon = Icons.Default.History,
-                title = "Historique personnel sécurisé",
-                description = "Toutes vos traductions et échanges sont automatiquement sauvegardés et consultables à tout moment."
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
-        }
-
-        // Bouton Suivant (Orange / Rouge-orangé de l'app)
-        Button(
-            onClick = onNext,
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(54.dp)
-                .testTag("btn_how_it_works_next"),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = SamPrimary,
-                contentColor = Color.White
-            ),
-            elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
-        ) {
-            Text(
-                text = "SUIVANT",
-                style = MaterialTheme.typography.titleMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
-                    letterSpacing = 0.5.sp
+                elevation = ButtonDefaults.buttonElevation(defaultElevation = 4.dp)
+            ) {
+                Text(
+                    text = "SUIVANT",
+                    style = MaterialTheme.typography.titleMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.5.sp,
+                        letterSpacing = 0.5.sp
+                    )
                 )
-            )
-            Spacer(modifier = Modifier.width(8.dp))
-            Icon(
-                Icons.AutoMirrored.Filled.ArrowForward,
-                contentDescription = "Suivant",
-                modifier = Modifier.size(18.dp)
-            )
+                Spacer(modifier = Modifier.width(8.dp))
+                Icon(
+                    Icons.AutoMirrored.Filled.ArrowForward,
+                    contentDescription = "Suivant",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
     }
 }
@@ -494,9 +524,11 @@ private fun FeatureItemCard(
     imageRes: Int,
     badgeIcon: ImageVector,
     title: String,
-    description: String
+    description: String,
+    isCompact: Boolean = false
 ) {
     val context = LocalContext.current
+    val thumbSize = if (isCompact) 52.dp else 58.dp
 
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -505,12 +537,12 @@ private fun FeatureItemCard(
         border = BorderStroke(1.dp, Color(0xFF222836))
     ) {
         Row(
-            modifier = Modifier.padding(12.dp),
+            modifier = Modifier.padding(if (isCompact) 9.dp else 11.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             // Vignette Image avec pastille d'icône en bas à droite
             Box(
-                modifier = Modifier.size(62.dp)
+                modifier = Modifier.size(thumbSize)
             ) {
                 AsyncImage(
                     model = ImageRequest.Builder(context)
@@ -529,7 +561,7 @@ private fun FeatureItemCard(
                     shape = CircleShape,
                     color = SamPrimary,
                     modifier = Modifier
-                        .size(22.dp)
+                        .size(20.dp)
                         .align(Alignment.BottomEnd)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
@@ -537,13 +569,13 @@ private fun FeatureItemCard(
                             imageVector = badgeIcon,
                             contentDescription = null,
                             tint = Color.White,
-                            modifier = Modifier.size(13.dp)
+                            modifier = Modifier.size(12.dp)
                         )
                     }
                 }
             }
 
-            Spacer(modifier = Modifier.width(14.dp))
+            Spacer(modifier = Modifier.width(12.dp))
 
             // Titre et Description
             Column(
@@ -553,18 +585,18 @@ private fun FeatureItemCard(
                     text = title,
                     style = MaterialTheme.typography.titleSmall.copy(
                         fontWeight = FontWeight.Bold,
-                        fontSize = 14.5.sp
+                        fontSize = if (isCompact) 13.5.sp else 14.sp
                     ),
                     color = Color.White
                 )
 
-                Spacer(modifier = Modifier.height(3.dp))
+                Spacer(modifier = Modifier.height(2.dp))
 
                 Text(
                     text = description,
                     style = MaterialTheme.typography.bodySmall.copy(
-                        fontSize = 12.sp,
-                        lineHeight = 16.sp,
+                        fontSize = if (isCompact) 11.5.sp else 12.sp,
+                        lineHeight = 15.sp,
                         color = Color.White.copy(alpha = 0.80f)
                     )
                 )
@@ -584,7 +616,7 @@ private fun OnboardingAuthPage(
 ) {
     val scrollState = rememberScrollState()
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(
@@ -598,27 +630,31 @@ private fun OnboardingAuthPage(
                 )
             )
     ) {
+        val isCompact = maxHeight < 760.dp
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .statusBarsPadding()
                 .navigationBarsPadding()
+                .imePadding()
                 .verticalScroll(scrollState)
-                .padding(horizontal = 20.dp, vertical = 12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+                .padding(horizontal = 18.dp, vertical = if (isCompact) 6.dp else 10.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceBetween
         ) {
             // Barre supérieure avec bouton "Ignorer" à droite
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = 4.dp, bottom = 6.dp)
+                    .padding(top = 2.dp, bottom = 2.dp)
             ) {
                 Text(
                     text = "Ignorer",
                     color = Color(0xFFFF3B1D),
                     style = MaterialTheme.typography.labelLarge.copy(
                         fontWeight = FontWeight.SemiBold,
-                        fontSize = 15.sp
+                        fontSize = 14.5.sp
                     ),
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
@@ -629,45 +665,45 @@ private fun OnboardingAuthPage(
                 )
             }
 
-            Spacer(modifier = Modifier.height(6.dp))
-
             // Section réutilisable : Logo + Titre + Carte Se connecter / S'inscrire
             SamAiWelcomeAuthSection(
                 viewModel = viewModel,
-                onAuthSuccess = onAuthSuccess
+                onAuthSuccess = onAuthSuccess,
+                isCompact = isCompact
             )
-
-            Spacer(modifier = Modifier.height(22.dp))
 
             // Pied de page : "Ignorer pour le moment"
-            Text(
-                text = "Ignorer pour le moment",
-                color = Color(0xFFFF3B1D),
-                style = MaterialTheme.typography.bodyMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.5.sp
-                ),
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .clickable { onSkip() }
-                    .padding(horizontal = 12.dp, vertical = 4.dp)
-                    .testTag("btn_onboarding_commencer")
-            )
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(top = if (isCompact) 8.dp else 12.dp, bottom = 4.dp)
+            ) {
+                Text(
+                    text = "Ignorer pour le moment",
+                    color = Color(0xFFFF3B1D),
+                    style = MaterialTheme.typography.bodyMedium.copy(
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    ),
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onSkip() }
+                        .padding(horizontal = 12.dp, vertical = 3.dp)
+                        .testTag("btn_onboarding_commencer")
+                )
 
-            Spacer(modifier = Modifier.height(6.dp))
+                Spacer(modifier = Modifier.height(3.dp))
 
-            Text(
-                text = "Vous pourrez vous connecter plus tard depuis l'onglet Profil.",
-                color = Color(0xFF9EA5B4),
-                style = MaterialTheme.typography.bodySmall.copy(
-                    fontSize = 12.5.sp,
-                    lineHeight = 17.sp
-                ),
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = 12.dp)
-            )
-
-            Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "Vous pourrez vous connecter plus tard depuis l'onglet Profil.",
+                    color = Color(0xFF9EA5B4),
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontSize = 12.sp,
+                        lineHeight = 15.sp
+                    ),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+            }
         }
     }
 }
@@ -680,7 +716,8 @@ private fun OnboardingAuthPage(
 @Composable
 fun SamAiWelcomeAuthSection(
     viewModel: SamAiViewModel?,
-    onAuthSuccess: () -> Unit = {}
+    onAuthSuccess: () -> Unit = {},
+    isCompact: Boolean = false
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -742,13 +779,17 @@ fun SamAiWelcomeAuthSection(
         }
     }
 
+    val logoOuterSize = if (isCompact) 62.dp else 68.dp
+    val logoInnerSize = if (isCompact) 44.dp else 50.dp
+    val fieldSpacing = if (isCompact) 8.dp else 10.dp
+
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         // Logo circulaire noir avec la flamme Sam AI
         Surface(
-            modifier = Modifier.size(78.dp),
+            modifier = Modifier.size(logoOuterSize),
             shape = CircleShape,
             color = Color(0xFF050608),
             shadowElevation = 10.dp,
@@ -760,47 +801,47 @@ fun SamAiWelcomeAuthSection(
                     contentDescription = "Logo Sam AI",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier
-                        .size(56.dp)
+                        .size(logoInnerSize)
                         .clip(CircleShape)
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(18.dp))
+        Spacer(modifier = Modifier.height(if (isCompact) 8.dp else 12.dp))
 
         // Titre : Bienvenue sur Sam AI
         Text(
             text = "Bienvenue sur Sam AI",
             style = MaterialTheme.typography.headlineSmall.copy(
                 fontWeight = FontWeight.Bold,
-                fontSize = 24.sp
+                fontSize = if (isCompact) 21.sp else 23.sp
             ),
             color = Color.White,
             textAlign = TextAlign.Center
         )
 
-        Spacer(modifier = Modifier.height(8.dp))
+        Spacer(modifier = Modifier.height(4.dp))
 
         // Sous-titre
         Text(
             text = "Un compte est facultatif : il sert à sauvegarder vos progrès.",
             style = MaterialTheme.typography.bodyMedium.copy(
-                fontSize = 13.5.sp,
-                lineHeight = 19.sp
+                fontSize = if (isCompact) 12.5.sp else 13.sp,
+                lineHeight = 17.sp
             ),
             color = Color(0xFFD0D5DD),
             textAlign = TextAlign.Center,
             modifier = Modifier.padding(horizontal = 12.dp)
         )
 
-        Spacer(modifier = Modifier.height(22.dp))
+        Spacer(modifier = Modifier.height(if (isCompact) 10.dp else 14.dp))
 
         // Carte principale d'authentification
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
                 .testTag("card_auth_options"),
-            shape = RoundedCornerShape(24.dp),
+            shape = RoundedCornerShape(22.dp),
             color = Color(0xFF151821),
             border = BorderStroke(1.dp, Color(0xFF232836)),
             shadowElevation = 8.dp
@@ -808,15 +849,15 @@ fun SamAiWelcomeAuthSection(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 18.dp, vertical = 18.dp),
+                    .padding(horizontal = 16.dp, vertical = if (isCompact) 12.dp else 15.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // Sélecteur d'onglets : "Se connecter" | "S'inscrire"
                 Surface(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(46.dp),
-                    shape = RoundedCornerShape(13.dp),
+                        .height(42.dp),
+                    shape = RoundedCornerShape(12.dp),
                     color = Color(0xFF232834)
                 ) {
                     Row(
@@ -830,7 +871,7 @@ fun SamAiWelcomeAuthSection(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(9.dp))
                                 .background(
                                     if (!isSignUpTab) Color(0xFFFF3B1D) else Color.Transparent
                                 )
@@ -846,7 +887,7 @@ fun SamAiWelcomeAuthSection(
                                 color = if (!isSignUpTab) Color.White else Color(0xFFD5D9E2),
                                 style = MaterialTheme.typography.labelLarge.copy(
                                     fontWeight = if (!isSignUpTab) FontWeight.Bold else FontWeight.Medium,
-                                    fontSize = 14.sp
+                                    fontSize = 13.5.sp
                                 )
                             )
                         }
@@ -856,7 +897,7 @@ fun SamAiWelcomeAuthSection(
                             modifier = Modifier
                                 .weight(1f)
                                 .fillMaxHeight()
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(9.dp))
                                 .background(
                                     if (isSignUpTab) Color(0xFFFF3B1D) else Color.Transparent
                                 )
@@ -873,14 +914,14 @@ fun SamAiWelcomeAuthSection(
                                 color = if (isSignUpTab) Color.White else Color(0xFFD5D9E2),
                                 style = MaterialTheme.typography.labelLarge.copy(
                                     fontWeight = if (isSignUpTab) FontWeight.Bold else FontWeight.Medium,
-                                    fontSize = 14.sp
+                                    fontSize = 13.5.sp
                                 )
                             )
                         }
                     }
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(if (isCompact) 10.dp else 12.dp))
 
                 // Champ Nom (affiché uniquement dans l'onglet S'inscrire)
                 if (isSignUpTab) {
@@ -894,7 +935,7 @@ fun SamAiWelcomeAuthSection(
                             Text(
                                 text = "Nom (facultatif)",
                                 color = Color(0xFF8C93A4),
-                                fontSize = 14.5.sp
+                                fontSize = 14.sp
                             )
                         },
                         leadingIcon = {
@@ -902,7 +943,7 @@ fun SamAiWelcomeAuthSection(
                                 imageVector = Icons.Default.Person,
                                 contentDescription = "Nom",
                                 tint = Color(0xFF4285F4),
-                                modifier = Modifier.size(20.dp)
+                                modifier = Modifier.size(19.dp)
                             )
                         },
                         singleLine = true,
@@ -910,7 +951,7 @@ fun SamAiWelcomeAuthSection(
                             keyboardType = KeyboardType.Text,
                             imeAction = ImeAction.Next
                         ),
-                        shape = RoundedCornerShape(14.dp),
+                        shape = RoundedCornerShape(13.dp),
                         colors = OutlinedTextFieldDefaults.colors(
                             focusedContainerColor = Color(0xFF151821),
                             unfocusedContainerColor = Color(0xFF151821),
@@ -925,7 +966,7 @@ fun SamAiWelcomeAuthSection(
                             .testTag("input_auth_name")
                     )
 
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(fieldSpacing))
                 }
 
                 // Champ Email
@@ -940,7 +981,7 @@ fun SamAiWelcomeAuthSection(
                         Text(
                             text = "moussa@exemple.com",
                             color = Color(0xFF8C93A4),
-                            fontSize = 14.5.sp
+                            fontSize = 14.sp
                         )
                     },
                     leadingIcon = {
@@ -948,7 +989,7 @@ fun SamAiWelcomeAuthSection(
                             imageVector = Icons.Outlined.Email,
                             contentDescription = "Email",
                             tint = Color(0xFFE2E6EE),
-                            modifier = Modifier.size(19.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     },
                     singleLine = true,
@@ -956,7 +997,7 @@ fun SamAiWelcomeAuthSection(
                         keyboardType = KeyboardType.Email,
                         imeAction = ImeAction.Next
                     ),
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(13.dp),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedContainerColor = Color(0xFF151821),
                         unfocusedContainerColor = Color(0xFF151821),
@@ -971,7 +1012,7 @@ fun SamAiWelcomeAuthSection(
                         .testTag("input_auth_email")
                 )
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(fieldSpacing))
 
                 // Champ Mot de passe
                 OutlinedTextField(
@@ -984,7 +1025,7 @@ fun SamAiWelcomeAuthSection(
                         Text(
                             text = "••••••••",
                             color = Color(0xFF8C93A4),
-                            fontSize = 15.sp
+                            fontSize = 14.sp
                         )
                     },
                     leadingIcon = {
@@ -992,7 +1033,7 @@ fun SamAiWelcomeAuthSection(
                             imageVector = Icons.Default.Lock,
                             contentDescription = "Mot de passe",
                             tint = Color(0xFFF5B041),
-                            modifier = Modifier.size(19.dp)
+                            modifier = Modifier.size(18.dp)
                         )
                     },
                     trailingIcon = {
@@ -1001,7 +1042,7 @@ fun SamAiWelcomeAuthSection(
                                 imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
                                 contentDescription = if (passwordVisible) "Masquer le mot de passe" else "Afficher le mot de passe",
                                 tint = Color(0xFFC5CBD6),
-                                modifier = Modifier.size(19.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                         }
                     },
@@ -1011,7 +1052,7 @@ fun SamAiWelcomeAuthSection(
                         keyboardType = KeyboardType.Password,
                         imeAction = ImeAction.Done
                     ),
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(13.dp),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedContainerColor = Color(0xFF151821),
                         unfocusedContainerColor = Color(0xFF151821),
@@ -1028,7 +1069,7 @@ fun SamAiWelcomeAuthSection(
 
                 // Lien "Mot de passe oublié ?" et message de confirmation (dans l'onglet Se connecter)
                 if (!isSignUpTab) {
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
 
                     Box(modifier = Modifier.fillMaxWidth()) {
                         Text(
@@ -1036,7 +1077,7 @@ fun SamAiWelcomeAuthSection(
                             color = Color(0xFFFF4526),
                             style = MaterialTheme.typography.bodySmall.copy(
                                 fontWeight = FontWeight.SemiBold,
-                                fontSize = 13.sp
+                                fontSize = 12.5.sp
                             ),
                             modifier = Modifier
                                 .align(Alignment.CenterEnd)
@@ -1070,13 +1111,13 @@ fun SamAiWelcomeAuthSection(
                     }
 
                     if (!resetConfirmationMessage.isNullOrBlank()) {
-                        Spacer(modifier = Modifier.height(8.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
                         Text(
                             text = resetConfirmationMessage!!,
                             color = Color(0xFFFF4526),
                             style = MaterialTheme.typography.bodySmall.copy(
-                                fontSize = 12.5.sp,
-                                lineHeight = 17.sp
+                                fontSize = 12.sp,
+                                lineHeight = 16.sp
                             ),
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -1087,19 +1128,19 @@ fun SamAiWelcomeAuthSection(
 
                 // Affichage d'une erreur éventuelle
                 if (!errorMessage.isNullOrBlank()) {
-                    Spacer(modifier = Modifier.height(8.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
                         text = errorMessage!!,
                         color = Color(0xFFFF5252),
                         style = MaterialTheme.typography.bodySmall.copy(
-                            fontSize = 12.5.sp,
-                            lineHeight = 17.sp
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
                         ),
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(if (isCompact) 10.dp else 12.dp))
 
                 // Bouton principal : "Créer mon compte" ou "Se connecter"
                 Button(
@@ -1163,9 +1204,9 @@ fun SamAiWelcomeAuthSection(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(52.dp)
+                        .height(if (isCompact) 46.dp else 48.dp)
                         .testTag("btn_auth_email_submit"),
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(13.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = Color(0xFFFF3B1D),
                         contentColor = Color.White
@@ -1174,22 +1215,22 @@ fun SamAiWelcomeAuthSection(
                 ) {
                     if (isSubmitting) {
                         CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
+                            modifier = Modifier.size(18.dp),
                             strokeWidth = 2.dp,
                             color = Color.White
                         )
-                        Spacer(modifier = Modifier.width(10.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
                     }
                     Text(
                         text = if (isSignUpTab) "Créer mon compte" else "Se connecter",
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontWeight = FontWeight.Bold,
-                            fontSize = 15.5.sp
+                            fontSize = 15.sp
                         )
                     )
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(if (isCompact) 10.dp else 12.dp))
 
                 // Séparateur "ou"
                 Row(
@@ -1204,8 +1245,8 @@ fun SamAiWelcomeAuthSection(
                     Text(
                         text = "ou",
                         color = Color(0xFF9EA5B4),
-                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp),
-                        modifier = Modifier.padding(horizontal = 14.dp)
+                        style = MaterialTheme.typography.bodySmall.copy(fontSize = 12.5.sp),
+                        modifier = Modifier.padding(horizontal = 12.dp)
                     )
                     HorizontalDivider(
                         modifier = Modifier.weight(1f),
@@ -1214,7 +1255,7 @@ fun SamAiWelcomeAuthSection(
                     )
                 }
 
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(modifier = Modifier.height(if (isCompact) 10.dp else 12.dp))
 
                 // Bouton "Continuer avec Google" (Ouvre le sélecteur officiel des comptes Google du téléphone)
                 Surface(
@@ -1293,9 +1334,9 @@ fun SamAiWelcomeAuthSection(
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(50.dp)
+                        .height(if (isCompact) 44.dp else 46.dp)
                         .testTag("btn_auth_google"),
-                    shape = RoundedCornerShape(14.dp),
+                    shape = RoundedCornerShape(13.dp),
                     color = Color(0xFF151821),
                     border = BorderStroke(1.dp, Color(0xFF2B3142))
                 ) {
@@ -1308,17 +1349,17 @@ fun SamAiWelcomeAuthSection(
                     ) {
                         if (isGoogleLoading) {
                             CircularProgressIndicator(
-                                modifier = Modifier.size(19.dp),
+                                modifier = Modifier.size(18.dp),
                                 strokeWidth = 2.dp,
                                 color = Color.White
                             )
-                            Spacer(modifier = Modifier.width(12.dp))
+                            Spacer(modifier = Modifier.width(10.dp))
                             Text(
                                 text = "Connexion Google...",
                                 color = Color.White,
                                 style = MaterialTheme.typography.labelLarge.copy(
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 14.5.sp
+                                    fontSize = 14.sp
                                 )
                             )
                         } else {
@@ -1326,7 +1367,7 @@ fun SamAiWelcomeAuthSection(
                                 painter = painterResource(id = R.drawable.ic_google_logo),
                                 contentDescription = "Google",
                                 tint = Color.Unspecified,
-                                modifier = Modifier.size(19.dp)
+                                modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
@@ -1334,7 +1375,7 @@ fun SamAiWelcomeAuthSection(
                                 color = Color.White,
                                 style = MaterialTheme.typography.labelLarge.copy(
                                     fontWeight = FontWeight.Bold,
-                                    fontSize = 14.5.sp
+                                    fontSize = 14.sp
                                 )
                             )
                         }
