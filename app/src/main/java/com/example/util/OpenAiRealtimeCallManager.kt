@@ -79,9 +79,11 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
 4. DISTINCTION STRICTE DE CHAQUE QUESTION :
    - Ne reviens JAMAIS sur une ancienne question déjà répondue.
    - Si l'utilisateur pose une question au début puis une autre à la fin, ou se corrige en cours de phrase, réponds avec précision à sa demande finale.
-5. ACTUALITÉS & IDENTITÉ :
+5. ACTUALITÉS & IDENTITÉ EXCLUSIVE SAM AI :
    - Utilise directement les actualités ci-dessous sans jamais dire que tes connaissances s'arrêtent en 2023, 2024 ou 2025.
-   - Tu t'appelles uniquement SAM AI. Si l'utilisateur demande qui t'a créé, réponds que tu as été créé par Abdoul Mohamine Sawadogo, un jeune développeur burkinabè.
+   - Tu t'appelles exclusivement Sam AI. Tu ne t'appelles JAMAIS Nova, ni Ash, ni Alloy, ni ChatGPT, ni OpenAI.
+   - Si l'utilisateur te demande comment tu t'appelles, quel est ton nom ou qui tu es, réponds toujours directement : « Je m'appelle Sam AI. »
+   - Si l'utilisateur demande qui t'a créé, réponds que tu as été créé par Abdoul Mohamine Sawadogo, un jeune développeur burkinabè.
 """
 
         private val HALLUCINATED_TRANSCRIPT_PATTERNS = listOf(
@@ -364,13 +366,49 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         ).containsMatchIn(lower)
     }
 
+    private fun isUserAskingAssistantName(userTranscript: String): Boolean {
+        val norm = userTranscript.trim().lowercase(java.util.Locale.ROOT)
+            .replace("’", "'")
+            .replace("‘", "'")
+            .replace("`", "'")
+            .replace("é", "e")
+            .replace("è", "e")
+            .replace("ê", "e")
+            .replace("ë", "e")
+            .replace("à", "a")
+            .replace("â", "a")
+            .replace("ô", "o")
+            .replace("î", "i")
+            .replace("ï", "i")
+            .replace("ù", "u")
+            .replace("û", "u")
+            .replace("ç", "c")
+        return Regex(
+            "(t'\\s*appel|t\\s+appel|s'\\s*appel|s\\s+appel|vous\\s+appel|appelez[-\\s]+vous|appelles[-\\s]+tu)|" +
+                "((ton|votre|son)\\s+(nom|prenom))|" +
+                "(nom\\s+c'est\\s+quoi)|" +
+                "(comment\\s+on\\s+t'appel)|" +
+                "(qui\\s+(es[-\\s]*tu|etes[-\\s]*vous|tu\\s+es|vous\\s+etes))|" +
+                "((tu\\s+es|vous\\s+etes)\\s+qui)|" +
+                "(presente[-\\s]*toi|presentez[-\\s]*vous)|" +
+                "(\\bnova\\b)"
+        ).containsMatchIn(norm)
+    }
+
     private fun buildUserTurnPrompt(userTranscript: String): String {
         val clean = userTranscript.trim()
         val allowBonjour = didUserExplicitlyCommandToSayBonjour(clean)
-        return if (allowBonjour) {
-            "Demande exacte de l'utilisateur : « $clean » (Exécute exactement ce qui est demandé, mot pour mot, sans préambule)."
-        } else {
-            "Demande exacte de l'utilisateur : « $clean » (RÈGLE : Ne dis PAS Bonjour, Salut ou Bonsoir. Réponds ou exécute directement dès le premier mot ce que l'utilisateur a demandé, sans aucune erreur)."
+        val askingName = isUserAskingAssistantName(clean)
+        return when {
+            askingName -> {
+                "Demande exacte de l'utilisateur : « $clean » (RÈGLE ABSOLUE : Tu t'appelles Sam AI, jamais Nova. Réponds directement dès le premier mot : « Je m'appelle Sam AI. » sans dire Bonjour)."
+            }
+            allowBonjour -> {
+                "Demande exacte de l'utilisateur : « $clean » (Exécute exactement ce qui est demandé, mot pour mot, sans préambule. Rappel : tu t'appelles Sam AI, jamais Nova)."
+            }
+            else -> {
+                "Demande exacte de l'utilisateur : « $clean » (RÈGLE : Tu es Sam AI, tu ne t'appelles jamais Nova. Ne dis PAS Bonjour, Salut ou Bonsoir. Réponds ou exécute directement dès le premier mot ce que l'utilisateur a demandé, sans aucune erreur)."
+            }
         }
     }
 
@@ -378,12 +416,26 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         val clean = userTranscript.trim()
         if (clean.isBlank()) {
             return """
+IDENTITÉ ABSOLUE ET OBLIGATOIRE : Tu es Sam AI. Ton unique nom est « Sam AI ». Tu ne t'appelles JAMAIS Nova, ni Ash, ni Alloy, ni ChatGPT, ni OpenAI.
+Si l'utilisateur te demande comment tu t'appelles, comment il s'appelle, quel est ton nom ou qui tu es, tu DOIS répondre directement : « Je m'appelle Sam AI. »
 RÈGLE STRICTE : L'appel est déjà en cours. Ne dis JAMAIS « Bonjour », « Salut » ou « Bonsoir ».
 Écoute et exécute exactement ce que l'utilisateur vient de demander dès le premier mot, sans aucune erreur.
 """.trimIndent()
         }
         val allowBonjour = didUserExplicitlyCommandToSayBonjour(clean)
+        val askingName = isUserAskingAssistantName(clean)
+        if (askingName && clean.length < 75 && !clean.contains(" et ", ignoreCase = true)) {
+            return """
+IDENTITÉ ABSOLUE ET OBLIGATOIRE : Tu es Sam AI. Ton unique nom est « Sam AI ». Tu ne t'appelles JAMAIS Nova.
+L'utilisateur vient de demander ton nom (« $clean »).
+Réponds immédiatement et directement dès le premier mot : « Je m'appelle Sam AI. » (sans dire Bonjour et sans jamais dire Nova).
+""".trimIndent()
+        }
         return buildString {
+            append("IDENTITÉ ABSOLUE ET OBLIGATOIRE : Tu es Sam AI, un homme chaleureux, naturel et ultra-précis. Tu t'appelles EXCLUSIVEMENT Sam AI. Tu ne t'appelles JAMAIS Nova, ni Ash, ni Alloy, ni ChatGPT, ni OpenAI.\n")
+            if (askingName) {
+                append("ATTENTION : L'utilisateur te demande ton nom / comment tu t'appelles. Tu DOIS répondre directement que tu t'appelles Sam AI (« Je m'appelle Sam AI. »). Il est strictement interdit de dire Nova.\n")
+            }
             append("TRANSCRIPTION VÉRIFIÉE DE CE QUE L'UTILISATEUR VIENT DE DIRE : « $clean ».\n")
             if (liveNewsContext.isNotBlank()) {
                 append("\n--- ACTUALITÉS EN DIRECT POUR CETTE QUESTION ---\n")
@@ -397,6 +449,8 @@ RÈGLE STRICTE : L'appel est déjà en cours. Ne dis JAMAIS « Bonjour », « Sa
                 append("1. L'utilisateur te demande explicitement de dire une salutation : prononce exactement les mots qu'il t'a demandé de dire.\n")
             }
             append("2. OBÉISSANCE EXACTE ET LITTÉRALE :\n")
+            append("   - Si l'utilisateur demande comment tu t'appelles, comment il s'appelle ou quel est ton nom, réponds toujours que tu t'appelles Sam AI (jamais Nova).\n")
+            append("   - Si l'utilisateur demande qui t'a créé, réponds que tu as été créé par Abdoul Mohamine Sawadogo, un jeune développeur burkinabè.\n")
             append("   - Si l'utilisateur demande de DIRE, RÉPÉTER ou PRONONCER une phrase ou un mot (ex: « Dis ... », « Répète ... », « Prononce ... »), prononce UNIQUEMENT et EXACTEMENT ce qu'il a demandé de dire, mot pour mot, sans ajouter « D'accord », « Bien sûr » ou « Bonjour ».\n")
             append("   - Si l'utilisateur demande de FAIRE quelque chose ou pose une question (ex: « Dis-moi ... », « Explique ... », « Calcule ... », « Fais ... »), exécute ou réponds directement dès le premier mot avec 0% d'erreur.\n")
             append("   - Si la question porte sur les actualités, donne directement les vraies nouvelles récentes fournies ci-dessus sans jamais répéter les mêmes phrases.\n")
@@ -440,9 +494,9 @@ RÈGLE STRICTE : L'appel est déjà en cours. Ne dis JAMAIS « Bonjour », « Sa
                 // 1. Vide immédiatement le tampon d'entrée micro pour isoler la réponse de SAM AI
                 ws.send("""{"type":"input_audio_buffer.clear"}""")
 
-                if (cleanTranscript.isNotBlank()) {
-                    // 2. Supprime tous les anciens items (y compris l'item audio brut) et injecte la transcription
-                    // exacte de gpt-4o-transcribe sous forme de message texte clair pour garantir 0% d'erreur de compréhension
+                // 2. Ne remplace l'item audio par un item texte que lorsque la transcription complète (rawAudioItemId non vide)
+                //    ou une question complète est disponible, afin de ne jamais tronquer la phrase parlée de l'utilisateur.
+                if (cleanTranscript.isNotBlank() && (rawAudioItemId.isNotBlank() || cleanTranscript.length >= 6)) {
                     purgePreviousConversationItems()
                     if (rawAudioItemId.isNotBlank()) {
                         ws.send("""{"type":"conversation.item.delete","item_id":"$rawAudioItemId"}""")
@@ -639,11 +693,16 @@ RÈGLE STRICTE : L'appel est déjà en cours. Ne dis JAMAIS « Bonjour », « Sa
                     if (!isAiSpeakingOrEchoGuardActive() && _callState.value == VoiceCallState.USER_SPEAKING) {
                         _callState.value = VoiceCallState.THINKING
                     }
-                    // Attend la transcription finale de gpt-4o-transcribe (~150-350 ms) avec délai de sécurité
+                    // Attend la transcription complète de gpt-4o-transcribe (~850-1500 ms sur réseau mobile)
+                    // afin de ne jamais couper la phrase de l'utilisateur au premier mot (.delta)
                     val voiceFramesAtStop = currentTurnVoiceFrames
                     transcriptionFallbackJob?.cancel()
                     transcriptionFallbackJob = scope.launch {
-                        delay(850L)
+                        delay(1950L)
+                        if (isActiveCall.get() && !hasTriggeredResponseForCurrentTurn.get() && !isResponseInProgress.get() && currentUserTranscriptBuilder.isNotEmpty()) {
+                            // Si les deltas de transcription arrivent encore, laisse 450 ms supplémentaires pour .completed
+                            delay(450L)
+                        }
                         if (isActiveCall.get() && !hasTriggeredResponseForCurrentTurn.get() && !isResponseInProgress.get()) {
                             val partial = currentUserTranscriptBuilder.toString().trim()
                             if (partial.isNotBlank() && !isHallucinatedOrNoiseTranscript(partial)) {
@@ -1241,7 +1300,7 @@ RÈGLE STRICTE : L'appel est déjà en cours. Ne dis JAMAIS « Bonjour », « Sa
                 _callState.value = VoiceCallState.THINKING
                 transcriptionFallbackJob?.cancel()
                 transcriptionFallbackJob = scope.launch {
-                    delay(650L)
+                    delay(1800L)
                     if (isActiveCall.get() && !hasTriggeredResponseForCurrentTurn.get() && !isResponseInProgress.get()) {
                         val partial = currentUserTranscriptBuilder.toString().trim()
                         triggerRealtimeResponseForTranscript(partial)
@@ -1278,9 +1337,10 @@ RÈGLE STRICTE : L'appel est déjà en cours. Ne dis JAMAIS « Bonjour », « Sa
 
     private fun sanitizeSamAiPersona(raw: String): String {
         var cleaned = raw
-            .replace(Regex("(?i)\\bChatGPT\\b"), "SAM AI")
-            .replace(Regex("(?i)\\bGPT-4(\\.1|\\.5|o)?(-mini|-turbo|-preview|-realtime)?\\b"), "SAM AI")
-            .replace(Regex("(?i)\\bOpenAI\\b"), "SAM AI")
+            .replace(Regex("(?i)\\bChatGPT\\b"), "Sam AI")
+            .replace(Regex("(?i)\\bGPT-4(\\.1|\\.5|o)?(-mini|-turbo|-preview|-realtime)?\\b"), "Sam AI")
+            .replace(Regex("(?i)\\bOpenAI\\b"), "Sam AI")
+            .replace(Regex("(?i)\\bNova\\b"), "Sam AI")
             .trim()
 
         val userSpoken = _userTranscript.value.ifBlank { lastCompletedUserTranscript }

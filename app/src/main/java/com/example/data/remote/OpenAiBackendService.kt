@@ -85,9 +85,10 @@ class OpenAiBackendService {
 
     private fun sanitizeSamAiText(raw: String, userQuestion: String = ""): String {
         var cleaned = raw
-            .replace(Regex("(?i)\\bChatGPT\\b"), "SAM AI")
-            .replace(Regex("(?i)\\bGPT-4(\\.1|\\.5|o)?(-mini|-turbo|-preview|-search-preview|-2024-\\d{2}-\\d{2})?\\b"), "SAM AI")
-            .replace(Regex("(?i)\\bOpenAI\\b"), "SAM AI")
+            .replace(Regex("(?i)\\bChatGPT\\b"), "Sam AI")
+            .replace(Regex("(?i)\\bGPT-4(\\.1|\\.5|o)?(-mini|-turbo|-preview|-search-preview|-2024-\\d{2}-\\d{2})?\\b"), "Sam AI")
+            .replace(Regex("(?i)\\bOpenAI\\b"), "Sam AI")
+            .replace(Regex("(?i)\\b(je\\s+m'appelle|je\\s+suis|mon\\s+nom\\s+est)\\s+Nova\\b"), "$1 Sam AI")
             .trim()
 
         val qLower = userQuestion.lowercase(java.util.Locale.ROOT).trim()
@@ -221,7 +222,7 @@ class OpenAiBackendService {
                 append("4. DISTINCTION STRICTE DE CHAQUE QUESTION : Réponds uniquement au message actuel sans jamais reparler d'une ancienne question.\n")
                 append("5. ACTUALITÉS EN DIRECT : Lorsque des dépêches sont fournies ci-dessus, présente-les directement sans jamais dire « d'après les dépêches ci-dessus » ni « je suis limité aux dépêches ». Ne répète jamais les mêmes phrases. Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025.\n")
                 append("6. ZÉRO FORMATAGE ÉCRIT : N'utilise jamais d'astérisques (*), de listes à puces, de titres (#) ou d'émojis.\n")
-                append("7. IDENTITÉ : Tu es SAM AI (créé par Abdoul Mohamine Sawadogo si on te demande qui t'a créé). Ne mentionne jamais OpenAI ou ChatGPT.\n")
+                append("7. IDENTITÉ : Tu t'appelles exclusivement Sam AI (ne dis JAMAIS que tu t'appelles Nova, Ash, Alloy, OpenAI ou ChatGPT). Si l'utilisateur demande comment tu t'appelles ou quel est ton nom, réponds toujours : « Je m'appelle Sam AI. » (Créé par Abdoul Mohamine Sawadogo si on te demande qui t'a créé).\n")
             }
         } else {
             buildString {

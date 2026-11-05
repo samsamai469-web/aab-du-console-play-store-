@@ -2538,8 +2538,42 @@ class SamAiViewModel(
                 qNorm.contains("quelle ia es-tu") || qNorm.contains("quelle intelligence artificielle es-tu")
             )
 
+            val isExplicitNameQuestion = !hasMultipleOrTrailingQuestion && Regex(
+                "(t'\\s*appel|t\\s+appel|s'\\s*appel|s\\s+appel|vous\\s+appel|appelez[-\\s]+vous|appelles[-\\s]+tu)|" +
+                    "((ton|votre|son)\\s+(nom|prenom))|" +
+                    "(nom\\s+c'est\\s+quoi)|" +
+                    "(comment\\s+on\\s+t'appel)|" +
+                    "(qui\\s+(es[-\\s]*tu|etes[-\\s]*vous|tu\\s+es|vous\\s+etes))|" +
+                    "((tu\\s+es|vous\\s+etes)\\s+qui)|" +
+                    "(presente[-\\s]*toi|presentez[-\\s]*vous)|" +
+                    "(\\bnova\\b)"
+            ).containsMatchIn(qNorm)
+
+            if (isExplicitNameQuestion) {
+                val directAnswer = if (isVoiceCall) {
+                    "Je m'appelle Sam AI."
+                } else {
+                    "Je m'appelle Sam AI, votre assistant intelligent."
+                }
+                _isSamAiGeminiThinking.value = false
+                val botMsg = SamAiChatMessage(
+                    sender = "sam_ai",
+                    text = directAnswer,
+                    timestamp = System.currentTimeMillis(),
+                    isError = false,
+                    sources = emptyList(),
+                    model = null,
+                    language = null
+                )
+                _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+                if (onReply != null) {
+                    withContext(Dispatchers.Main) { onReply(directAnswer) }
+                }
+                return@launch
+            }
+
             if (isExplicitCreatorQuestion || isExplicitModelOrOpenAiQuestion) {
-                val directAnswer = "Je suis SAM AI, une intelligence artificielle créée par Abdoul Mohamine Sawadogo, un jeune Burkinabè, pour vous accompagner et répondre à toutes vos questions."
+                val directAnswer = "Je suis Sam AI, une intelligence artificielle créée par Abdoul Mohamine Sawadogo, un jeune Burkinabè, pour vous accompagner et répondre à toutes vos questions."
                 _isSamAiGeminiThinking.value = false
                 val botMsg = SamAiChatMessage(
                     sender = "sam_ai",

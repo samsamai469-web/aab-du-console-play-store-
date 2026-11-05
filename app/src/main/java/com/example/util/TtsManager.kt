@@ -846,6 +846,9 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     private fun cleanGeneralTextForSpeech(rawText: String): String {
         return rawText
+            .replace(Regex("(?i)\\bChatGPT\\b"), "Sam AI")
+            .replace(Regex("(?i)\\bOpenAI\\b"), "Sam AI")
+            .replace(Regex("(?i)\\b(je\\s+m'appelle|je\\s+suis|mon\\s+nom\\s+est|il\\s+s'appelle)\\s+Nova\\b"), "$1 Sam AI")
             .replace(Regex("[*#_~`^\\[\\]{}<>|\\\\«»\"“”•]"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
