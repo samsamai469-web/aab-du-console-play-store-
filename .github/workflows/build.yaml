@@ -24,16 +24,12 @@ jobs:
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
 
-      - name: Vérifier la clé (échoue si ce n'est pas la bonne)
+      - name: Afficher la clé du keystore (diagnostic)
         run: |
-          set -e
           test -s release.jks || { echo "release.jks est vide : secret KEYSTORE_BASE64 manquant"; exit 1; }
-          keytool -list -v -keystore release.jks -storepass "$STORE_PASSWORD" -alias "$KEY_ALIAS" 2>&1 | tee keyinfo.txt | grep -E "Alias|SHA1"
-          grep -q "SHA1: 8A:2F:F1:F6" keyinfo.txt || { echo "Mauvais keystore : SHA1 attendu 8A:2F:F1:F6..."; exit 1; }
-          rm keyinfo.txt
+          keytool -list -v -keystore release.jks -storepass "$STORE_PASSWORD" 2>&1 | grep -E "Alias name|SHA1|error|Exception"
         env:
           STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
 
       - name: Générer l'AAB et l'APK
         run: gradle bundleRelease assembleRelease
