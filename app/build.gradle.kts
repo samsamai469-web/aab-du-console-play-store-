@@ -66,6 +66,8 @@ android {
       val releaseKeystore = releaseConfig.storeFile
       if (releaseKeystore != null && releaseKeystore.exists() && !releaseConfig.storePassword.isNullOrBlank()) {
         signingConfig = releaseConfig
+      } else if (System.getenv("CI") == "true") {
+        throw GradleException("Keystore de release introuvable : build refusé (pas de signature debug).")
       } else {
         signingConfig = signingConfigs.getByName("debug")
       }
