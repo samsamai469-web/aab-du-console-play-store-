@@ -261,18 +261,18 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         isGlobalTtsSpeaking = true
         SpeechRecognitionManager.pauseAllActiveRecognizersForTts()
 
-        val apiKey = apiKeyManager.getActiveOpenAiApiKey()
-        if (apiKey.isNotBlank() && apiKey != "MY_OPENAI_API_KEY") {
-            speechJob = scope.launch {
-                val success = trySpeakWithNeuralVoice(spokenText, apiKey, false, rate)
-                if (!success) {
-                    withContext(Dispatchers.Main) {
-                        speakWithLocalAndroidTts(spokenText, "Français", rate)
-                    }
+        speechJob = scope.launch {
+            val apiKey = apiKeyManager.getActiveOpenAiApiKey()
+            val success = if (apiKey.isNotBlank() && apiKey != "MY_OPENAI_API_KEY") {
+                trySpeakWithNeuralVoice(spokenText, apiKey, false, rate)
+            } else {
+                false
+            }
+            if (!success) {
+                withContext(Dispatchers.Main) {
+                    speakWithLocalAndroidTts(spokenText, "Français", rate)
                 }
             }
-        } else {
-            speakWithLocalAndroidTts(spokenText, "Français", rate)
         }
     }
 

@@ -134,18 +134,32 @@ class ApiKeyManager(context: Context) {
         }
     }
 
+    init {
+        val savedServerKey = prefs.getString(KEY_SERVER_OPENAI_API_KEY, null)?.trim().orEmpty()
+        if (savedServerKey.isNotBlank() && savedServerKey != "MY_OPENAI_API_KEY") {
+            cachedServerOpenAiKey = savedServerKey
+        }
+        syncServerConfigInBackground()
+    }
+
+    private fun syncServerConfigInBackground() {
+        Thread {
+            try {
+                fetchOpenAiKeyFromServer()
+            } catch (_: Throwable) {}
+        }.start()
+    }
+
     fun getActiveOpenAiApiKey(): String {
         val customKey = prefs.getString(KEY_CUSTOM_OPENAI_API_KEY, null)?.trim()
         if (!customKey.isNullOrBlank() && customKey != "MY_OPENAI_API_KEY") {
             return customKey
         }
-        val buildConfigKey = try {
-            BuildConfig.OPENAI_API_KEY
-        } catch (_: Throwable) {
-            ""
+        val savedServerKey = prefs.getString(KEY_SERVER_OPENAI_API_KEY, null)?.trim()
+        if (!savedServerKey.isNullOrBlank() && savedServerKey != "MY_OPENAI_API_KEY") {
+            cachedServerOpenAiKey = savedServerKey
+            return savedServerKey
         }
-        val clean = buildConfigKey.trim().removeSurrounding("\"").removeSurrounding("'").trim()
-        if (clean.isNotBlank() && clean != "MY_OPENAI_API_KEY") return clean
         return DEFAULT_OPENAI_API_KEY
     }
 
@@ -198,31 +212,74 @@ class ApiKeyManager(context: Context) {
         return if (!customModel.isNullOrBlank()) customModel else DEFAULT_HUGGINGFACE_MOORE_MODEL
     }
 
+    private fun fetchOpenAiKeyFromServer(): String {
+        val fetched = fetchOpenAiKeyFromRemoteFirestore()
+        if (fetched.isNotBlank()) {
+            prefs.edit().putString(KEY_SERVER_OPENAI_API_KEY, fetched).apply()
+        }
+        return fetched
+    }
+
     companion object {
         private const val PREFS_NAME = "sam_ai_api_keys"
         private const val KEY_CUSTOM_GEMINI_API_KEY = "custom_gemini_api_key"
         private const val KEY_CUSTOM_GEMINI_LIVE_API_KEY = "custom_gemini_live_api_key"
         private const val KEY_CUSTOM_OPENAI_API_KEY = "custom_openai_api_key"
+        private const val KEY_SERVER_OPENAI_API_KEY = "server_openai_api_key"
         private const val KEY_CUSTOM_HUGGINGFACE_API_KEY = "custom_huggingface_api_key"
         private const val KEY_CUSTOM_HF_MOORE_MODEL = "custom_hf_moore_model"
 
+        private const val SERVER_CONFIG_URL =
+            "https://firestore.googleapis.com/v1/projects/sam-traduction/databases/(default)/documents/app_config/server_ai_config"
+
         const val DEFAULT_HUGGINGFACE_MOORE_MODEL = "samaisam/sam-ai-moore-whisper"
 
-        private val ENCODED_DEFAULT_KEY = intArrayOf(
-            70, 51, 109, 119, 64, 115, 127, 126, 127, 87, 99, 87, 81, 86, 119, 82, 67, 83, 100, 97,
-            64, 107, 107, 69, 42, 113, 64, 82, 86, 77, 95, 117, 48, 70, 68, 77, 55, 109, 125, 81,
-            105, 101, 81, 83, 55, 111, 106, 68, 53, 85, 95, 88, 79, 108, 48, 108, 107, 111, 126, 55,
-            63, 53, 100, 42, 67, 126, 49, 101, 74, 51, 67, 107, 62, 112, 77, 65, 108, 101, 107, 69,
-            52, 83, 78, 74, 87, 86, 69, 49, 73, 104, 70, 105, 106, 110, 74, 117, 81, 116, 118, 98,
-            94, 84, 104, 72, 93, 73, 80, 104, 106, 107, 64, 53, 98, 53, 98, 49, 83, 78, 54, 73,
-            99, 118, 64, 53, 79, 73, 118, 101, 50, 94, 65, 109, 114, 75, 83, 118, 73, 73, 106, 67,
-            80, 82, 48, 110, 82, 125, 119, 107, 98, 117, 55, 63, 107, 116, 98, 79, 42, 109, 104, 117,
-            119, 42, 108, 116
-        )
+        @Volatile
+        private var cachedServerOpenAiKey: String = ""
 
-        val DEFAULT_OPENAI_API_KEY: String by lazy {
-            ENCODED_DEFAULT_KEY.reversed().map { (it xor 7).toChar() }.joinToString("")
+        private fun fetchOpenAiKeyFromRemoteFirestore(): String {
+            return try {
+                val client = OkHttpClient.Builder()
+                    .connectTimeout(4, TimeUnit.SECONDS)
+                    .readTimeout(4, TimeUnit.SECONDS)
+                    .build()
+                val req = Request.Builder().url(SERVER_CONFIG_URL).get().build()
+                client.newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) return ""
+                    val body = resp.body?.string().orEmpty()
+                    val match = Regex(""""openai_api_key"\s*:\s*\{\s*"stringValue"\s*:\s*"([^"]+)"""").find(body)
+                    val value = match?.groupValues?.getOrNull(1)?.trim().orEmpty()
+                    if (value.isNotBlank() && value != "MY_OPENAI_API_KEY") {
+                        cachedServerOpenAiKey = value
+                        value
+                    } else {
+                        ""
+                    }
+                }
+            } catch (_: Throwable) {
+                ""
+            }
         }
+
+        val DEFAULT_OPENAI_API_KEY: String
+            get() {
+                val buildKey = try {
+                    BuildConfig.OPENAI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+                } catch (_: Throwable) {
+                    ""
+                }
+                if (buildKey.isNotBlank() && buildKey != "MY_OPENAI_API_KEY") {
+                    return buildKey
+                }
+                if (cachedServerOpenAiKey.isNotBlank()) {
+                    return cachedServerOpenAiKey
+                }
+                if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+                    val remote = fetchOpenAiKeyFromRemoteFirestore()
+                    if (remote.isNotBlank()) return remote
+                }
+                return cachedServerOpenAiKey
+            }
 
         val DEFAULT_GEMINI_API_KEY: String
             get() = try {

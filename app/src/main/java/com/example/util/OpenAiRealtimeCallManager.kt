@@ -207,13 +207,6 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         _aiTranscript.value = ""
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-        val apiKey = apiKeyManager.getActiveOpenAiApiKey().trim()
-        if (apiKey.isBlank() || apiKey == "MY_OPENAI_API_KEY") {
-            Log.w(TAG, "Clé API OpenAI absente, bascule sur le pipeline standard")
-            notifyFallback("Clé API non configurée")
-            return
-        }
-
         // Mode audio HD : conserve AudioManager en MODE_NORMAL pour bénéficier du convertisseur
         // haute définition 24 kHz (sans le filtre téléphonique 8 kHz qui étouffe la voix)
         try {
@@ -230,10 +223,18 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         initAudioTrack()
         startPlaybackWorker()
         startMicrophoneStreaming()
-        connectWebSocket(apiKey, REALTIME_MODEL_PRIMARY)
 
-        // Pré-charge le cache d'actualités en arrière-plan sans réinitialiser la session vocale active
         scope.launch(Dispatchers.IO) {
+            val apiKey = apiKeyManager.getActiveOpenAiApiKey().trim()
+            if (apiKey.isBlank() || apiKey == "MY_OPENAI_API_KEY") {
+                Log.w(TAG, "Clé API OpenAI absente côté serveur, bascule sur le pipeline standard")
+                notifyFallback("Clé API non configurée")
+                return@launch
+            }
+            if (!isActiveCall.get()) return@launch
+            connectWebSocket(apiKey, REALTIME_MODEL_PRIMARY)
+
+            // Pré-charge le cache d'actualités en arrière-plan sans réinitialiser la session vocale active
             try {
                 liveNewsFeedService.fetchLiveNews("actualités")
             } catch (_: Throwable) {}
