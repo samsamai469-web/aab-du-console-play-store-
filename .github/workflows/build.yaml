@@ -1,5 +1,5 @@
 
-name: Build APK et AAB Release signes
+name: Build APK et AAB signes
 
 on:
   push:
@@ -16,92 +16,217 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1. Recuperer le projet
+
+      # ==========================================
+      # 1. RECUPERER LE PROJET
+      # ==========================================
+
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Installer Java 17
+      # ==========================================
+      # 2. INSTALLER JAVA
+      # ==========================================
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # 3. Installer Gradle
+      # ==========================================
+      # 3. INSTALLER GRADLE
+      # ==========================================
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: current
 
-      # 4. Verifier les secrets obligatoires
-      - name: Verifier la configuration Release
+      # ==========================================
+      # 4. DIAGNOSTIC DES SECRETS
+      # ==========================================
+
+      - name: Diagnostic des secrets GitHub
         shell: bash
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+
         run: |
           set -euo pipefail
 
-          for name in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
-            if [ -z "${!name:-}" ]; then
-              echo "::error::Secret $name manquant."
-              exit 1
+          echo "=========================================="
+          echo "       DIAGNOSTIC DES SECRETS SAM AI"
+          echo "=========================================="
+
+          check_secret() {
+            local name="$1"
+            local value="$2"
+            local required="$3"
+
+            if [ -n "$value" ]; then
+              echo "[OK] $name : PRESENT"
+            elif [ "$required" = "yes" ]; then
+              echo "[ERREUR] $name : ABSENT"
+              return 1
+            else
+              echo "[INFO] $name : NON CONFIGURE (OPTIONNEL)"
             fi
-          done
+          }
 
-          echo "Configuration Release presente."
+          ERROR=0
 
-      # 5. Decoder le vrai Release Key
-      - name: Installer le Release Key
-        shell: bash
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        run: |
-          set -euo pipefail
+          check_secret KEYSTORE_PASSWORD "${KEYSTORE_PASSWORD:-}" yes || ERROR=1
+          check_secret KEY_ALIAS "${KEY_ALIAS:-}" yes || ERROR=1
+          check_secret KEY_PASSWORD "${KEY_PASSWORD:-}" yes || ERROR=1
 
-          mkdir -p app
+          check_secret OPENAI_API_KEY "${OPENAI_API_KEY:-}" no || ERROR=1
+          check_secret GEMINI_API_KEY "${GEMINI_API_KEY:-}" no || ERROR=1
+          check_secret YOUTUBE_API_KEY "${YOUTUBE_API_KEY:-}" no || ERROR=1
+          check_secret RESEND_API_KEY "${RESEND_API_KEY:-}" no || ERROR=1
+          check_secret GOOGLE_CLIENT_SECRET "${GOOGLE_CLIENT_SECRET:-}" no || ERROR=1
 
-          printf '%s' "$KEYSTORE_BASE64" \
-            | base64 --decode > app/release.jks
-
-          if [ ! -s app/release.jks ]; then
-            echo "::error::Le Release Key est vide."
+          if [ "$ERROR" -ne 0 ]; then
+            echo "::error::Un ou plusieurs secrets obligatoires sont absents."
             exit 1
           fi
 
-          echo "Release Key installe."
+          echo "Tous les secrets obligatoires sont presents."
 
-      # 6. Verifier le keystore et son alias
-      - name: Valider le Release Key
+      # ==========================================
+      # 5. VERIFIER LE FICHIER RELEASE KEY
+      # ==========================================
+
+      - name: Verifier le fichier Release Key
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          KEYSTORE="app/release.jks"
+
+          echo "Verification de $KEYSTORE"
+
+          if [ ! -f "$KEYSTORE" ]; then
+            echo "::error::Fichier app/release.jks introuvable."
+            exit 1
+          fi
+
+          if [ ! -s "$KEYSTORE" ]; then
+            echo "::error::Le fichier Release Key est vide."
+            exit 1
+          fi
+
+          echo "[OK] Release Key present."
+          echo "Taille : $(stat -c%s "$KEYSTORE") octets"
+
+      # ==========================================
+      # 6. VERIFIER MOT DE PASSE ET ALIAS
+      # ==========================================
+
+      - name: Diagnostic du Keystore et des alias
         shell: bash
         env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+
         run: |
           set -euo pipefail
 
-          keytool -list \
-            -keystore app/release.jks \
-            -storepass "$KEYSTORE_PASSWORD" \
-            -alias "$KEY_ALIAS" \
-            > /dev/null
+          KEYSTORE="app/release.jks"
 
-          ENTRY=$(keytool -list -v \
-            -keystore app/release.jks \
-            -storepass "$KEYSTORE_PASSWORD" \
-            -alias "$KEY_ALIAS" 2>&1)
+          echo "=========================================="
+          echo "VERIFICATION DU MOT DE PASSE KEYSTORE"
+          echo "=========================================="
 
-          if ! grep -q "PrivateKeyEntry" <<< "$ENTRY"; then
-            echo "::error::L'alias ne contient pas de cle privee."
+          if ! keytool -list \
+            -keystore "$KEYSTORE" \
+            -storepass "$STORE_PASSWORD" \
+            > "$RUNNER_TEMP/keystore-list.txt" 2>&1; then
+
+            cat "$RUNNER_TEMP/keystore-list.txt"
+            echo "::error::KEYSTORE_PASSWORD incorrect ou fichier invalide."
             exit 1
           fi
 
-          echo "Release Key valide."
-          echo "Alias Release verifie."
+          echo "[OK] KEYSTORE_PASSWORD valide."
 
-      # 7. Generer APK et AAB avec le Release Key
+          echo "=========================================="
+          echo "ALIASES DISPONIBLES"
+          echo "=========================================="
+
+          cat "$RUNNER_TEMP/keystore-list.txt"
+
+          echo "=========================================="
+          echo "VERIFICATION DE KEY_ALIAS"
+          echo "=========================================="
+
+          if ! ENTRY_INFO=$(keytool -list -v \
+            -keystore "$KEYSTORE" \
+            -storepass "$STORE_PASSWORD" \
+            -alias "$KEY_ALIAS" 2>&1); then
+
+            echo "$ENTRY_INFO"
+            echo "::error::KEY_ALIAS incorrect ou introuvable."
+            exit 1
+          fi
+
+          echo "$ENTRY_INFO" | grep -E 'Alias name:|Entry type:|SHA256:'
+
+          if ! grep -qi "PrivateKeyEntry" <<< "$ENTRY_INFO"; then
+            echo "::error::Cet alias ne contient pas de cle privee."
+            exit 1
+          fi
+
+          echo "[OK] KEY_ALIAS valide."
+          echo "[OK] Entree PrivateKeyEntry confirmee."
+
+      # ==========================================
+      # 7. VERIFIER LE MOT DE PASSE DE LA CLE
+      # ==========================================
+
+      - name: Verifier KEY_PASSWORD
+        shell: bash
+        env:
+          STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+        run: |
+          set -euo pipefail
+
+          KEYSTORE="app/release.jks"
+          CSR="$RUNNER_TEMP/test-release.csr"
+
+          echo "Verification du mot de passe de la cle privee..."
+
+          if keytool -certreq \
+            -alias "$KEY_ALIAS" \
+            -keystore "$KEYSTORE" \
+            -storepass "$STORE_PASSWORD" \
+            -keypass "$KEY_PASSWORD" \
+            -file "$CSR" \
+            > "$RUNNER_TEMP/keypass-check.log" 2>&1; then
+
+            echo "[OK] KEY_PASSWORD valide."
+            rm -f "$CSR"
+
+          else
+            cat "$RUNNER_TEMP/keypass-check.log"
+            echo "::error::KEY_PASSWORD incorrect ou cle privee inaccessible."
+            exit 1
+          fi
+
+      # ==========================================
+      # 8. GENERER APK ET AAB
+      # ==========================================
+
       - name: Generer APK et AAB signes
         shell: bash
         env:
@@ -119,24 +244,30 @@ jobs:
         run: |
           set -euo pipefail
 
-          gradle clean bundleRelease assembleRelease --no-daemon
+          echo "Generation APK Release..."
+          gradle clean assembleRelease bundleRelease --no-daemon
 
-      # 8. Verifier la signature de l'APK
+          echo "APK et AAB generes."
+
+      # ==========================================
+      # 9. VERIFIER LA SIGNATURE APK
+      # ==========================================
+
       - name: Verifier la signature APK
         shell: bash
         run: |
           set -euo pipefail
 
           APK=$(find app/build/outputs/apk/release \
-            -name "*.apk" -type f | head -n 1)
+            -type f -name "*.apk" | head -n 1)
 
           if [ -z "$APK" ]; then
-            echo "::error::APK Release introuvable."
+            echo "::error::APK introuvable."
             exit 1
           fi
 
           APKSIGNER=$(find "$ANDROID_HOME/build-tools" \
-            -name apksigner -type f | sort -V | tail -n 1)
+            -type f -name apksigner | sort -V | tail -n 1)
 
           if [ -z "$APKSIGNER" ]; then
             echo "::error::apksigner introuvable."
@@ -145,27 +276,33 @@ jobs:
 
           "$APKSIGNER" verify --verbose --print-certs "$APK"
 
-          echo "APK signe et verifie."
+          echo "[OK] APK signe et verifie."
 
-      # 9. Verifier la signature de l'AAB
+      # ==========================================
+      # 10. VERIFIER LA SIGNATURE AAB
+      # ==========================================
+
       - name: Verifier la signature AAB
         shell: bash
         run: |
           set -euo pipefail
 
           AAB=$(find app/build/outputs/bundle/release \
-            -name "*.aab" -type f | head -n 1)
+            -type f -name "*.aab" | head -n 1)
 
           if [ -z "$AAB" ]; then
-            echo "::error::AAB Release introuvable."
+            echo "::error::AAB introuvable."
             exit 1
           fi
 
           jarsigner -verify "$AAB"
 
-          echo "AAB signe et verifie."
+          echo "[OK] AAB signe et verifie."
 
-      # 10. Publier les deux fichiers
+      # ==========================================
+      # 11. PUBLIER APK ET AAB
+      # ==========================================
+
       - name: Publier APK et AAB
         uses: actions/upload-artifact@v4
         with:
@@ -175,3 +312,4 @@ jobs:
             app/build/outputs/bundle/release/*.aab
           if-no-files-found: error
           retention-days: 14
+ 
