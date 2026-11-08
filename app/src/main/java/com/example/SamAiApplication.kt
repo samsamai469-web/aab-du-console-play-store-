@@ -56,9 +56,10 @@ class SamAiApplication : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
 
-        // 1. Initialiser Firebase de façon synchrone avant toute coroutine
+        // 1. Initialiser Firebase et précharger la configuration serveur dès l'ouverture de l'application
         try {
             com.example.data.remote.FirebaseAuthService.initContext(this)
+            com.example.data.local.ApiKeyManager.preloadServerConfig(this)
         } catch (t: Throwable) {
             Log.w("SamAiApplication", "Firebase sync init fallback: ${t.message}")
         }

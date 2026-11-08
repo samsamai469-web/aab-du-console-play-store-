@@ -3,16 +3,20 @@ package com.example.data.local
 import android.content.Context
 import android.content.SharedPreferences
 import com.example.BuildConfig
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Source
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType.Companion.toMediaType
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 enum class ApiKeySource {
     SYSTEM_ENV,
@@ -21,7 +25,8 @@ enum class ApiKeySource {
 }
 
 class ApiKeyManager(context: Context) {
-    private val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val appContext: Context = context.applicationContext
+    private val prefs: SharedPreferences = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private val _geminiKeyFlow = MutableStateFlow(getActiveGeminiApiKey())
     val geminiKeyFlow: StateFlow<String> = _geminiKeyFlow.asStateFlow()
@@ -34,6 +39,10 @@ class ApiKeyManager(context: Context) {
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(10, TimeUnit.SECONDS)
             .build()
+    }
+
+    init {
+        preloadServerConfig(appContext)
     }
 
     fun getActiveGeminiApiKey(): String {
@@ -134,22 +143,6 @@ class ApiKeyManager(context: Context) {
         }
     }
 
-    init {
-        val savedServerKey = prefs.getString(KEY_SERVER_OPENAI_API_KEY, null)?.trim().orEmpty()
-        if (savedServerKey.isNotBlank() && savedServerKey != "MY_OPENAI_API_KEY") {
-            cachedServerOpenAiKey = savedServerKey
-        }
-        syncServerConfigInBackground()
-    }
-
-    private fun syncServerConfigInBackground() {
-        Thread {
-            try {
-                fetchOpenAiKeyFromServer()
-            } catch (_: Throwable) {}
-        }.start()
-    }
-
     fun getActiveOpenAiApiKey(): String {
         val customKey = prefs.getString(KEY_CUSTOM_OPENAI_API_KEY, null)?.trim()
         if (!customKey.isNullOrBlank() && customKey != "MY_OPENAI_API_KEY") {
@@ -160,7 +153,7 @@ class ApiKeyManager(context: Context) {
             cachedServerOpenAiKey = savedServerKey
             return savedServerKey
         }
-        return DEFAULT_OPENAI_API_KEY
+        return resolveOpenAiApiKeyBlocking()
     }
 
     fun isOpenAiConfigured(): Boolean = getActiveOpenAiApiKey().isNotBlank()
@@ -212,14 +205,6 @@ class ApiKeyManager(context: Context) {
         return if (!customModel.isNullOrBlank()) customModel else DEFAULT_HUGGINGFACE_MOORE_MODEL
     }
 
-    private fun fetchOpenAiKeyFromServer(): String {
-        val fetched = fetchOpenAiKeyFromRemoteFirestore()
-        if (fetched.isNotBlank()) {
-            prefs.edit().putString(KEY_SERVER_OPENAI_API_KEY, fetched).apply()
-        }
-        return fetched
-    }
-
     companion object {
         private const val PREFS_NAME = "sam_ai_api_keys"
         private const val KEY_CUSTOM_GEMINI_API_KEY = "custom_gemini_api_key"
@@ -234,52 +219,182 @@ class ApiKeyManager(context: Context) {
 
         const val DEFAULT_HUGGINGFACE_MOORE_MODEL = "samaisam/sam-ai-moore-whisper"
 
+        private val jsonParser = Json { ignoreUnknownKeys = true; isLenient = true }
+        private val serverHttpClient by lazy {
+            OkHttpClient.Builder()
+                .connectTimeout(10, TimeUnit.SECONDS)
+                .readTimeout(10, TimeUnit.SECONDS)
+                .build()
+        }
+
         @Volatile
         private var cachedServerOpenAiKey: String = ""
 
-        private fun fetchOpenAiKeyFromRemoteFirestore(): String {
-            return try {
-                val client = OkHttpClient.Builder()
-                    .connectTimeout(4, TimeUnit.SECONDS)
-                    .readTimeout(4, TimeUnit.SECONDS)
-                    .build()
-                val req = Request.Builder().url(SERVER_CONFIG_URL).get().build()
-                client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) return ""
-                    val body = resp.body?.string().orEmpty()
-                    val match = Regex(""""openai_api_key"\s*:\s*\{\s*"stringValue"\s*:\s*"([^"]+)"""").find(body)
-                    val value = match?.groupValues?.getOrNull(1)?.trim().orEmpty()
-                    if (value.isNotBlank() && value != "MY_OPENAI_API_KEY") {
-                        cachedServerOpenAiKey = value
-                        value
-                    } else {
-                        ""
-                    }
+        @Volatile
+        private var sharedAppContext: Context? = null
+
+        private val firestoreListenerStarted = AtomicBoolean(false)
+
+        private fun updateCachedServerKey(rawKey: String) {
+            val clean = rawKey.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+            if (clean.isBlank() || clean == "MY_OPENAI_API_KEY") return
+            cachedServerOpenAiKey = clean
+            try {
+                sharedAppContext
+                    ?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    ?.edit()
+                    ?.putString(KEY_SERVER_OPENAI_API_KEY, clean)
+                    ?.apply()
+            } catch (_: Throwable) {}
+        }
+
+        fun preloadServerConfig(context: Context) {
+            val appCtx = context.applicationContext
+            sharedAppContext = appCtx
+
+            try {
+                val p = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val saved = p.getString(KEY_SERVER_OPENAI_API_KEY, null)?.trim().orEmpty()
+                if (saved.isNotBlank() && saved != "MY_OPENAI_API_KEY") {
+                    cachedServerOpenAiKey = saved
                 }
+            } catch (_: Throwable) {}
+
+            // 1. Écoute et cache hors-ligne via le SDK officiel Firebase Firestore
+            if (firestoreListenerStarted.compareAndSet(false, true)) {
+                try {
+                    val docRef = FirebaseFirestore.getInstance()
+                        .collection("app_config")
+                        .document("server_ai_config")
+
+                    // Lecture immédiate depuis le cache local Firestore s'il existe
+                    docRef.get(Source.CACHE).addOnSuccessListener { snap ->
+                        val cachedVal = snap?.getString("openai_api_key")?.trim().orEmpty()
+                        if (cachedVal.isNotBlank()) {
+                            updateCachedServerKey(cachedVal)
+                        }
+                    }
+
+                    // Synchronisation temps réel avec le serveur Firebase
+                    docRef.addSnapshotListener { snapshot, _ ->
+                        val serverVal = snapshot?.getString("openai_api_key")?.trim().orEmpty()
+                        if (serverVal.isNotBlank()) {
+                            updateCachedServerKey(serverVal)
+                        }
+                    }
+                } catch (_: Throwable) {
+                    firestoreListenerStarted.set(false)
+                }
+            }
+
+            // 2. Préchargement HTTPS en arrière-plan dès l'ouverture de l'application
+            Thread {
+                try {
+                    fetchOpenAiKeyFromRemoteFirestore()
+                } catch (_: Throwable) {}
+            }.start()
+        }
+
+        private fun parseFirestoreOpenAiKey(body: String): String {
+            if (body.isBlank()) return ""
+            try {
+                val root = jsonParser.parseToJsonElement(body).jsonObject
+                val fields = root["fields"]?.jsonObject
+                val keyField = fields?.get("openai_api_key")?.jsonObject
+                val strVal = keyField?.get("stringValue")?.jsonPrimitive?.content?.trim().orEmpty()
+                if (strVal.isNotBlank() && strVal != "MY_OPENAI_API_KEY") {
+                    return strVal
+                }
+            } catch (_: Throwable) {}
+
+            return try {
+                val marker = "\"stringValue\""
+                val idx = body.indexOf(marker)
+                if (idx >= 0) {
+                    val afterColon = body.indexOf(':', idx + marker.length)
+                    val firstQuote = if (afterColon >= 0) body.indexOf('"', afterColon + 1) else -1
+                    val secondQuote = if (firstQuote >= 0) body.indexOf('"', firstQuote + 1) else -1
+                    if (firstQuote >= 0 && secondQuote > firstQuote) {
+                        body.substring(firstQuote + 1, secondQuote).trim()
+                    } else ""
+                } else ""
             } catch (_: Throwable) {
                 ""
             }
         }
 
-        val DEFAULT_OPENAI_API_KEY: String
-            get() {
-                val buildKey = try {
-                    BuildConfig.OPENAI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+        private fun fetchOpenAiKeyFromRemoteFirestore(): String {
+            for (attempt in 1..2) {
+                try {
+                    val req = Request.Builder().url(SERVER_CONFIG_URL).get().build()
+                    serverHttpClient.newCall(req).execute().use { resp ->
+                        if (resp.isSuccessful) {
+                            val body = resp.body?.string().orEmpty()
+                            val value = parseFirestoreOpenAiKey(body)
+                            if (value.isNotBlank() && value != "MY_OPENAI_API_KEY") {
+                                updateCachedServerKey(value)
+                                return value
+                            }
+                        }
+                    }
                 } catch (_: Throwable) {
-                    ""
+                    if (attempt == 1) {
+                        try { Thread.sleep(250L) } catch (_: Throwable) {}
+                    }
                 }
-                if (buildKey.isNotBlank() && buildKey != "MY_OPENAI_API_KEY") {
-                    return buildKey
-                }
-                if (cachedServerOpenAiKey.isNotBlank()) {
-                    return cachedServerOpenAiKey
-                }
-                if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
-                    val remote = fetchOpenAiKeyFromRemoteFirestore()
-                    if (remote.isNotBlank()) return remote
-                }
+            }
+            return ""
+        }
+
+        fun forceRefreshOpenAiKeyFromServer(): String {
+            if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+                val fresh = fetchOpenAiKeyFromRemoteFirestore()
+                if (fresh.isNotBlank()) return fresh
+            }
+            return cachedServerOpenAiKey
+        }
+
+        fun resolveOpenAiApiKeyBlocking(): String {
+            // 1. Priorité au cache serveur déjà synchronisé depuis Firebase Firestore
+            if (cachedServerOpenAiKey.isNotBlank() && cachedServerOpenAiKey != "MY_OPENAI_API_KEY") {
                 return cachedServerOpenAiKey
             }
+
+            // 2. Lecture depuis SharedPreferences si déjà sauvegardé lors d'une session précédente
+            try {
+                val saved = sharedAppContext
+                    ?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    ?.getString(KEY_SERVER_OPENAI_API_KEY, null)
+                    ?.trim()
+                    .orEmpty()
+                if (saved.isNotBlank() && saved != "MY_OPENAI_API_KEY") {
+                    cachedServerOpenAiKey = saved
+                    return saved
+                }
+            } catch (_: Throwable) {}
+
+            // 3. Variable d'environnement serveur injectée au build (si présente)
+            val buildKey = try {
+                BuildConfig.OPENAI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+            } catch (_: Throwable) {
+                ""
+            }
+            if (buildKey.isNotBlank() && buildKey != "MY_OPENAI_API_KEY") {
+                cachedServerOpenAiKey = buildKey
+                return buildKey
+            }
+
+            // 4. Récupération directe sur le serveur Firebase si on est hors du thread UI
+            if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+                val remote = fetchOpenAiKeyFromRemoteFirestore()
+                if (remote.isNotBlank()) return remote
+            }
+
+            return cachedServerOpenAiKey
+        }
+
+        val DEFAULT_OPENAI_API_KEY: String
+            get() = resolveOpenAiApiKeyBlocking()
 
         val DEFAULT_GEMINI_API_KEY: String
             get() = try {

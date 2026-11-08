@@ -74,13 +74,9 @@ class OpenAiBackendService {
     }
 
     private fun getOpenAiApiKey(): String {
-        val buildKey = try {
-            BuildConfig.OPENAI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
-        } catch (_: Throwable) {
-            ""
-        }
-        if (buildKey.isNotBlank() && buildKey != "MY_OPENAI_API_KEY") return buildKey
-        return com.example.data.local.ApiKeyManager.DEFAULT_OPENAI_API_KEY
+        val resolved = com.example.data.local.ApiKeyManager.resolveOpenAiApiKeyBlocking()
+        if (resolved.isNotBlank() && resolved != "MY_OPENAI_API_KEY") return resolved
+        return ""
     }
 
     private fun sanitizeSamAiText(raw: String, userQuestion: String = ""): String {
