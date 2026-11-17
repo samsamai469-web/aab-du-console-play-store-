@@ -203,7 +203,7 @@ class OpenAiBackendService {
         val systemPrompt = if (isVoiceCall) {
             buildString {
                 append("Tu es SAM AI, un homme chaleureux, naturel et ultra-précis. L'appel téléphonique avec l'utilisateur a DÉJÀ commencé.\n")
-                append("Aujourd'hui nous sommes le $dateStr (octobre 2026).\n")
+                append("Aujourd'hui nous sommes le $dateStr.\n")
                 if (newsContext.isNotBlank()) {
                     append("\n--- ACTUALITÉS ET DÉPÊCHES EN DIRECT FOURNIES EN TEMPS RÉEL ---\n")
                     append(newsContext.take(900))
@@ -223,7 +223,7 @@ class OpenAiBackendService {
         } else {
             buildString {
                 append("Tu es SAM AI, une intelligence artificielle d'élite, cultivée, brillante, polyvalente et experte, conçue par Abdoul Mohamine Sawadogo, jeune développeur burkinabè.\n")
-                append("Aujourd'hui nous sommes exactement le $dateStr (octobre 2026).\n")
+                append("Aujourd'hui nous sommes exactement le $dateStr.\n")
                 if (newsContext.isNotBlank()) {
                     append("\n--- ACTUALITÉS ET DÉPÊCHES EN DIRECT FOURNIES EN TEMPS RÉEL ---\n")
                     append(newsContext)

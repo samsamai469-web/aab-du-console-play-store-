@@ -524,6 +524,10 @@ class LiveNewsFeedService {
         }
     }
 
+    private val entryPattern = Pattern.compile("<entry[^>]*>(.*?)</entry>", Pattern.DOTALL)
+    private val atomLinkPattern = Pattern.compile("<link[^>]+href=[\"']([^\"']+)[\"'][^>]*>", Pattern.DOTALL)
+    private val atomDatePattern = Pattern.compile("<(?:published|updated)[^>]*>(.*?)</(?:published|updated)>", Pattern.DOTALL)
+
     private fun parseRssXml(xml: String, fallbackSource: String, maxItems: Int = 15): List<LiveNewsArticle> {
         val results = mutableListOf<LiveNewsArticle>()
         val itemMatcher = itemPattern.matcher(xml)
@@ -552,6 +556,31 @@ class LiveNewsFeedService {
                 )
             }
             if (results.size >= maxItems) break
+        }
+
+        if (results.isEmpty()) {
+            val entryMatcher = entryPattern.matcher(xml)
+            while (entryMatcher.find()) {
+                val entryContent = entryMatcher.group(1) ?: continue
+                val title = extractMatch(titlePattern, entryContent)
+                val link = extractMatch(atomLinkPattern, entryContent).ifBlank { extractMatch(linkPattern, entryContent) }
+                val pubDate = extractMatch(atomDatePattern, entryContent)
+                val rawDesc = extractMatch(descPattern, entryContent)
+                val cleanTitle = cleanHtmlText(title)
+                val cleanSnippet = cleanHtmlText(rawDesc)
+                if (cleanTitle.isNotBlank() && link.isNotBlank()) {
+                    results.add(
+                        LiveNewsArticle(
+                            title = cleanTitle,
+                            link = link.trim(),
+                            sourceName = fallbackSource,
+                            pubDate = cleanPubDate(pubDate),
+                            snippet = cleanSnippet.take(280)
+                        )
+                    )
+                }
+                if (results.size >= maxItems) break
+            }
         }
         return results
     }

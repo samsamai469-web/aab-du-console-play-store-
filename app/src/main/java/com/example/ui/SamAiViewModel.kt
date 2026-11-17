@@ -250,12 +250,17 @@ class SamAiViewModel(
         auditLog("LANGUAGE_CHANGED", "INFO", "Langue de l'application modifiée pour: $validLang")
     }
 
-    // --- BURKINA FASO LIVE NEWS & FLASH INFO ---
-    private val _newsArticles = MutableStateFlow<List<com.example.data.local.NewsArticle>>(com.example.data.repository.NewsRepository.getDefaultBurkinaNews())
+    // --- BURKINA FASO LIVE NEWS & FLASH INFO (AIB & RTB EXCLUSIF - RÉTENTION 24H) ---
+    private val _newsArticles = MutableStateFlow<List<com.example.data.local.NewsArticle>>(
+        com.example.data.repository.NewsRepository.getCachedFreshNews()
+    )
     val newsArticles = _newsArticles.asStateFlow()
 
     private val _isNewsLoading = MutableStateFlow(false)
     val isNewsLoading = _isNewsLoading.asStateFlow()
+
+    private val _newsErrorMessage = MutableStateFlow<String?>(null)
+    val newsErrorMessage = _newsErrorMessage.asStateFlow()
 
     private val _selectedNewsCategory = MutableStateFlow("Tout")
     val selectedNewsCategory = _selectedNewsCategory.asStateFlow()
@@ -273,9 +278,12 @@ class SamAiViewModel(
         _newsSearchQuery
     ) { articles, category, source, query ->
         val now = System.currentTimeMillis()
-        val cutoffRetention = now - (7L * 24L * 60 * 60 * 1000L) // 7 jours de rétention pour avoir l'ensemble des dépêches récentes
+        val cutoffRetention = now - com.example.data.repository.NewsRepository.RETENTION_WINDOW_MS // 24h max
 
-        var list = articles.filter { it.timestamp >= cutoffRetention }
+        var list = articles.filter {
+            (it.source.contains("AIB", ignoreCase = true) || it.source.contains("RTB", ignoreCase = true)) &&
+                it.timestamp >= cutoffRetention
+        }
 
         if (category != "Tout") {
             list = when (category) {
@@ -395,15 +403,14 @@ class SamAiViewModel(
     private fun startNewsAutoRefresh() {
         viewModelScope.launch {
             while (true) {
-                kotlinx.coroutines.delay(20_000L) // Surveillance continue ultra-rapide toutes les 20 secondes
+                kotlinx.coroutines.delay(180_000L) // Actualisation automatique toutes les 3 minutes (évite le blocage des serveurs AIB/RTB)
                 try {
                     val live = com.example.data.repository.NewsRepository.getLiveNews(forceRefresh = true)
-                    if (live.isNotEmpty()) {
-                        val currentFirst = _newsArticles.value.firstOrNull()?.id
-                        val newFirst = live.firstOrNull()?.id
-                        if (currentFirst != newFirst || live.size != _newsArticles.value.size) {
-                            _newsArticles.value = live
-                        }
+                    _newsArticles.value = live
+                    _newsErrorMessage.value = if (live.isEmpty() && !com.example.data.repository.NewsRepository.lastFetchHadNetworkSuccess) {
+                        "Connexion impossible aux serveurs AIB et RTB. Vérifiez votre réseau."
+                    } else {
+                        null
                     }
                 } catch (_: Exception) {}
             }
@@ -413,13 +420,18 @@ class SamAiViewModel(
     fun loadLiveNews(forceRefresh: Boolean = false) {
         viewModelScope.launch {
             _isNewsLoading.value = true
+            _newsErrorMessage.value = null
             try {
                 val live = com.example.data.repository.NewsRepository.getLiveNews(forceRefresh)
-                if (live.isNotEmpty()) {
-                    _newsArticles.value = live
+                _newsArticles.value = live
+                if (live.isEmpty() && !com.example.data.repository.NewsRepository.lastFetchHadNetworkSuccess) {
+                    _newsErrorMessage.value = "Impossible de joindre les serveurs AIB et RTB. Vérifiez votre connexion Internet."
                 }
-            } catch (_: Exception) {}
-            finally {
+            } catch (_: Exception) {
+                if (_newsArticles.value.isEmpty()) {
+                    _newsErrorMessage.value = "Erreur réseau lors du chargement des actualités AIB & RTB."
+                }
+            } finally {
                 _isNewsLoading.value = false
             }
         }

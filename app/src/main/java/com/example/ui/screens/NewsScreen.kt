@@ -65,6 +65,7 @@ fun NewsScreen(
     val appLanguage by viewModel.appLanguage.collectAsStateWithLifecycle()
     val articles by viewModel.filteredNews.collectAsStateWithLifecycle()
     val isLoading by viewModel.isNewsLoading.collectAsStateWithLifecycle()
+    val newsErrorMessage by viewModel.newsErrorMessage.collectAsStateWithLifecycle()
     val selectedCategory by viewModel.selectedNewsCategory.collectAsStateWithLifecycle()
     val selectedSource by viewModel.selectedNewsSource.collectAsStateWithLifecycle()
     val searchQuery by viewModel.newsSearchQuery.collectAsStateWithLifecycle()
@@ -220,7 +221,11 @@ fun NewsScreen(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Card(
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable {
+                            openArticleUrl(context, "https://www.facebook.com/share/1ErsffNdsd/?mibextid=wwXIfr")
+                        },
                     shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(
                         containerColor = Color(0xFF1877F2).copy(alpha = 0.12f)
@@ -268,7 +273,7 @@ fun NewsScreen(
                     modifier = Modifier
                         .weight(1f)
                         .clickable {
-                            openArticleUrl(context, "https://www.youtube.com/@RTBOfficiel")
+                            openArticleUrl(context, "https://www.youtube.com/@rtburkina")
                         },
                     shape = RoundedCornerShape(14.dp),
                     colors = CardDefaults.cardColors(
@@ -299,7 +304,7 @@ fun NewsScreen(
                         }
                         IconButton(
                             onClick = {
-                                openArticleUrl(context, "https://www.youtube.com/@RTBOfficiel")
+                                openArticleUrl(context, "https://www.youtube.com/@rtburkina")
                             },
                             modifier = Modifier.size(28.dp).testTag("btn_open_rtb_portal")
                         ) {
@@ -390,13 +395,16 @@ fun NewsScreen(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = "Aucune actualité trouvée",
+                            text = newsErrorMessage ?: "Aucune actualité AIB / RTB (dernières 24h)",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Vérifiez vos filtres ou actualisez pour charger les flux.",
+                            text = if (newsErrorMessage != null)
+                                "Vérifiez votre connexion Internet puis appuyez sur Actualiser."
+                            else
+                                "Les actualités datant de plus de 24h sont masquées automatiquement.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -1112,8 +1120,26 @@ private fun InAppArticleReaderDialog(
 
                 Spacer(modifier = Modifier.height(14.dp))
 
+                val readableBody = remember(article.fullContent, article.summary) {
+                    val cleaned = article.fullContent
+                        .replace(Regex("<style[^>]*>[\\s\\S]*?</style>"), "")
+                        .replace(Regex("<script[^>]*>[\\s\\S]*?</script>"), "")
+                        .replace(Regex("</p\\s*>", RegexOption.IGNORE_CASE), "\n\n")
+                        .replace(Regex("<br\\s*/?>", RegexOption.IGNORE_CASE), "\n")
+                        .replace(Regex("<[^>]*>"), " ")
+                        .replace("&nbsp;", " ")
+                        .replace("&amp;", "&")
+                        .replace("&quot;", "\"")
+                        .replace("&#039;", "'")
+                        .replace("&#8217;", "'")
+                        .replace(Regex("[ \\t]+"), " ")
+                        .replace(Regex("\\n{3,}"), "\n\n")
+                        .trim()
+                    if (cleaned.length > article.summary.length) cleaned else article.summary
+                }
+
                 Text(
-                    text = article.summary,
+                    text = readableBody,
                     style = MaterialTheme.typography.bodyLarge,
                     lineHeight = 24.sp,
                     color = MaterialTheme.colorScheme.onSurface
