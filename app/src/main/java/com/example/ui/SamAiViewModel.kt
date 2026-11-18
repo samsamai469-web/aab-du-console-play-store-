@@ -338,8 +338,8 @@ class SamAiViewModel(
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
-            // Laisser la priorité absolue au premier frame de rendu de l'interface graphique
-            kotlinx.coroutines.delay(400L)
+            // Laisser la priorité absolue à l'affichage instantané de l'accueil et de ses images
+            kotlinx.coroutines.delay(1500L)
             launch {
                 try {
                     liveNewsFeedService.fetchLiveNews("Burkina Faso")

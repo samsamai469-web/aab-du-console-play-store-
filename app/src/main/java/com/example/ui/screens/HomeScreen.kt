@@ -90,9 +90,10 @@ fun HomeScreen(
         }
     }
 
-    // Préchargement des images Mooré
+    // Préchargement différé des images Mooré adjacentes pour ne pas freiner l'affichage initial
     LaunchedEffect(mooreIndex, mooreVisualItems) {
-        if (mooreVisualItems.isNotEmpty()) {
+        if (mooreVisualItems.size > 1) {
+            if (mooreIndex == 0) delay(1200)
             val nextIdx = (mooreIndex + 1) % mooreVisualItems.size
             val prevIdx = (mooreIndex - 1 + mooreVisualItems.size) % mooreVisualItems.size
             listOf(nextIdx, prevIdx).forEach { idx ->
@@ -101,6 +102,8 @@ fun HomeScreen(
                 if (source != null) {
                     val request = ImageRequest.Builder(context)
                         .data(source)
+                        .size(720, 420)
+                        .allowHardware(true)
                         .crossfade(false)
                         .build()
                     context.imageLoader.enqueue(request)
@@ -129,9 +132,10 @@ fun HomeScreen(
         }
     }
 
-    // Préchargement des images Dioula
+    // Préchargement différé des images Dioula adjacentes pour ne pas freiner l'affichage initial
     LaunchedEffect(dioulaIndex, dioulaVisualItems) {
-        if (dioulaVisualItems.isNotEmpty()) {
+        if (dioulaVisualItems.size > 1) {
+            if (dioulaIndex == 0) delay(1200)
             val nextIdx = (dioulaIndex + 1) % dioulaVisualItems.size
             val prevIdx = (dioulaIndex - 1 + dioulaVisualItems.size) % dioulaVisualItems.size
             listOf(nextIdx, prevIdx).forEach { idx ->
@@ -140,6 +144,8 @@ fun HomeScreen(
                 if (source != null) {
                     val request = ImageRequest.Builder(context)
                         .data(source)
+                        .size(720, 420)
+                        .allowHardware(true)
                         .crossfade(false)
                         .build()
                     context.imageLoader.enqueue(request)
@@ -757,10 +763,10 @@ fun VisualMooreCard(
                 coil.compose.AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)
                         .data(primarySource)
+                        .size(720, 420)
                         .bitmapConfig(android.graphics.Bitmap.Config.ARGB_8888)
-                        .precision(coil.size.Precision.EXACT)
                         .allowHardware(true)
-                        .crossfade(true)
+                        .crossfade(false)
                         .build(),
                     contentDescription = item.word,
                     modifier = Modifier.fillMaxSize(),
@@ -902,10 +908,10 @@ fun VisualDioulaCard(
                 coil.compose.AsyncImage(
                     model = ImageRequest.Builder(LocalContext.current)
                         .data(primarySource)
+                        .size(720, 420)
                         .bitmapConfig(android.graphics.Bitmap.Config.ARGB_8888)
-                        .precision(coil.size.Precision.EXACT)
                         .allowHardware(true)
-                        .crossfade(true)
+                        .crossfade(false)
                         .build(),
                     contentDescription = item.frenchWord,
                     modifier = Modifier.fillMaxSize(),

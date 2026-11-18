@@ -109,33 +109,46 @@ android {
             val releaseConfig =
                 signingConfigs.getByName("release")
 
-            // Vérification du fichier Release Key
-            if (releaseConfig.storeFile?.isFile != true) {
-                throw GradleException(
-                    "ERREUR RELEASE : fichier release.jks introuvable. " +
-                    "Vérifie KEYSTORE_PATH."
-                )
-            }
+            val hasReleaseStoreFile = releaseConfig.storeFile?.isFile == true
+            val hasStorePassword = !releaseConfig.storePassword.isNullOrBlank()
+            val hasKeyAlias = !releaseConfig.keyAlias.isNullOrBlank()
+            val hasKeyPassword = !releaseConfig.keyPassword.isNullOrBlank()
 
-            // Vérification du mot de passe du keystore
-            if (releaseConfig.storePassword.isNullOrBlank()) {
-                throw GradleException(
-                    "ERREUR RELEASE : KEYSTORE_PASSWORD manquant."
-                )
-            }
+            gradle.taskGraph.whenReady {
+                val buildingRelease = allTasks.any { task ->
+                    task.project.path == project.path &&
+                        (task.name.contains("Release", ignoreCase = true))
+                }
+                if (buildingRelease) {
+                    // Vérification du fichier Release Key
+                    if (!hasReleaseStoreFile) {
+                        throw GradleException(
+                            "ERREUR RELEASE : fichier release.jks introuvable. " +
+                            "Vérifie KEYSTORE_PATH."
+                        )
+                    }
 
-            // Vérification de l'alias
-            if (releaseConfig.keyAlias.isNullOrBlank()) {
-                throw GradleException(
-                    "ERREUR RELEASE : KEY_ALIAS manquant."
-                )
-            }
+                    // Vérification du mot de passe du keystore
+                    if (!hasStorePassword) {
+                        throw GradleException(
+                            "ERREUR RELEASE : KEYSTORE_PASSWORD manquant."
+                        )
+                    }
 
-            // Vérification du mot de passe de la clé privée
-            if (releaseConfig.keyPassword.isNullOrBlank()) {
-                throw GradleException(
-                    "ERREUR RELEASE : KEY_PASSWORD manquant."
-                )
+                    // Vérification de l'alias
+                    if (!hasKeyAlias) {
+                        throw GradleException(
+                            "ERREUR RELEASE : KEY_ALIAS manquant."
+                        )
+                    }
+
+                    // Vérification du mot de passe de la clé privée
+                    if (!hasKeyPassword) {
+                        throw GradleException(
+                            "ERREUR RELEASE : KEY_PASSWORD manquant."
+                        )
+                    }
+                }
             }
 
             // SIGNATURE RELEASE OBLIGATOIRE

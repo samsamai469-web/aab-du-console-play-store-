@@ -65,9 +65,24 @@ class SamAiApplication : Application(), ImageLoaderFactory {
             Log.w("SamAiApplication", "Firebase sync init fallback: ${t.message}")
         }
 
-        // Nettoyage complet du cache d'images pour purger immédiatement tout ancien visuel
+        // Précharger immédiatement en mémoire les 2 premières images de l'accueil (sans supprimer le cache disque)
         try {
-            cacheDir.resolve("image_cache").deleteRecursively()
+            val loader = newImageLoader()
+            val firstMoore = com.example.data.local.BurkinaVisualData.visualCatalog.firstOrNull()
+            val firstDioula = com.example.data.local.BurkinaDioulaVisualData.visualCatalog.firstOrNull()
+            listOfNotNull(
+                firstMoore?.localDrawable ?: firstMoore?.imageUrl?.ifEmpty { null },
+                firstDioula?.localDrawable ?: firstDioula?.imageUrl?.ifEmpty { null }
+            ).forEach { source ->
+                loader.enqueue(
+                    coil.request.ImageRequest.Builder(this)
+                        .data(source)
+                        .size(720, 420)
+                        .allowHardware(true)
+                        .crossfade(false)
+                        .build()
+                )
+            }
         } catch (_: Throwable) {}
 
         // 2. Seeding et mise à jour de la base de données en arrière-plan

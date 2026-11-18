@@ -597,7 +597,8 @@ fun TranslationScreen(
                             LaunchedEffect(translatedText, effectiveTgt) {
                                 if (translatedText.isNotBlank() &&
                                     !translatedText.startsWith("Erreur") &&
-                                    !translatedText.startsWith("⚠️")
+                                    !translatedText.startsWith("⚠️") &&
+                                    !translatedText.equals("Traduction indisponible", ignoreCase = true)
                                 ) {
                                     ttsManager.speak(translatedText, effectiveTgt)
                                 }
