@@ -32,10 +32,21 @@ object RetrofitClient {
         encodeDefaults = true
     }
 
+    private val ipv4PreferredDns = object : okhttp3.Dns {
+        override fun lookup(hostname: String): List<java.net.InetAddress> {
+            val all = okhttp3.Dns.SYSTEM.lookup(hostname)
+            val v4 = all.filterIsInstance<java.net.Inet4Address>()
+            val v6 = all.filterIsInstance<java.net.Inet6Address>()
+            return if (v4.isNotEmpty()) v4 + v6 else all
+        }
+    }
+
     private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
+        .dns(ipv4PreferredDns)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(35, TimeUnit.SECONDS)
+        .writeTimeout(15, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(true)
         .build()
 
     val geminiService: GeminiApiService by lazy {

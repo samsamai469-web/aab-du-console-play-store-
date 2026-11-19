@@ -10,11 +10,18 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.IOException
+import java.net.ConnectException
+import java.net.NoRouteToHostException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.concurrent.TimeUnit
 
 @Serializable
@@ -24,7 +31,9 @@ data class OpenAiChatResult(
     val sources: List<WebSource> = emptyList(),
     val model: String = "",
     val searchPerformed: Boolean = false,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val isNetworkError: Boolean = false,
+    val httpStatusCode: Int? = null
 )
 
 /**
@@ -32,11 +41,22 @@ data class OpenAiChatResult(
  */
 class OpenAiBackendService {
 
+    private val ipv4PreferredDns = object : okhttp3.Dns {
+        override fun lookup(hostname: String): List<java.net.InetAddress> {
+            val all = okhttp3.Dns.SYSTEM.lookup(hostname)
+            val v4 = all.filterIsInstance<java.net.Inet4Address>()
+            val v6 = all.filterIsInstance<java.net.Inet6Address>()
+            return if (v4.isNotEmpty()) v4 + v6 else all
+        }
+    }
+
     private val httpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(18, TimeUnit.SECONDS)
-            .writeTimeout(10, TimeUnit.SECONDS)
+            .dns(ipv4PreferredDns)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(35, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
             .build()
     }
 
@@ -87,18 +107,22 @@ class OpenAiBackendService {
             .replace(Regex("(?i)\\b(je\\s+m'appelle|je\\s+suis|mon\\s+nom\\s+est)\\s+Nova\\b"), "$1 Sam AI")
             .trim()
 
+        val brandedClean = cleaned
         val qLower = userQuestion.lowercase(java.util.Locale.ROOT).trim()
         val userExplicitlyCommandedGreeting = Regex(
-            "(?i)\\b(dis|dire|répète|répéter|prononce|prononcer|écris|écrire)\\b.{0,25}\\b(bonjour|salut|bonsoir)\\b"
+            "(?i)\\b(dis|dites|répète|répéter|prononce|prononcer|écris|écrire)\\b.{0,25}\\b(bonjour|salut|bonsoir)\\b"
         ).containsMatchIn(qLower)
         if (!userExplicitlyCommandedGreeting) {
-            cleaned = cleaned.replace(
+            val stripped = brandedClean.replace(
                 Regex("^(?i)(bonjour|salut|bonsoir)(\\s+à\\s+vous|\\s+tout\\s+le\\s+monde)?\\s*[!,.?:;\\-—]*\\s*"),
                 ""
             ).replace(
                 Regex("^(?i)(comment\\s+puis-je\\s+vous\\s+aider(\\s+aujourd'hui)?\\s*[?.,!]*\\s*)"),
                 ""
-            ).replaceFirstChar { if (it.isLowerCase()) it.titlecase(java.util.Locale.FRENCH) else it.toString() }
+            ).replaceFirstChar { if (it.isLowerCase()) it.titlecase(java.util.Locale.FRENCH) else it.toString() }.trim()
+            if (stripped.isNotBlank()) {
+                cleaned = stripped
+            }
         }
         return cleaned.trim()
     }
@@ -125,8 +149,13 @@ class OpenAiBackendService {
             )
         }
 
+        var resolvedKey = getOpenAiApiKey()
+        if (resolvedKey.isBlank()) {
+            resolvedKey = com.example.data.local.ApiKeyManager.forceRefreshOpenAiKeyFromServer()
+        }
+
         // Si une recherche d'actualité en direct est demandée dans le chat écrit, on tente d'abord
-        // le modèle de recherche Web en temps réel (gpt-4o-search-preview), puis repli sur gpt-4o
+        // le modèle de recherche Web en temps réel (gpt-4o-search-preview), puis repli sur gpt-4o / gpt-4o-mini
         val candidateModels = buildList {
             if (enableWebSearch && !isVoiceCall) {
                 add(WEB_SEARCH_OPENAI_MODEL)
@@ -139,28 +168,62 @@ class OpenAiBackendService {
         }.distinct()
 
         var directOpenAiResult: OpenAiChatResult? = null
+        var lastFailureResult: OpenAiChatResult? = null
+        var keyRefreshTried = false
+
         for (candidateModel in candidateModels) {
-            val attemptResult = tryCallOfficialOpenAiApi(
+            var attemptResult = tryCallOfficialOpenAiApi(
                 messages = messages,
                 userQuestion = cleanQuestion,
                 model = candidateModel,
+                apiKeyOverride = resolvedKey,
                 newsContext = newsContext,
                 sources = sources,
                 enableWebSearch = enableWebSearch,
                 isMooreVoice = false,
                 isVoiceCall = isVoiceCall
             )
+
+            // En cas de clé rejetée (401/403), rafraîchir automatiquement depuis Firestore et retenter une fois
+            if (!keyRefreshTried && attemptResult != null && !attemptResult.success &&
+                (attemptResult.httpStatusCode == 401 || attemptResult.httpStatusCode == 403 || resolvedKey.isBlank())
+            ) {
+                keyRefreshTried = true
+                val refreshedKey = com.example.data.local.ApiKeyManager.forceRefreshOpenAiKeyFromServer()
+                if (refreshedKey.isNotBlank() && refreshedKey != resolvedKey) {
+                    resolvedKey = refreshedKey
+                    attemptResult = tryCallOfficialOpenAiApi(
+                        messages = messages,
+                        userQuestion = cleanQuestion,
+                        model = candidateModel,
+                        apiKeyOverride = resolvedKey,
+                        newsContext = newsContext,
+                        sources = sources,
+                        enableWebSearch = enableWebSearch,
+                        isMooreVoice = false,
+                        isVoiceCall = isVoiceCall
+                    )
+                }
+            }
+
             if (attemptResult != null && attemptResult.success && attemptResult.text.isNotBlank()) {
                 directOpenAiResult = attemptResult
                 break
             }
+            if (attemptResult != null && !attemptResult.success) {
+                if (attemptResult.isNetworkError) {
+                    try { httpClient.connectionPool.evictAll() } catch (_: Throwable) {}
+                }
+                lastFailureResult = attemptResult
+            }
         }
 
-        directOpenAiResult ?: OpenAiChatResult(
+        directOpenAiResult ?: lastFailureResult ?: OpenAiChatResult(
             success = false,
             text = "",
             model = "",
-            errorMessage = "Impossible de joindre le serveur SAM AI. Vérifiez votre connexion réseau."
+            errorMessage = "Le service SAM AI n'a pas pu répondre pour le moment. Veuillez réessayer dans un instant.",
+            isNetworkError = false
         )
     }
 
@@ -183,19 +246,21 @@ class OpenAiBackendService {
         messages: List<ChatMessage>,
         userQuestion: String,
         model: String,
+        apiKeyOverride: String = "",
         newsContext: String = "",
         sources: List<WebSource> = emptyList(),
         enableWebSearch: Boolean = false,
         isMooreVoice: Boolean = false,
         isVoiceCall: Boolean = false
     ): OpenAiChatResult? {
-        val apiKey = getOpenAiApiKey()
+        val apiKey = apiKeyOverride.ifBlank { getOpenAiApiKey() }
         if (apiKey.isBlank() || apiKey.contains("MY_OPENAI_API_KEY")) {
             return OpenAiChatResult(
                 success = false,
                 text = "",
-                model = "",
-                errorMessage = "Service SAM AI temporairement indisponible."
+                model = model,
+                errorMessage = "Service SAM AI en cours de configuration.",
+                isNetworkError = false
             )
         }
 
@@ -272,7 +337,10 @@ class OpenAiBackendService {
                     put("content", systemPrompt)
                 })
                 safeHistory.forEach { add(it) }
-                if (safeHistory.isEmpty() || safeHistory.last()["content"]?.toString()?.trim('"') != userQuestion) {
+                val lastObj = safeHistory.lastOrNull()
+                val lastRole = lastObj?.get("role")?.jsonPrimitive?.contentOrNull
+                val lastContent = lastObj?.get("content")?.jsonPrimitive?.contentOrNull
+                if (safeHistory.isEmpty() || lastRole != "user" || lastContent != userQuestion) {
                     add(buildJsonObject {
                         put("role", "user")
                         put("content", userQuestion)
@@ -326,9 +394,11 @@ class OpenAiBackendService {
                         success = false,
                         text = "",
                         sources = emptyList(),
-                        model = "",
+                        model = model,
                         searchPerformed = false,
-                        errorMessage = errorDetails
+                        errorMessage = errorDetails,
+                        isNetworkError = false,
+                        httpStatusCode = response.code
                     )
                 }
 
@@ -365,21 +435,40 @@ class OpenAiBackendService {
                         success = true,
                         text = finalText,
                         sources = combinedSources,
-                        model = "",
+                        model = model,
                         searchPerformed = combinedSources.isNotEmpty() || isSearchPreviewModel,
-                        errorMessage = null
+                        errorMessage = null,
+                        isNetworkError = false
                     )
                 }
             }
         } catch (e: Throwable) {
-            Log.e("OpenAiBackendService", "Exception during direct call: ${e.message}", e)
+            Log.e("OpenAiBackendService", "Exception during direct call ($model): ${e.message}", e)
+            val isConnectivityIssue = e is UnknownHostException ||
+                e is ConnectException ||
+                e is NoRouteToHostException
+            val isTimeout = e is SocketTimeoutException
+            val hasDeviceInternet = com.example.data.local.ApiKeyManager.hasActiveInternetConnection()
+            val msg = when {
+                isConnectivityIssue && !hasDeviceInternet ->
+                    "Aucune connexion Internet détectée. Vérifiez votre Wi-Fi ou vos données mobiles et réessayez."
+                isConnectivityIssue ->
+                    "Impossible de joindre le serveur SAM AI pour le moment. Veuillez réessayer dans un instant."
+                isTimeout ->
+                    "Le serveur met un peu plus de temps que prévu à répondre. Veuillez réessayer."
+                e is IOException ->
+                    "Connexion interrompue avec le serveur SAM AI. Veuillez réessayer."
+                else ->
+                    "Une erreur temporaire est survenue lors de la génération de la réponse."
+            }
             return OpenAiChatResult(
                 success = false,
                 text = "",
                 sources = emptyList(),
-                model = "",
+                model = model,
                 searchPerformed = false,
-                errorMessage = "Impossible de joindre les serveurs SAM AI. Vérifiez votre connexion Internet."
+                errorMessage = msg,
+                isNetworkError = isConnectivityIssue || isTimeout || e is IOException
             )
         }
         return null

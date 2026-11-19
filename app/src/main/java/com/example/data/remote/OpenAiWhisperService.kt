@@ -259,7 +259,20 @@ class OpenAiWhisperService(private val context: Context) {
             Result.success(rawText)
         } catch (e: Exception) {
             Log.e(TAG, "Exception lors de l'appel OpenAI Transcription : ${e.message}", e)
-            Result.failure(Exception("Erreur de connexion : ${e.localizedMessage ?: "Vérifiez votre réseau"}"))
+            val msg = when (e) {
+                is java.net.UnknownHostException,
+                is java.net.ConnectException,
+                is java.net.NoRouteToHostException ->
+                    if (com.example.data.local.ApiKeyManager.hasActiveInternetConnection()) {
+                        "Serveur vocal temporairement inaccessible. Veuillez réessayer."
+                    } else {
+                        "Erreur de connexion : vérifiez votre réseau."
+                    }
+                is java.net.SocketTimeoutException ->
+                    "Délai de transcription dépassé. Veuillez réessayer."
+                else -> "Erreur temporaire de transcription audio."
+            }
+            Result.failure(Exception(msg))
         } finally {
             try {
                 if (audioFile.exists()) {

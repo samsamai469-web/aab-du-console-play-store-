@@ -6,6 +6,8 @@ import android.util.Log
 import android.util.Xml
 import com.example.BuildConfig
 import com.example.data.local.NewsArticle
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -16,6 +18,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.xmlpull.v1.XmlPullParser
 import java.io.InputStream
+import java.io.PushbackInputStream
 import java.io.StringReader
 import java.net.HttpURLConnection
 import java.net.URL
@@ -41,8 +44,12 @@ object NewsRepository {
 
     // Fenêtre stricte de rétention : 24 heures maximum pour éviter l'accumulation d'anciennes actualités
     const val RETENTION_WINDOW_MS = 24L * 60L * 60L * 1000L
-    private const val MAX_DISPLAYED_ARTICLES = 30
+    private const val MAX_DISPLAYED_ARTICLES = 40
     private const val RTB_YOUTUBE_CHANNEL_ID = "UCZl9utbYlPMssMhgrGUqXZA"
+    private val refreshLock = Any()
+
+    @Volatile
+    private var inFlightRefresh: CompletableDeferred<List<NewsArticle>>? = null
 
     private val jsonSerializer = Json {
         ignoreUnknownKeys = true
@@ -87,11 +94,12 @@ object NewsRepository {
             val decoded = jsonSerializer.decodeFromString<List<NewsArticle>>(raw)
             val now = System.currentTimeMillis()
             val cutoff = now - RETENTION_WINDOW_MS
-            val freshOnly = decoded
-                .filter { isAllowedAibOrRtbSource(it.source) && it.timestamp in cutoff..now }
-                .sortedByDescending { it.timestamp }
-                .take(MAX_DISPLAYED_ARTICLES)
-                .map { it.copy(date = formatRelativeDate(it.timestamp)) }
+            val freshOnly = balanceAibAndRtbArticles(
+                decoded
+                    .filter { isAllowedAibOrRtbSource(it.source) && it.timestamp in cutoff..(now + 60_000L) }
+                    .distinctBy { normalizeTitle(it.title) }
+                    .map { it.copy(date = formatRelativeDate(it.timestamp)) }
+            )
             cachedArticles = freshOnly
             if (freshOnly.size != decoded.size) {
                 saveCachedArticlesToDisk(freshOnly)
@@ -117,11 +125,12 @@ object NewsRepository {
     fun getCachedFreshNews(): List<NewsArticle> {
         val now = System.currentTimeMillis()
         val cutoff = now - RETENTION_WINDOW_MS
-        val fresh = cachedArticles
-            .filter { isAllowedAibOrRtbSource(it.source) && it.timestamp >= cutoff }
-            .sortedByDescending { it.timestamp }
-            .take(MAX_DISPLAYED_ARTICLES)
-            .map { it.copy(date = formatRelativeDate(it.timestamp)) }
+        val fresh = balanceAibAndRtbArticles(
+            cachedArticles
+                .filter { isAllowedAibOrRtbSource(it.source) && it.timestamp >= cutoff }
+                .distinctBy { normalizeTitle(it.title) }
+                .map { it.copy(date = formatRelativeDate(it.timestamp)) }
+        )
         cachedArticles = fresh
         return fresh
     }
@@ -202,20 +211,53 @@ object NewsRepository {
         }
     }
 
-    // Flux officiels AIB (Agence d'Information du Burkina) — chaque rubrique pointe vers sa vraie URL
+    // Flux officiels AIB (Agence d'Information du Burkina) — couverture étendue de toutes les rubriques
     val AIB_SOURCES = listOf(
         RssSource(
             name = "AIB",
             feedUrls = listOf(
                 "https://www.aib.media/feed/",
-                "https://www.aib.media/?feed=rss2"
+                "https://www.aib.media/?feed=rss2",
+                "https://aib.media/feed/"
             ),
             defaultCategory = "Burkina Faso",
             siteUrl = "https://www.aib.media"
         ),
         RssSource(
             name = "AIB",
-            feedUrls = listOf("https://www.aib.media/category/societe/feed/"),
+            feedUrls = listOf(
+                "https://www.aib.media/category/politique/feed/",
+                "https://aib.media/category/politique/feed/"
+            ),
+            defaultCategory = "Burkina Faso",
+            siteUrl = "https://www.aib.media"
+        ),
+        RssSource(
+            name = "AIB",
+            feedUrls = listOf(
+                "https://www.aib.media/category/nation/feed/",
+                "https://www.aib.media/category/burkina-faso/feed/",
+                "https://www.aib.media/category/a-la-une/feed/"
+            ),
+            defaultCategory = "Burkina Faso",
+            siteUrl = "https://www.aib.media"
+        ),
+        RssSource(
+            name = "AIB",
+            feedUrls = listOf(
+                "https://www.aib.media/category/regions/feed/",
+                "https://www.aib.media/category/securite/feed/"
+            ),
+            defaultCategory = "Burkina Faso",
+            siteUrl = "https://www.aib.media"
+        ),
+        RssSource(
+            name = "AIB",
+            feedUrls = listOf(
+                "https://www.aib.media/category/societe/feed/",
+                "https://www.aib.media/category/sante/feed/",
+                "https://www.aib.media/category/education/feed/"
+            ),
             defaultCategory = "Société",
             siteUrl = "https://www.aib.media"
         ),
@@ -235,6 +277,12 @@ object NewsRepository {
             name = "AIB",
             feedUrls = listOf("https://www.aib.media/category/sport/feed/"),
             defaultCategory = "Sport",
+            siteUrl = "https://www.aib.media"
+        ),
+        RssSource(
+            name = "AIB",
+            feedUrls = listOf("https://www.aib.media/category/international/feed/"),
+            defaultCategory = "Burkina Faso",
             siteUrl = "https://www.aib.media"
         )
     )
@@ -300,22 +348,131 @@ object NewsRepository {
     }
 
     /**
+     * Équilibre équitablement les actualités AIB et RTB dans la limite de [maxTotal] articles,
+     * en garantissant une forte visibilité à AIB face aux vidéos fréquentes de la RTB,
+     * et en alternant les sources récentes en tête de liste.
+     */
+    private fun balanceAibAndRtbArticles(
+        articles: List<NewsArticle>,
+        maxTotal: Int = MAX_DISPLAYED_ARTICLES
+    ): List<NewsArticle> {
+        if (articles.isEmpty()) return emptyList()
+
+        val sorted = articles.sortedByDescending { it.timestamp }
+        val aibAll = sorted.filter { it.source.contains("AIB", ignoreCase = true) }
+        val rtbAll = sorted.filter { it.source.contains("RTB", ignoreCase = true) }
+
+        if (aibAll.isEmpty() || rtbAll.isEmpty()) {
+            return sorted.take(maxTotal)
+        }
+
+        val halfQuota = maxTotal / 2 // 20 AIB + 20 RTB par défaut
+
+        // Limiter les vidéos YouTube RTB à la moitié du quota RTB tant que des articles écrits existent
+        val rtbWritten = rtbAll.filter { !it.isVideo }
+        val rtbVideo = rtbAll.filter { it.isVideo }
+        val maxRtbVideoPreferred = if (rtbWritten.isNotEmpty()) 8 else halfQuota
+        val prioritizedRtb = (rtbWritten + rtbVideo.take(maxRtbVideoPreferred) + rtbVideo.drop(maxRtbVideoPreferred))
+            .distinctBy { it.id }
+
+        var aibTarget = halfQuota
+        var rtbTarget = halfQuota
+
+        if (aibAll.size < halfQuota) {
+            aibTarget = aibAll.size
+            rtbTarget = (maxTotal - aibTarget).coerceAtMost(prioritizedRtb.size)
+        } else if (prioritizedRtb.size < halfQuota) {
+            rtbTarget = prioritizedRtb.size
+            aibTarget = (maxTotal - rtbTarget).coerceAtMost(aibAll.size)
+        }
+
+        val selectedAib = aibAll.take(aibTarget).sortedByDescending { it.timestamp }
+        val selectedRtb = prioritizedRtb.take(rtbTarget).sortedByDescending { it.timestamp }
+
+        // Alternance équilibrée (AIB / RTB) tout en respectant l'ordre chronologique dans chaque source
+        val interleaved = mutableListOf<NewsArticle>()
+        var aIdx = 0
+        var rIdx = 0
+        var pickAibNext = (selectedAib.firstOrNull()?.timestamp ?: 0L) >= (selectedRtb.firstOrNull()?.timestamp ?: 0L)
+        while (aIdx < selectedAib.size || rIdx < selectedRtb.size) {
+            if (pickAibNext && aIdx < selectedAib.size) {
+                interleaved.add(selectedAib[aIdx++])
+            } else if (!pickAibNext && rIdx < selectedRtb.size) {
+                interleaved.add(selectedRtb[rIdx++])
+            } else if (aIdx < selectedAib.size) {
+                interleaved.add(selectedAib[aIdx++])
+            } else if (rIdx < selectedRtb.size) {
+                interleaved.add(selectedRtb[rIdx++])
+            }
+            pickAibNext = !pickAibNext
+        }
+
+        return interleaved.take(maxTotal)
+    }
+
+    /**
      * Récupère exclusivement les actualités en direct de l'AIB et de la RTB publiées
-     * au cours des dernières 24 heures. Les articles de plus de 24h sont supprimés automatiquement.
+     * au cours des dernières 24 heures. Coalesce les appels concurrents pour éviter les courses.
      */
     suspend fun getLiveNews(forceRefresh: Boolean = false): List<NewsArticle> = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         val cutoffRetention = now - RETENTION_WINDOW_MS
 
         // Purge stricte de toute actualité dépassant 24h dans le cache mémoire
-        cachedArticles = cachedArticles
-            .filter { isAllowedAibOrRtbSource(it.source) && it.timestamp >= cutoffRetention }
-            .map { it.copy(date = formatRelativeDate(it.timestamp)) }
+        val prunedCache = balanceAibAndRtbArticles(
+            cachedArticles
+                .filter { isAllowedAibOrRtbSource(it.source) && it.timestamp >= cutoffRetention }
+                .distinctBy { normalizeTitle(it.title) }
+                .map { it.copy(date = formatRelativeDate(it.timestamp)) }
+        )
+        cachedArticles = prunedCache
 
-        if (!forceRefresh && cachedArticles.isNotEmpty()) {
-            return@withContext cachedArticles.sortedByDescending { it.timestamp }
+        var existingInFlight: CompletableDeferred<List<NewsArticle>>? = null
+        var ownedDeferred: CompletableDeferred<List<NewsArticle>>? = null
+
+        synchronized(refreshLock) {
+            val active = inFlightRefresh
+            if (active != null && active.isActive) {
+                existingInFlight = active
+            } else if (!forceRefresh && prunedCache.isNotEmpty()) {
+                return@withContext prunedCache
+            } else {
+                val created = CompletableDeferred<List<NewsArticle>>()
+                inFlightRefresh = created
+                ownedDeferred = created
+            }
         }
 
+        existingInFlight?.let { deferred ->
+            return@withContext try {
+                deferred.await()
+            } catch (_: Throwable) {
+                getCachedFreshNews()
+            }
+        }
+
+        val currentDeferred = ownedDeferred!!
+        try {
+            val finalArticles = executeBalancedNetworkRefresh(now, cutoffRetention)
+            currentDeferred.complete(finalArticles)
+            finalArticles
+        } catch (t: Throwable) {
+            val fallback = getCachedFreshNews()
+            currentDeferred.complete(fallback)
+            fallback
+        } finally {
+            synchronized(refreshLock) {
+                if (inFlightRefresh === currentDeferred) {
+                    inFlightRefresh = null
+                }
+            }
+        }
+    }
+
+    private suspend fun executeBalancedNetworkRefresh(
+        now: Long,
+        cutoffRetention: Long
+    ): List<NewsArticle> {
         val allFetched = mutableListOf<NewsArticle>()
         var anySourceSucceeded = false
 
@@ -337,19 +494,31 @@ object NewsRepository {
                     withTimeoutOrNull(7000L) { fetchFromYouTubeApi() } ?: emptyList()
                 }
                 val googleAibMirrorDeferred = async {
-                    withTimeoutOrNull(7000L) { fetchGoogleMirrorForSource("site:aib.media", "AIB", "aib") } ?: emptyList()
+                    withTimeoutOrNull(9500L) {
+                        fetchGoogleMirrorForSource(
+                            siteQuery = "(site:aib.media OR \"Agence d'Information du Burkina\")",
+                            canonicalSource = "AIB",
+                            requiredKeyword = "aib"
+                        )
+                    } ?: emptyList()
                 }
                 val googleRtbMirrorDeferred = async {
-                    withTimeoutOrNull(7000L) { fetchGoogleMirrorForSource("site:rtb.bf", "RTB", "rtb") } ?: emptyList()
+                    withTimeoutOrNull(9500L) {
+                        fetchGoogleMirrorForSource(
+                            siteQuery = "(site:rtb.bf OR \"Radiodiffusion Télévision du Burkina\")",
+                            canonicalSource = "RTB",
+                            requiredKeyword = "rtb"
+                        )
+                    } ?: emptyList()
                 }
                 val rtbRssDeferredList = RTB_SOURCES.map { source ->
                     async {
-                        withTimeoutOrNull(9000L) { fetchFromSource(source) } ?: emptyList()
+                        withTimeoutOrNull(9500L) { fetchFromSource(source) } ?: emptyList()
                     }
                 }
                 val aibRssDeferredList = AIB_SOURCES.map { source ->
                     async {
-                        withTimeoutOrNull(9000L) { fetchFromSource(source) } ?: emptyList()
+                        withTimeoutOrNull(10000L) { fetchFromSource(source) } ?: emptyList()
                     }
                 }
 
@@ -362,18 +531,18 @@ object NewsRepository {
                 val ytApiResults = ytApiDeferred.await()
                 val metaResults = metaDeferred.await()
 
-                // Priorité 2 : Miroir Google News strictement limité à aib.media et rtb.bf
+                // Priorité 2 : Miroirs Google News strictement limités à AIB et RTB
                 val googleAibResults = googleAibMirrorDeferred.await()
                 val googleRtbResults = googleRtbMirrorDeferred.await()
 
-                allFetched.addAll(rtbResults)
                 allFetched.addAll(aibResults)
-                allFetched.addAll(rtbRssResults)
                 allFetched.addAll(aibRssResults)
+                allFetched.addAll(googleAibResults)
+                allFetched.addAll(rtbResults)
+                allFetched.addAll(rtbRssResults)
                 allFetched.addAll(rtbYtAtomResults)
                 allFetched.addAll(ytApiResults)
                 allFetched.addAll(metaResults)
-                allFetched.addAll(googleAibResults)
                 allFetched.addAll(googleRtbResults)
 
                 if (rtbResults.isNotEmpty() || aibResults.isNotEmpty() ||
@@ -388,9 +557,63 @@ object NewsRepository {
             Log.e(TAG, "Error fetching AIB & RTB live feeds", e)
         }
 
+        // Deuxième passe rapide si l'AIB a manqué ou si aucun flux n'a encore répondu (ex: réveil réseau mobile)
+        val hasAnyFreshAib = allFetched.any {
+            it.source.contains("AIB", ignoreCase = true) && it.timestamp in cutoffRetention..(now + 60_000L)
+        }
+        if (!hasAnyFreshAib || allFetched.isEmpty()) {
+            try {
+                supervisorScope {
+                    val aibLightRetry = async {
+                        withTimeoutOrNull(5500L) {
+                            fetchWordPressPosts(
+                                endpoints = listOf(
+                                    "https://aib.media/wp-json/wp/v2/posts?per_page=25",
+                                    "https://www.aib.media/index.php?rest_route=/wp/v2/posts&per_page=25"
+                                ),
+                                sourceName = "AIB",
+                                idPrefix = "aib_wp_fast",
+                                defaultFallbackSummary = "Dépêche officielle transmise en direct par l'Agence d'Information du Burkina (AIB)."
+                            )
+                        } ?: emptyList()
+                    }
+                    val aibMirrorRetry = async {
+                        withTimeoutOrNull(5500L) {
+                            fetchGoogleMirrorForSource(
+                                siteQuery = "\"aib.media\" OR \"Agence d'Information du Burkina\"",
+                                canonicalSource = "AIB",
+                                requiredKeyword = "aib"
+                            )
+                        } ?: emptyList()
+                    }
+                    val rtbRetry: Deferred<List<NewsArticle>>? = if (allFetched.isEmpty()) {
+                        async {
+                            withTimeoutOrNull(5500L) {
+                                fetchGoogleMirrorForSource(
+                                    siteQuery = "site:rtb.bf OR \"Radiodiffusion Télévision du Burkina\"",
+                                    canonicalSource = "RTB",
+                                    requiredKeyword = "rtb"
+                                )
+                            } ?: emptyList()
+                        }
+                    } else null
+
+                    val retryAib = aibLightRetry.await() + aibMirrorRetry.await()
+                    val retryRtb = rtbRetry?.await() ?: emptyList()
+                    if (retryAib.isNotEmpty() || retryRtb.isNotEmpty()) {
+                        anySourceSucceeded = true
+                        allFetched.addAll(retryAib)
+                        allFetched.addAll(retryRtb)
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Secondary news pass warning: ${e.message}")
+            }
+        }
+
         lastFetchHadNetworkSuccess = anySourceSucceeded
 
-        val freshFetched = allFetched
+        val validCandidates = allFetched
             .filter {
                 isAllowedAibOrRtbSource(it.source) &&
                     it.title.isNotBlank() &&
@@ -398,9 +621,9 @@ object NewsRepository {
                     it.timestamp in cutoffRetention..(now + 60_000L)
             }
             .distinctBy { normalizeTitle(it.title) }
-            .sortedByDescending { it.timestamp }
-            .take(MAX_DISPLAYED_ARTICLES)
             .map { it.copy(date = formatRelativeDate(it.timestamp)) }
+
+        val freshFetched = balanceAibAndRtbArticles(validCandidates, MAX_DISPLAYED_ARTICLES)
 
         val finalArticles = if (freshFetched.isNotEmpty()) {
             saveCachedArticlesToDisk(freshFetched)
@@ -411,7 +634,7 @@ object NewsRepository {
         }
 
         cachedArticles = finalArticles
-        finalArticles
+        return finalArticles
     }
 
     /**
@@ -494,24 +717,26 @@ object NewsRepository {
         requiredKeyword: String
     ): List<NewsArticle> {
         val articles = mutableListOf<NewsArticle>()
-        val encoded = URLEncoder.encode("$siteQuery when:1d", "UTF-8")
+        val encoded = URLEncoder.encode("$siteQuery when:2d", "UTF-8")
         val endpoint = "https://news.google.com/rss/search?q=$encoded&hl=fr&gl=BF&ceid=BF:fr"
         var connection: HttpURLConnection? = null
 
         try {
             connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 6000
-                readTimeout = 6000
+                readTimeout = 6500
                 instanceFollowRedirects = true
                 requestMethod = "GET"
                 setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) SamAI/2.0")
             }
             if (connection.responseCode !in 200..299) return emptyList()
-            val xml = connection.inputStream.bufferedReader().use { it.readText() }
+            val xml = readStreamTextSafely(connection.inputStream, connection.contentEncoding)
             if (xml.isBlank()) return emptyList()
 
             val now = System.currentTimeMillis()
             val cutoffRetention = now - RETENTION_WINDOW_MS
+            val isAibTarget = requiredKeyword.equals("aib", ignoreCase = true)
+            val wordRegex = Regex("\\b${Regex.escape(requiredKeyword)}\\b", RegexOption.IGNORE_CASE)
 
             val itemMatcher = Pattern.compile("<item>(.*?)</item>", Pattern.DOTALL).matcher(xml)
             while (itemMatcher.find()) {
@@ -519,14 +744,18 @@ object NewsRepository {
                 val rawTitle = cleanHtml(extractRegexGroup(item, "<title[^>]*>(.*?)</title>"))
                 val link = cleanHtml(extractRegexGroup(item, "<link[^>]*>(.*?)</link>"))
                 val pubDate = extractRegexGroup(item, "<pubDate[^>]*>(.*?)</pubDate>").trim()
-                val sourceTag = extractRegexGroup(item, "<source[^>]*>(.*?)</source>")
+                val sourceTag = cleanHtml(extractRegexGroup(item, "<source[^>]*>(.*?)</source>"))
                 val sourceUrlAttr = extractRegexGroup(item, "<source[^>]+url=[\"']([^\"']+)[\"']")
 
                 // Vérifier strictement que la dépêche provient uniquement d'AIB ou de la RTB
-                val sourceMatches = sourceTag.contains(requiredKeyword, ignoreCase = true) ||
-                    sourceUrlAttr.contains(requiredKeyword, ignoreCase = true) ||
-                    link.contains(requiredKeyword, ignoreCase = true) ||
-                    rawTitle.contains(canonicalSource, ignoreCase = true)
+                val domainHint = if (isAibTarget) "aib.media" else "rtb.bf"
+                val agencyFullName = if (isAibTarget) "Agence d'Information du Burkina" else "Radiodiffusion Télévision du Burkina"
+                val sourceMatches = wordRegex.containsMatchIn(sourceTag) ||
+                    sourceTag.contains(agencyFullName, ignoreCase = true) ||
+                    sourceUrlAttr.contains(domainHint, ignoreCase = true) ||
+                    wordRegex.containsMatchIn(sourceUrlAttr) ||
+                    link.contains(domainHint, ignoreCase = true) ||
+                    wordRegex.containsMatchIn(rawTitle)
 
                 if (!sourceMatches || rawTitle.isBlank() || link.isBlank()) continue
 
@@ -725,13 +954,14 @@ object NewsRepository {
     }
 
     /**
-     * API REST WordPress de la RTB — requêtes optimisées (per_page=15) pour éviter les timeouts mobile.
+     * API REST WordPress de la RTB — requêtes optimisées (per_page=25) avec repli léger sans _embed.
      */
     private fun fetchFromRtbRestApi(): List<NewsArticle> {
         val endpoints = listOf(
-            "https://www.rtb.bf/wp-json/wp/v2/posts?_embed=wp:featuredmedia,wp:term&per_page=15",
-            "https://www.rtb.bf/index.php?rest_route=/wp/v2/posts&_embed=wp:featuredmedia,wp:term&per_page=15",
-            "https://rtb.bf/wp-json/wp/v2/posts?per_page=15"
+            "https://www.rtb.bf/wp-json/wp/v2/posts?_embed=wp:featuredmedia,wp:term&per_page=25",
+            "https://www.rtb.bf/wp-json/wp/v2/posts?per_page=25",
+            "https://www.rtb.bf/index.php?rest_route=/wp/v2/posts&per_page=25",
+            "https://rtb.bf/wp-json/wp/v2/posts?per_page=25"
         )
         return fetchWordPressPosts(
             endpoints = endpoints,
@@ -742,13 +972,14 @@ object NewsRepository {
     }
 
     /**
-     * API REST WordPress de l'AIB — requêtes optimisées (per_page=15) pour éviter les timeouts mobile.
+     * API REST WordPress de l'AIB — requêtes optimisées (per_page=25) avec repli rapide sans _embed.
      */
     private fun fetchFromWpRestApi(): List<NewsArticle> {
         val endpoints = listOf(
-            "https://www.aib.media/wp-json/wp/v2/posts?_embed=wp:featuredmedia,wp:term&per_page=15",
-            "https://www.aib.media/index.php?rest_route=/wp/v2/posts&_embed=wp:featuredmedia,wp:term&per_page=15",
-            "https://aib.media/wp-json/wp/v2/posts?per_page=15"
+            "https://www.aib.media/wp-json/wp/v2/posts?_embed=wp:featuredmedia,wp:term&per_page=25",
+            "https://www.aib.media/wp-json/wp/v2/posts?per_page=25",
+            "https://www.aib.media/index.php?rest_route=/wp/v2/posts&per_page=25",
+            "https://aib.media/wp-json/wp/v2/posts?per_page=25"
         )
         return fetchWordPressPosts(
             endpoints = endpoints,
@@ -756,6 +987,23 @@ object NewsRepository {
             idPrefix = "aib_wp",
             defaultFallbackSummary = "Dépêche officielle transmise en direct par l'Agence d'Information du Burkina (AIB)."
         )
+    }
+
+    private fun readStreamTextSafely(rawStream: InputStream, @Suppress("UNUSED_PARAMETER") contentEncoding: String?): String {
+        val pushback = PushbackInputStream(rawStream, 2)
+        val header = ByteArray(2)
+        val bytesRead = pushback.read(header, 0, 2)
+        if (bytesRead <= 0) return ""
+        pushback.unread(header, 0, bytesRead)
+        val hasGzipMagic = bytesRead == 2 && (header[0] == 0x1f.toByte() && header[1] == 0x8b.toByte())
+        val stream: InputStream = if (hasGzipMagic) {
+            GZIPInputStream(pushback)
+        } else {
+            pushback
+        }
+        return stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            .removePrefix("\uFEFF")
+            .trim()
     }
 
     private fun fetchWordPressPosts(
@@ -770,8 +1018,8 @@ object NewsRepository {
             var connection: HttpURLConnection? = null
             try {
                 connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 9000
-                    readTimeout = 10000
+                    connectTimeout = 3500
+                    readTimeout = 4500
                     instanceFollowRedirects = true
                     requestMethod = "GET"
                     setRequestProperty(
@@ -779,21 +1027,12 @@ object NewsRepository {
                         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
                     )
                     setRequestProperty("Accept", "application/json, text/plain, */*")
-                    setRequestProperty("Accept-Encoding", "gzip, deflate")
                     setRequestProperty("Cache-Control", "no-cache")
                 }
 
                 if (connection.responseCode !in 200..299) continue
 
-                val encoding = connection.contentEncoding
-                val rawStream = connection.inputStream
-                val inputStream = if ("gzip".equals(encoding, ignoreCase = true)) {
-                    GZIPInputStream(rawStream)
-                } else {
-                    rawStream
-                }
-
-                val jsonText = inputStream.bufferedReader().use { it.readText() }.trim()
+                val jsonText = readStreamTextSafely(connection.inputStream, connection.contentEncoding)
                 if (!jsonText.startsWith("[")) continue
 
                 val jsonArray = org.json.JSONArray(jsonText)
@@ -926,8 +1165,8 @@ object NewsRepository {
             try {
                 val url = URL(currentUrl)
                 connection = (url.openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 8000
-                    readTimeout = 8000
+                    connectTimeout = 5500
+                    readTimeout = 6000
                     instanceFollowRedirects = true
                     requestMethod = "GET"
                     setRequestProperty(
@@ -938,7 +1177,6 @@ object NewsRepository {
                         "Accept",
                         "application/rss+xml, application/atom+xml, application/xml, text/xml, */*"
                     )
-                    setRequestProperty("Accept-Encoding", "gzip, deflate")
                 }
 
                 val status = connection.responseCode
@@ -957,15 +1195,7 @@ object NewsRepository {
                 }
 
                 if (status in 200..299) {
-                    val encoding = connection.contentEncoding
-                    val rawStream = connection.inputStream
-                    val inputStream = if ("gzip".equals(encoding, ignoreCase = true)) {
-                        GZIPInputStream(rawStream)
-                    } else {
-                        rawStream
-                    }
-
-                    val bodyText = inputStream.bufferedReader().use { it.readText() }
+                    val bodyText = readStreamTextSafely(connection.inputStream, connection.contentEncoding)
                     if (bodyText.contains("<item", ignoreCase = true) || bodyText.contains("<entry", ignoreCase = true)) {
                         return parseRssXmlSafe(bodyText, source)
                     }
@@ -1323,11 +1553,11 @@ object NewsRepository {
         if (dateStr.isBlank()) return 0L
         val cleaned = dateStr.trim()
         val formats = listOf(
-            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") },
-            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US),
             SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US),
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssXXX", Locale.US),
             SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ssZ", Locale.US),
             SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") },
+            SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") },
             SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }
         )
         for (fmt in formats) {

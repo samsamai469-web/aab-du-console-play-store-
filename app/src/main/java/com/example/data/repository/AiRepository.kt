@@ -97,19 +97,27 @@ class AiRepository(
             return@flow
         }
         try {
-            val model = GenerativeModel(
-                modelName = "gemini-3.5-flash",
-                apiKey = apiKey
-            )
-
             val systemInstruction = "Tu es SAM AI, l'assistant intelligent d'élite, cultivé et polyvalent. Réponds directement, intelligemment et sans bavardage superflu. Ne te présente JAMAIS (pas de 'Bonjour', 'Je suis SAM AI') dans une discussion déjà engagée. Si l'utilisateur demande de détailler ou pose une question complémentaire, approfondis directement et de manière riche et structurée."
             val prompt = "$systemInstruction\n\nQuestion de l'utilisateur : $text"
 
             var fullResponse = ""
-            model.generateContentStream(prompt).collect { chunk ->
-                val chunkText = chunk.text ?: ""
-                fullResponse += chunkText
-                emit(fullResponse)
+            var lastStreamError: Throwable? = null
+            for (streamModel in listOf("gemini-2.5-flash", "gemini-flash-latest", "gemini-3.5-flash")) {
+                try {
+                    val model = GenerativeModel(
+                        modelName = streamModel,
+                        apiKey = apiKey
+                    )
+                    fullResponse = ""
+                    model.generateContentStream(prompt).collect { chunk ->
+                        val chunkText = chunk.text ?: ""
+                        fullResponse += chunkText
+                        emit(fullResponse)
+                    }
+                    if (fullResponse.isNotBlank()) break
+                } catch (e: Throwable) {
+                    lastStreamError = e
+                }
             }
 
             if (fullResponse.isNotBlank()) {
@@ -121,9 +129,11 @@ class AiRepository(
                         timestamp = System.currentTimeMillis()
                     )
                 )
+            } else if (lastStreamError != null) {
+                throw lastStreamError
             }
         } catch (e: Throwable) {
-            val errText = "⚠️ Erreur de connexion : ${e.localizedMessage ?: "Vérifiez votre réseau"}"
+            val errText = "⚠️ ${GeminiErrorHandler.parse(e).userFriendlyMessage}"
             chatDao.insertMessage(
                 MessageEntity(
                     conversationId = conversationId,
@@ -427,7 +437,13 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         }
 
         // Modèles officiels supportés et vérifiés
-        val baseModels = listOf("gemini-3.5-flash", "gemini-flash-latest", "gemini-3.1-flash-lite-preview", "gemini-3.1-pro-preview")
+        val baseModels = listOf(
+            "gemini-2.5-flash",
+            "gemini-flash-latest",
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3.1-pro-preview"
+        )
         val cleanPreferred = preferredModel.trim()
         val modelsToTry = if (cleanPreferred.isNotBlank() && cleanPreferred != "gemini-3.6-flash") {
             (listOf(cleanPreferred) + baseModels).distinct()
@@ -576,7 +592,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         }
 
         val finalErrorMessage = lastParsedError?.userFriendlyMessage
-            ?: "Service d'intelligence artificielle momentanément indisponible. Veuillez vérifier votre réseau."
+            ?: "Service d'intelligence artificielle momentanément indisponible. Veuillez réessayer dans un instant."
 
         GeminiRequestResult(
             success = false,

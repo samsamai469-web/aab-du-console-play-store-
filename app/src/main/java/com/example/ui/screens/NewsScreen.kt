@@ -76,8 +76,12 @@ fun NewsScreen(
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     val coroutineScope = rememberCoroutineScope()
 
+    var isAutoEntering by remember { mutableStateOf(articles.isEmpty()) }
+
     LaunchedEffect(Unit) {
-        viewModel.loadLiveNews(forceRefresh = true)
+        viewModel.ensureNewsLoadedOnEnter()
+        kotlinx.coroutines.yield()
+        isAutoEntering = false
     }
 
     val categories = listOf(
@@ -362,7 +366,7 @@ fun NewsScreen(
             Spacer(modifier = Modifier.height(8.dp))
 
             // 4. Liste des articles d'actualités
-            if (isLoading && articles.isEmpty()) {
+            if ((isLoading || isAutoEntering) && articles.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -373,13 +377,14 @@ fun NewsScreen(
                         CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(
-                            text = "Récupération des flux d'actualités en direct...",
+                            text = "Chargement des actualités AIB & RTB en direct...",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
             } else if (articles.isEmpty()) {
+                val hasActiveFilter = selectedCategory != "Tout" || selectedSource != "Toutes" || searchQuery.isNotBlank()
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -395,31 +400,39 @@ fun NewsScreen(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
                         Text(
-                            text = newsErrorMessage ?: "Aucune actualité AIB / RTB (dernières 24h)",
+                            text = if (hasActiveFilter) {
+                                "Aucune actualité récente pour ce filtre"
+                            } else {
+                                newsErrorMessage ?: "Aucune actualité AIB / RTB (dernières 24h)"
+                            },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = if (newsErrorMessage != null)
-                                "Vérifiez votre connexion Internet puis appuyez sur Actualiser."
-                            else
-                                "Les actualités datant de plus de 24h sont masquées automatiquement.",
+                            text = when {
+                                hasActiveFilter -> "Touchez le bouton ci-dessous pour afficher toutes les actualités AIB et RTB."
+                                newsErrorMessage != null -> "Vérifiez votre connexion Internet puis réessayez."
+                                else -> "Les actualités datant de plus de 24h sont masquées automatiquement."
+                            },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(modifier = Modifier.height(16.dp))
                         Button(
                             onClick = {
-                                viewModel.setNewsCategory("Tout")
-                                viewModel.setNewsSource("Toutes")
-                                viewModel.setNewsSearchQuery("")
-                                viewModel.loadLiveNews(forceRefresh = true)
+                                if (hasActiveFilter) {
+                                    viewModel.setNewsCategory("Tout")
+                                    viewModel.setNewsSource("Toutes")
+                                    viewModel.setNewsSearchQuery("")
+                                } else {
+                                    viewModel.loadLiveNews(forceRefresh = true)
+                                }
                             }
                         ) {
                             Icon(Icons.Default.Refresh, contentDescription = null)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Réinitialiser & Actualiser")
+                            Text(if (hasActiveFilter) "Afficher tout" else "Réessayer")
                         }
                     }
                 }

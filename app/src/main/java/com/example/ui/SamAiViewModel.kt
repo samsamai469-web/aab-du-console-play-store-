@@ -259,6 +259,12 @@ class SamAiViewModel(
     private val _isNewsLoading = MutableStateFlow(false)
     val isNewsLoading = _isNewsLoading.asStateFlow()
 
+    private val activeNewsLoadCount = java.util.concurrent.atomic.AtomicInteger(0)
+    @Volatile
+    private var newsLoadJob: kotlinx.coroutines.Job? = null
+    @Volatile
+    private var lastNewsRefreshSuccessTimeMs: Long = 0L
+
     private val _newsErrorMessage = MutableStateFlow<String?>(null)
     val newsErrorMessage = _newsErrorMessage.asStateFlow()
 
@@ -311,7 +317,13 @@ class SamAiViewModel(
             }
         }
 
-        list.sortedByDescending { it.timestamp }
+        // En vue "Tout" sans recherche active, conserver l'ordre équilibré et alterné AIB/RTB
+        // afin que les vidéos RTB ne masquent pas les dépêches AIB en tête de liste.
+        if (category == "Tout" && source == "Toutes" && query.isBlank()) {
+            list
+        } else {
+            list.sortedByDescending { it.timestamp }
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), _newsArticles.value)
 
     // --- SAM AI ASSISTANT UNIVERSEL & INTELLIGENT STATEFLOWS ---
@@ -337,9 +349,10 @@ class SamAiViewModel(
     val samAiSavedWeeklyHistory = _samAiSavedWeeklyHistory.asStateFlow()
 
     init {
+        // Préchargement immédiat des actualités AIB & RTB en arrière-plan (Dispatchers.IO) sans bloquer l'accueil
+        loadLiveNews(forceRefresh = true)
         viewModelScope.launch(Dispatchers.IO) {
-            // Laisser la priorité absolue à l'affichage instantané de l'accueil et de ses images
-            kotlinx.coroutines.delay(1500L)
+            kotlinx.coroutines.delay(350L)
             launch {
                 try {
                     liveNewsFeedService.fetchLiveNews("Burkina Faso")
@@ -350,7 +363,6 @@ class SamAiViewModel(
                     liveNewsFeedService.fetchLiveNews("actualités monde")
                 } catch (_: Throwable) {}
             }
-            loadLiveNews(forceRefresh = false)
             startNewsAutoRefresh()
             startAccountStatusVerification()
         }
@@ -406,33 +418,64 @@ class SamAiViewModel(
                 kotlinx.coroutines.delay(180_000L) // Actualisation automatique toutes les 3 minutes (évite le blocage des serveurs AIB/RTB)
                 try {
                     val live = com.example.data.repository.NewsRepository.getLiveNews(forceRefresh = true)
-                    _newsArticles.value = live
-                    _newsErrorMessage.value = if (live.isEmpty() && !com.example.data.repository.NewsRepository.lastFetchHadNetworkSuccess) {
-                        "Connexion impossible aux serveurs AIB et RTB. Vérifiez votre réseau."
-                    } else {
-                        null
+                    if (live.isNotEmpty()) {
+                        _newsArticles.value = live
+                        lastNewsRefreshSuccessTimeMs = System.currentTimeMillis()
+                        _newsErrorMessage.value = null
+                    } else if (_newsArticles.value.isEmpty() && !com.example.data.repository.NewsRepository.lastFetchHadNetworkSuccess) {
+                        _newsErrorMessage.value = "Connexion impossible aux serveurs AIB et RTB. Vérifiez votre réseau."
                     }
                 } catch (_: Exception) {}
             }
         }
     }
 
+    fun ensureNewsLoadedOnEnter() {
+        val currentArticles = _newsArticles.value
+        val staleAfterMs = 60_000L
+        val isStale = (System.currentTimeMillis() - lastNewsRefreshSuccessTimeMs) > staleAfterMs
+        if (currentArticles.isEmpty() || isStale) {
+            loadLiveNews(forceRefresh = true)
+        }
+    }
+
     fun loadLiveNews(forceRefresh: Boolean = false) {
-        viewModelScope.launch {
+        if (newsLoadJob?.isActive == true && !forceRefresh) {
+            return
+        }
+        if (newsLoadJob?.isActive == true && forceRefresh) {
+            // NewsRepository.getLiveNews coalesce déjà le rafraîchissement en cours ;
+            // s'assurer uniquement que l'indicateur de chargement reste actif.
             _isNewsLoading.value = true
-            _newsErrorMessage.value = null
+            return
+        }
+
+        _isNewsLoading.value = true
+        _newsErrorMessage.value = null
+        activeNewsLoadCount.incrementAndGet()
+
+        newsLoadJob = viewModelScope.launch {
             try {
                 val live = com.example.data.repository.NewsRepository.getLiveNews(forceRefresh)
-                _newsArticles.value = live
-                if (live.isEmpty() && !com.example.data.repository.NewsRepository.lastFetchHadNetworkSuccess) {
-                    _newsErrorMessage.value = "Impossible de joindre les serveurs AIB et RTB. Vérifiez votre connexion Internet."
+                if (live.isNotEmpty()) {
+                    _newsArticles.value = live
+                    lastNewsRefreshSuccessTimeMs = System.currentTimeMillis()
+                    _newsErrorMessage.value = null
+                } else if (_newsArticles.value.isEmpty()) {
+                    _newsArticles.value = emptyList()
+                    if (!com.example.data.repository.NewsRepository.lastFetchHadNetworkSuccess) {
+                        _newsErrorMessage.value = "Impossible de joindre les serveurs AIB et RTB. Vérifiez votre connexion Internet."
+                    }
                 }
             } catch (_: Exception) {
                 if (_newsArticles.value.isEmpty()) {
                     _newsErrorMessage.value = "Erreur réseau lors du chargement des actualités AIB & RTB."
                 }
             } finally {
-                _isNewsLoading.value = false
+                if (activeNewsLoadCount.decrementAndGet() <= 0) {
+                    activeNewsLoadCount.set(0)
+                    _isNewsLoading.value = false
+                }
             }
         }
     }
@@ -2445,11 +2488,18 @@ class SamAiViewModel(
         }
     }
 
+    private val chatSessionEpoch = java.util.concurrent.atomic.AtomicInteger(0)
+    @Volatile
+    private var activeSamAiChatJob: kotlinx.coroutines.Job? = null
+
     fun resetSamAiChatSession() {
         clearSamAiChat(deleteFromFirebase = true)
     }
 
     fun clearSamAiChat(deleteFromFirebase: Boolean = true) {
+        chatSessionEpoch.incrementAndGet()
+        activeSamAiChatJob?.cancel()
+        activeSamAiChatJob = null
         val targetUserId = getEffectiveSamAiUserId()
         _samAiChatMessages.value = defaultSamAiWelcomeMessages()
         _isSamAiGeminiThinking.value = false
@@ -2465,6 +2515,16 @@ class SamAiViewModel(
                 }
             }
         }
+    }
+
+    private fun sanitizeSamAiFallbackBranding(raw: String): String {
+        return raw
+            .replace(Regex("(?i)\\bChatGPT\\b"), "Sam AI")
+            .replace(Regex("(?i)\\bGemini\\b"), "Sam AI")
+            .replace(Regex("(?i)\\bGoogle AI\\b"), "Sam AI")
+            .replace(Regex("(?i)\\bOpenAI\\b"), "Sam AI")
+            .replace(Regex("(?i)\\bGPT-4(\\.1|\\.5|o)?(-mini|-turbo|-preview|-search-preview)?\\b"), "Sam AI")
+            .trim()
     }
 
     fun askSamAiGemini(
@@ -2489,271 +2549,379 @@ class SamAiViewModel(
         }
         _samAiChatMessages.value = currentList
 
+        activeSamAiChatJob?.cancel()
         _isSamAiGeminiThinking.value = true
+        val requestEpoch = chatSessionEpoch.get()
 
-        viewModelScope.launch(Dispatchers.IO) {
-            val userText = cleanQuestion.trim()
-            val qNorm = userText.lowercase(java.util.Locale.ROOT)
-                .replace("’", "'")
-                .replace("‘", "'")
-                .replace("`", "'")
-                .replace("é", "e")
-                .replace("è", "e")
-                .replace("ê", "e")
-                .replace("ë", "e")
-                .replace("à", "a")
-                .replace("â", "a")
-                .replace("ô", "o")
-                .replace("î", "i")
-                .replace("ï", "i")
-                .replace("ù", "u")
-                .replace("û", "u")
-                .replace("ç", "c")
+        activeSamAiChatJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val userText = cleanQuestion.trim()
+                val qNorm = userText.lowercase(java.util.Locale.ROOT)
+                    .replace("’", "'")
+                    .replace("‘", "'")
+                    .replace("`", "'")
+                    .replace("é", "e")
+                    .replace("è", "e")
+                    .replace("ê", "e")
+                    .replace("ë", "e")
+                    .replace("à", "a")
+                    .replace("â", "a")
+                    .replace("ô", "o")
+                    .replace("î", "i")
+                    .replace("ï", "i")
+                    .replace("ù", "u")
+                    .replace("û", "u")
+                    .replace("ç", "c")
 
-            // Détecte si l'utilisateur donne une consigne directe ("dis...", "répète...", "prononce...", "fais...")
-            // ou pose plusieurs questions / change de question à la fin de sa phrase
-            val isDirectUserCommand = Regex("\\b(dis|dites|repete|répète|prononce|lis|ecris|écris|fais|faites|traduis)\\b")
-                .containsMatchIn(qNorm)
-            val hasMultipleOrTrailingQuestion = isDirectUserCommand ||
-                qNorm.length > 65 ||
-                qNorm.count { it == '?' } > 1 ||
-                Regex("\\b(et|mais|puis|sinon|plutot|finalement|attends|non|ou)\\s+(qui|que|quoi|quel|quelle|quels|quelles|comment|pourquoi|ou|combien|quand|explique|dis|donne|parle|est-ce)\\b")
+                // Détecte si l'utilisateur donne une consigne directe ("dis...", "répète...", "prononce...", "fais...")
+                // ou pose plusieurs questions / change de question à la fin de sa phrase
+                val isDirectUserCommand = Regex("\\b(dis|dites|repete|répète|prononce|lis|ecris|écris|fais|faites|traduis)\\b")
                     .containsMatchIn(qNorm)
+                val hasMultipleOrTrailingQuestion = isDirectUserCommand ||
+                    qNorm.length > 65 ||
+                    qNorm.count { it == '?' } > 1 ||
+                    Regex("\\b(et|mais|puis|sinon|plutot|finalement|attends|non|ou)\\s+(qui|que|quoi|quel|quelle|quels|quelles|comment|pourquoi|ou|combien|quand|explique|dis|donne|parle|est-ce)\\b")
+                        .containsMatchIn(qNorm)
 
-            // Détection STRICTE d'une question unique visant spécifiquement la création de SAM AI
-            val isExplicitCreatorQuestion = !hasMultipleOrTrailingQuestion && (
-                qNorm.contains("qui t'a cree") || qNorm.contains("qui vous a cree") ||
-                qNorm.contains("qui t'a fait") || qNorm.contains("qui vous a fait") ||
-                qNorm.contains("qui t'a concu") || qNorm.contains("qui vous a concu") ||
-                qNorm.contains("qui t'a developpe") || qNorm.contains("qui vous a developpe") ||
-                qNorm.contains("qui t'a programme") || qNorm.contains("qui vous a programme") ||
-                qNorm.contains("qui est ton createur") || qNorm.contains("quel est ton createur") ||
-                qNorm.contains("qui est votre createur") || qNorm.contains("quel est votre createur") ||
-                qNorm.contains("qui est ton developpeur") || qNorm.contains("qui est votre developpeur") ||
-                qNorm.contains("qui a cree sam ai") || qNorm.contains("qui a developpe sam ai") ||
-                qNorm.contains("qui est derriere sam ai") || qNorm.contains("qui a fait sam ai") ||
-                qNorm.contains("qui a invente sam ai") || qNorm.contains("qui a concu sam ai")
-            )
-
-            val isExplicitWhyCreatedQuestion = !hasMultipleOrTrailingQuestion && (
-                qNorm.contains("pourquoi sam ai") || qNorm.contains("pourquoi as-tu ete cree") ||
-                qNorm.contains("pourquoi tu as ete cree") || qNorm.contains("pourquoi avez-vous ete cree") ||
-                qNorm.contains("quel est le but de sam ai") || qNorm.contains("quelle est la mission de sam ai") ||
-                qNorm.contains("quel est l'objectif de sam ai") || qNorm.contains("pourquoi existe sam ai")
-            )
-
-            val isExplicitModelOrOpenAiQuestion = !hasMultipleOrTrailingQuestion && (
-                qNorm.contains("openai") || qNorm.contains("open ai") ||
-                qNorm.contains("chatgpt") || qNorm.contains("chat gpt") ||
-                qNorm.contains("gpt-4") || qNorm.contains("gpt4") ||
-                qNorm.contains("quel modele") || qNorm.contains("quel est ton modele") ||
-                qNorm.contains("quelle ia es-tu") || qNorm.contains("quelle intelligence artificielle es-tu")
-            )
-
-            val isExplicitNameQuestion = !hasMultipleOrTrailingQuestion && Regex(
-                "(t'\\s*appel|t\\s+appel|s'\\s*appel|s\\s+appel|vous\\s+appel|appelez[-\\s]+vous|appelles[-\\s]+tu)|" +
-                    "((ton|votre|son)\\s+(nom|prenom))|" +
-                    "(nom\\s+c'est\\s+quoi)|" +
-                    "(comment\\s+on\\s+t'appel)|" +
-                    "(qui\\s+(es[-\\s]*tu|etes[-\\s]*vous|tu\\s+es|vous\\s+etes))|" +
-                    "((tu\\s+es|vous\\s+etes)\\s+qui)|" +
-                    "(presente[-\\s]*toi|presentez[-\\s]*vous)|" +
-                    "(\\bnova\\b)"
-            ).containsMatchIn(qNorm)
-
-            if (isExplicitNameQuestion) {
-                val directAnswer = if (isVoiceCall) {
-                    "Je m'appelle Sam AI."
-                } else {
-                    "Je m'appelle Sam AI, votre assistant intelligent."
-                }
-                _isSamAiGeminiThinking.value = false
-                val botMsg = SamAiChatMessage(
-                    sender = "sam_ai",
-                    text = directAnswer,
-                    timestamp = System.currentTimeMillis(),
-                    isError = false,
-                    sources = emptyList(),
-                    model = null,
-                    language = null
+                // Détection STRICTE d'une question unique visant spéciquement la création de SAM AI
+                val isExplicitCreatorQuestion = !hasMultipleOrTrailingQuestion && (
+                    qNorm.contains("qui t'a cree") || qNorm.contains("qui vous a cree") ||
+                    qNorm.contains("qui t'a fait") || qNorm.contains("qui vous a fait") ||
+                    qNorm.contains("qui t'a concu") || qNorm.contains("qui vous a concu") ||
+                    qNorm.contains("qui t'a developpe") || qNorm.contains("qui vous a developpe") ||
+                    qNorm.contains("qui t'a programme") || qNorm.contains("qui vous a programme") ||
+                    qNorm.contains("qui est ton createur") || qNorm.contains("quel est ton createur") ||
+                    qNorm.contains("qui est votre createur") || qNorm.contains("quel est votre createur") ||
+                    qNorm.contains("qui est ton developpeur") || qNorm.contains("qui est votre developpeur") ||
+                    qNorm.contains("qui a cree sam ai") || qNorm.contains("qui a developpe sam ai") ||
+                    qNorm.contains("qui est derriere sam ai") || qNorm.contains("qui a fait sam ai") ||
+                    qNorm.contains("qui a invente sam ai") || qNorm.contains("qui a concu sam ai")
                 )
-                _samAiChatMessages.value = _samAiChatMessages.value + botMsg
-                if (onReply != null) {
-                    withContext(Dispatchers.Main) { onReply(directAnswer) }
-                }
-                return@launch
-            }
 
-            if (isExplicitCreatorQuestion || isExplicitModelOrOpenAiQuestion) {
-                val directAnswer = "Je suis Sam AI, une intelligence artificielle créée par Abdoul Mohamine Sawadogo, un jeune Burkinabè, pour vous accompagner et répondre à toutes vos questions."
-                _isSamAiGeminiThinking.value = false
-                val botMsg = SamAiChatMessage(
-                    sender = "sam_ai",
-                    text = directAnswer,
-                    timestamp = System.currentTimeMillis(),
-                    isError = false,
-                    sources = emptyList(),
-                    model = null,
-                    language = null
+                val isExplicitWhyCreatedQuestion = !hasMultipleOrTrailingQuestion && (
+                    qNorm.contains("pourquoi sam ai") || qNorm.contains("pourquoi as-tu ete cree") ||
+                    qNorm.contains("pourquoi tu as ete cree") || qNorm.contains("pourquoi avez-vous ete cree") ||
+                    qNorm.contains("quel est le but de sam ai") || qNorm.contains("quelle est la mission de sam ai") ||
+                    qNorm.contains("quel est l'objectif de sam ai") || qNorm.contains("pourquoi existe sam ai")
                 )
-                _samAiChatMessages.value = _samAiChatMessages.value + botMsg
-                if (onReply != null) {
-                    withContext(Dispatchers.Main) { onReply(directAnswer) }
-                }
-                return@launch
-            }
 
-            if (isExplicitWhyCreatedQuestion) {
-                val directAnswer = "Mon objectif est d’aider les personnes au quotidien, de répondre avec précision à leurs questions et de faciliter l'accès au savoir et à l'information."
-                _isSamAiGeminiThinking.value = false
-                val botMsg = SamAiChatMessage(
-                    sender = "sam_ai",
-                    text = directAnswer,
-                    timestamp = System.currentTimeMillis(),
-                    isError = false,
-                    sources = emptyList(),
-                    model = null,
-                    language = null
+                val isExplicitModelOrOpenAiQuestion = !hasMultipleOrTrailingQuestion && (
+                    qNorm.contains("openai") || qNorm.contains("open ai") ||
+                    qNorm.contains("chatgpt") || qNorm.contains("chat gpt") ||
+                    qNorm.contains("gpt-4") || qNorm.contains("gpt4") ||
+                    qNorm.contains("quel modele") || qNorm.contains("quel est ton modele") ||
+                    qNorm.contains("quelle ia es-tu") || qNorm.contains("quelle intelligence artificielle es-tu")
                 )
-                _samAiChatMessages.value = _samAiChatMessages.value + botMsg
-                if (onReply != null) {
-                    withContext(Dispatchers.Main) { onReply(directAnswer) }
-                }
-                return@launch
-            }
 
-            // En appel vocal (isVoiceCall), chaque question est traitée indépendamment sans historique précédent
-            // pour que SAM AI ne reparle jamais d'une ancienne question.
-            val nonSystemMessages = currentList.filter { !it.isError && it.id != "welcome_msg" && it.text.isNotBlank() }
-            val currentHistory = if (isVoiceCall) {
-                emptyList()
-            } else {
-                nonSystemMessages.takeLast(20).map { msg ->
-                    com.example.data.repository.ChatMessage(
-                        role = if (msg.sender == "user") "user" else "model",
-                        content = msg.text.trim()
-                    )
-                }
-            }
+                val isExplicitNameQuestion = !hasMultipleOrTrailingQuestion && Regex(
+                    "(t'\\s*appel|t\\s+appel|s'\\s*appel|s\\s+appel|vous\\s+appel|appelez[-\\s]+vous|appelles[-\\s]+tu)|" +
+                        "((ton|votre|son)\\s+(nom|prenom))|" +
+                        "(nom\\s+c'est\\s+quoi)|" +
+                        "(comment\\s+on\\s+t'appel)|" +
+                        "(qui\\s+(es[-\\s]*tu|etes[-\\s]*vous|tu\\s+es|vous\\s+etes))|" +
+                        "((tu\\s+es|vous\\s+etes)\\s+qui)|" +
+                        "(presente[-\\s]*toi|presentez[-\\s]*vous)|" +
+                        "(\\bnova\\b)"
+                ).containsMatchIn(qNorm)
 
-            var liveContextSummary = ""
-            var liveSources = emptyList<com.example.data.local.WebSource>()
-            var isWebSearchNeeded = false
-
-            if (!isMooreVoice) {
-                val searchDecision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
-                isWebSearchNeeded = searchDecision.isSearchNeeded
-                if (searchDecision.isSearchNeeded) {
-                    val baseCleanQuery = searchDecision.cleanSearchQuery.ifBlank { userText }
-                    // Si l'utilisateur pose une question de suivi courte (ex: "Et quoi d'autre ?", "Donne d'autres infos"),
-                    // on conserve le sujet (Burkina Faso ou Monde) de sa question précédente
-                    val lastUserQuestions = currentHistory.filter { it.role == "user" }.takeLast(3).joinToString(" ") { it.content }
-                    val effectiveQuery = if (
-                        !baseCleanQuery.contains("burkina", ignoreCase = true) &&
-                        !baseCleanQuery.contains("faso", ignoreCase = true) &&
-                        !baseCleanQuery.contains("monde", ignoreCase = true) &&
-                        baseCleanQuery.length < 35
-                    ) {
-                        when {
-                            lastUserQuestions.contains("burkina", ignoreCase = true) || lastUserQuestions.contains("faso", ignoreCase = true) ->
-                                "$baseCleanQuery Burkina Faso"
-                            lastUserQuestions.contains("monde", ignoreCase = true) || lastUserQuestions.contains("international", ignoreCase = true) ->
-                                "$baseCleanQuery monde"
-                            else -> baseCleanQuery
-                        }
+                if (isExplicitNameQuestion) {
+                    if (requestEpoch != chatSessionEpoch.get()) return@launch
+                    val directAnswer = if (isVoiceCall) {
+                        "Je m'appelle Sam AI."
                     } else {
-                        baseCleanQuery
+                        "Je m'appelle Sam AI, votre assistant intelligent."
                     }
+                    _isSamAiGeminiThinking.value = false
+                    val botMsg = SamAiChatMessage(
+                        sender = "sam_ai",
+                        text = directAnswer,
+                        timestamp = System.currentTimeMillis(),
+                        isError = false,
+                        sources = emptyList(),
+                        model = null,
+                        language = null
+                    )
+                    _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+                    if (onReply != null) {
+                        withContext(Dispatchers.Main) { onReply(directAnswer) }
+                    }
+                    return@launch
+                }
 
-                    // Texte déjà répondu par SAM AI dans la discussion actuelle pour ne JAMAIS répéter les mêmes nouvelles
-                    val alreadyMentionedInChat = currentList
-                        .filter { it.sender != "user" && it.id != "welcome_msg" }
-                        .takeLast(6)
-                        .joinToString("\n") { it.text }
+                if (isExplicitCreatorQuestion || isExplicitModelOrOpenAiQuestion) {
+                    if (requestEpoch != chatSessionEpoch.get()) return@launch
+                    val directAnswer = "Je suis Sam AI, une intelligence artificielle créée par Abdoul Mohamine Sawadogo, un jeune Burkinabè, pour vous accompagner et répondre à toutes vos questions."
+                    _isSamAiGeminiThinking.value = false
+                    val botMsg = SamAiChatMessage(
+                        sender = "sam_ai",
+                        text = directAnswer,
+                        timestamp = System.currentTimeMillis(),
+                        isError = false,
+                        sources = emptyList(),
+                        model = null,
+                        language = null
+                    )
+                    _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+                    if (onReply != null) {
+                        withContext(Dispatchers.Main) { onReply(directAnswer) }
+                    }
+                    return@launch
+                }
 
-                    if (isVoiceCall) {
-                        val fastNews = kotlinx.coroutines.withTimeoutOrNull(3500L) {
-                            liveNewsFeedService.fetchLiveNews(
-                                query = effectiveQuery,
-                                alreadyMentionedText = alreadyMentionedInChat
-                            )
-                        }
-                        if (fastNews != null && fastNews.hasNews) {
-                            liveContextSummary = fastNews.contextSummary
-                            liveSources = fastNews.sources
+                if (isExplicitWhyCreatedQuestion) {
+                    if (requestEpoch != chatSessionEpoch.get()) return@launch
+                    val directAnswer = "Mon objectif est d’aider les personnes au quotidien, de répondre avec précision à leurs questions et de faciliter l'accès au savoir et à l'information."
+                    _isSamAiGeminiThinking.value = false
+                    val botMsg = SamAiChatMessage(
+                        sender = "sam_ai",
+                        text = directAnswer,
+                        timestamp = System.currentTimeMillis(),
+                        isError = false,
+                        sources = emptyList(),
+                        model = null,
+                        language = null
+                    )
+                    _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+                    if (onReply != null) {
+                        withContext(Dispatchers.Main) { onReply(directAnswer) }
+                    }
+                    return@launch
+                }
+
+                // En appel vocal (isVoiceCall), chaque question est traitée indépendamment sans historique précédent
+                // pour que SAM AI ne reparle jamais d'une ancienne question.
+                val nonSystemMessages = currentList.filter { !it.isError && it.id != "welcome_msg" && it.text.isNotBlank() }
+                val currentHistory = if (isVoiceCall) {
+                    emptyList()
+                } else {
+                    nonSystemMessages.takeLast(20).map { msg ->
+                        com.example.data.repository.ChatMessage(
+                            role = if (msg.sender == "user") "user" else "model",
+                            content = msg.text.trim()
+                        )
+                    }
+                }
+
+                var liveContextSummary = ""
+                var liveSources = emptyList<com.example.data.local.WebSource>()
+                var isWebSearchNeeded = false
+
+                if (!isMooreVoice) {
+                    val searchDecision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
+                    isWebSearchNeeded = searchDecision.isSearchNeeded
+                    if (searchDecision.isSearchNeeded) {
+                        val baseCleanQuery = searchDecision.cleanSearchQuery.ifBlank { userText }
+                        val lastUserQuestions = currentHistory.filter { it.role == "user" }.takeLast(3).joinToString(" ") { it.content }
+                        val effectiveQuery = if (
+                            !baseCleanQuery.contains("burkina", ignoreCase = true) &&
+                            !baseCleanQuery.contains("faso", ignoreCase = true) &&
+                            !baseCleanQuery.contains("monde", ignoreCase = true) &&
+                            baseCleanQuery.length < 35
+                        ) {
+                            when {
+                                lastUserQuestions.contains("burkina", ignoreCase = true) || lastUserQuestions.contains("faso", ignoreCase = true) ->
+                                    "$baseCleanQuery Burkina Faso"
+                                lastUserQuestions.contains("monde", ignoreCase = true) || lastUserQuestions.contains("international", ignoreCase = true) ->
+                                    "$baseCleanQuery monde"
+                                else -> baseCleanQuery
+                            }
                         } else {
-                            liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(
-                                query = effectiveQuery,
-                                fallbackBurkinaArticles = _newsArticles.value
-                            )
+                            baseCleanQuery
                         }
-                    } else {
-                        try {
-                            val newsResult = kotlinx.coroutines.withTimeoutOrNull(7500L) {
+
+                        val alreadyMentionedInChat = currentList
+                            .filter { it.sender != "user" && it.id != "welcome_msg" }
+                            .takeLast(6)
+                            .joinToString("\n") { it.text }
+
+                        if (isVoiceCall) {
+                            val fastNews = kotlinx.coroutines.withTimeoutOrNull(3500L) {
                                 liveNewsFeedService.fetchLiveNews(
                                     query = effectiveQuery,
                                     alreadyMentionedText = alreadyMentionedInChat
                                 )
                             }
-                            if (newsResult != null && newsResult.hasNews) {
-                                liveContextSummary = newsResult.contextSummary
-                                liveSources = newsResult.sources
+                            if (fastNews != null && fastNews.hasNews) {
+                                liveContextSummary = fastNews.contextSummary
+                                liveSources = fastNews.sources
                             } else {
                                 liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(
                                     query = effectiveQuery,
                                     fallbackBurkinaArticles = _newsArticles.value
                                 )
                             }
-                        } catch (e: Throwable) {
-                            android.util.Log.w("SamAiViewModel", "Notice actualités en direct: ${e.message}")
-                            liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(
-                                query = effectiveQuery,
-                                fallbackBurkinaArticles = _newsArticles.value
-                            )
+                        } else {
+                            try {
+                                val newsResult = kotlinx.coroutines.withTimeoutOrNull(7500L) {
+                                    liveNewsFeedService.fetchLiveNews(
+                                        query = effectiveQuery,
+                                        alreadyMentionedText = alreadyMentionedInChat
+                                    )
+                                }
+                                if (newsResult != null && newsResult.hasNews) {
+                                    liveContextSummary = newsResult.contextSummary
+                                    liveSources = newsResult.sources
+                                } else {
+                                    liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(
+                                        query = effectiveQuery,
+                                        fallbackBurkinaArticles = _newsArticles.value
+                                    )
+                                }
+                            } catch (e: Throwable) {
+                                android.util.Log.w("SamAiViewModel", "Notice actualités en direct: ${e.message}")
+                                liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(
+                                    query = effectiveQuery,
+                                    fallbackBurkinaArticles = _newsArticles.value
+                                )
+                            }
                         }
                     }
                 }
-            }
 
-            // Envoi direct à l'API OpenAI (avec recherche Web en direct gpt-4o-search-preview + dépêches fraîches non répétées)
-            val openAiResult = openAiBackendService.sendChatMessage(
-                messages = currentHistory,
-                userQuestion = userText,
-                enableWebSearch = isWebSearchNeeded || liveSources.isNotEmpty(),
-                preferredModel = "gpt-4o",
-                newsContext = liveContextSummary,
-                sources = liveSources,
-                isMooreVoice = false,
-                isVoiceCall = isVoiceCall
-            )
+                // 1. Envoi principal à OpenAI (gpt-4o-search-preview / gpt-4o / gpt-4o-mini)
+                val openAiResult = openAiBackendService.sendChatMessage(
+                    messages = currentHistory,
+                    userQuestion = userText,
+                    enableWebSearch = isWebSearchNeeded || liveSources.isNotEmpty(),
+                    preferredModel = "gpt-4o",
+                    newsContext = liveContextSummary,
+                    sources = liveSources,
+                    isMooreVoice = false,
+                    isVoiceCall = isVoiceCall
+                )
 
-            var responseText = openAiResult.text
-            var isError = !openAiResult.success
-            var responseSources = openAiResult.sources
+                var responseText = openAiResult.text
+                var isError = !openAiResult.success || responseText.isBlank()
+                var responseSources = openAiResult.sources
+                var fallbackErrorMessage: String? = null
 
-            if (responseText.isBlank() || isError) {
-                val errorDetails = openAiResult.errorMessage.orEmpty().ifBlank { "Impossible de contacter le serveur SAM AI. Vérifiez votre connexion réseau." }
-                responseText = "⚠️ Service SAM AI : $errorDetails"
-                isError = true
-                responseSources = emptyList<com.example.data.local.WebSource>()
-            }
+                // 2. Repli automatique sur le moteur Gemini (avec Google Search en direct) si OpenAI a échoué
+                if (isError) {
+                    try {
+                        val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
+                        val fallbackSystemPrompt = buildString {
+                            append("Tu es SAM AI, une intelligence artificielle d'élite, cultivée et polyvalente, conçue par Abdoul Mohamine Sawadogo.\n")
+                            append("Aujourd'hui nous sommes exactement le $dateStr.\n")
+                            if (liveContextSummary.isNotBlank()) {
+                                append("\n--- ACTUALITÉS EN TEMPS RÉEL ---\n")
+                                append(liveContextSummary)
+                                append("\n--------------------------------\n")
+                            }
+                            append("Réponds directement en français clair, précis et naturel sans jamais commencer par 'Bonjour' (sauf si l'utilisateur salue uniquement). ")
+                            append("Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025. ")
+                            append("Tu t'appelles exclusivement Sam AI (ne mentionne JAMAIS Gemini, Google, OpenAI ou ChatGPT).")
+                        }
+                        val rawGeminiMessages = if (currentHistory.isNotEmpty() && !isVoiceCall) {
+                            currentHistory
+                        } else {
+                            listOf(com.example.data.repository.ChatMessage(role = "user", content = userText))
+                        }
+                        val geminiMessages = mutableListOf<com.example.data.repository.ChatMessage>()
+                        for (msg in rawGeminiMessages) {
+                            val normalizedRole = if (msg.role == "user") "user" else "model"
+                            val last = geminiMessages.lastOrNull()
+                            if (last != null && last.role == normalizedRole) {
+                                geminiMessages[geminiMessages.lastIndex] = last.copy(
+                                    content = "${last.content}\n\n${msg.content}".trim()
+                                )
+                            } else {
+                                geminiMessages.add(com.example.data.repository.ChatMessage(role = normalizedRole, content = msg.content))
+                            }
+                        }
+                        if (geminiMessages.firstOrNull()?.role == "model") {
+                            geminiMessages.removeAt(0)
+                        }
+                        val safeGeminiMessages = if (geminiMessages.isNotEmpty()) {
+                            geminiMessages
+                        } else {
+                            listOf(com.example.data.repository.ChatMessage(role = "user", content = userText))
+                        }
+                        val geminiFallback = aiRepository.executeGeminiRequest(
+                            apiKey = "",
+                            messages = safeGeminiMessages,
+                            systemInstruction = fallbackSystemPrompt,
+                            enableSearch = isWebSearchNeeded,
+                            temperature = if (isWebSearchNeeded || liveContextSummary.isNotBlank()) 0.45 else 0.2,
+                            maxOutputTokens = if (isVoiceCall) 450 else 3000,
+                            preferredModel = "gemini-2.5-flash"
+                        )
+                        if (geminiFallback.success && geminiFallback.text.isNotBlank()) {
+                            responseText = sanitizeSamAiFallbackBranding(geminiFallback.text)
+                            isError = false
+                            responseSources = (responseSources + geminiFallback.sources).distinctBy { it.url }
+                        } else {
+                            fallbackErrorMessage = geminiFallback.errorMessage
+                        }
+                    } catch (fallbackErr: Throwable) {
+                        Log.w("SamAiViewModel", "Gemini fallback error: ${fallbackErr.message}")
+                    }
+                }
 
-            _isSamAiGeminiThinking.value = false
+                if (responseText.isBlank() || isError) {
+                    val hasDeviceInternet = com.example.data.local.ApiKeyManager.hasActiveInternetConnection()
+                    val rawChosenError = when {
+                        !hasDeviceInternet ->
+                            "Aucune connexion Internet détectée. Vérifiez votre Wi-Fi ou vos données mobiles et réessayez."
+                        !openAiResult.errorMessage.isNullOrBlank() && !openAiResult.isNetworkError ->
+                            openAiResult.errorMessage
+                        !fallbackErrorMessage.isNullOrBlank() ->
+                            fallbackErrorMessage
+                        !openAiResult.errorMessage.isNullOrBlank() ->
+                            openAiResult.errorMessage
+                        else ->
+                            "Le service SAM AI est momentanément saturé. Veuillez réessayer dans quelques secondes."
+                    }
+                    val safeChosenError = if (hasDeviceInternet &&
+                        (rawChosenError.contains("connexion Internet", ignoreCase = true) ||
+                            rawChosenError.contains("réseau Internet", ignoreCase = true))
+                    ) {
+                        "Les serveurs SAM AI sont momentanément indisponibles ou très sollicités. Veuillez réessayer dans quelques secondes."
+                    } else {
+                        rawChosenError
+                    }
+                    responseText = "⚠️ Service SAM AI : $safeChosenError"
+                    isError = true
+                    responseSources = emptyList()
+                }
 
-            val botMsg = SamAiChatMessage(
-                sender = "sam_ai",
-                text = responseText,
-                timestamp = System.currentTimeMillis(),
-                isError = isError,
-                sources = responseSources,
-                model = null,
-                language = null
-            )
-            _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+                if (requestEpoch != chatSessionEpoch.get()) return@launch
 
-            if (!isError && onReply != null) {
-                withContext(Dispatchers.Main) {
-                    onReply(responseText)
+                _isSamAiGeminiThinking.value = false
+
+                val botMsg = SamAiChatMessage(
+                    sender = "sam_ai",
+                    text = responseText,
+                    timestamp = System.currentTimeMillis(),
+                    isError = isError,
+                    sources = responseSources,
+                    model = null,
+                    language = null
+                )
+                _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+
+                if (!isError && onReply != null) {
+                    withContext(Dispatchers.Main) {
+                        onReply(responseText)
+                    }
+                }
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                throw ce
+            } catch (t: Throwable) {
+                if (requestEpoch != chatSessionEpoch.get()) return@launch
+                Log.e("SamAiViewModel", "Unexpected error in askSamAiGemini: ${t.message}", t)
+                val botMsg = SamAiChatMessage(
+                    sender = "sam_ai",
+                    text = "⚠️ Service SAM AI : Une erreur temporaire est survenue. Veuillez réessayer.",
+                    timestamp = System.currentTimeMillis(),
+                    isError = true,
+                    sources = emptyList(),
+                    model = null,
+                    language = null
+                )
+                _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+            } finally {
+                if (requestEpoch == chatSessionEpoch.get()) {
+                    _isSamAiGeminiThinking.value = false
                 }
             }
         }

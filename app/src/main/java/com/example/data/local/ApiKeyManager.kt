@@ -3,6 +3,7 @@ package com.example.data.local
 import android.content.Context
 import android.content.SharedPreferences
 import com.example.BuildConfig
+import com.google.android.gms.tasks.Tasks
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Source
 import kotlinx.coroutines.Dispatchers
@@ -56,7 +57,17 @@ class ApiKeyManager(context: Context) {
             ""
         }
         val clean = buildConfigKey.trim().removeSurrounding("\"").removeSurrounding("'").trim()
-        return if (clean.isNotBlank() && clean != "MY_GEMINI_API_KEY") clean else ""
+        if (clean.isNotBlank() && clean != "MY_GEMINI_API_KEY") return clean
+
+        if (cachedServerGeminiKey.isNotBlank() && cachedServerGeminiKey != "MY_GEMINI_API_KEY") {
+            return cachedServerGeminiKey
+        }
+        val savedServerGemini = prefs.getString(KEY_SERVER_GEMINI_API_KEY, null)?.trim().orEmpty()
+        if (savedServerGemini.isNotBlank() && savedServerGemini != "MY_GEMINI_API_KEY") {
+            cachedServerGeminiKey = savedServerGemini
+            return savedServerGemini
+        }
+        return ""
     }
 
     fun isGeminiConfigured(): Boolean {
@@ -211,6 +222,7 @@ class ApiKeyManager(context: Context) {
         private const val KEY_CUSTOM_GEMINI_LIVE_API_KEY = "custom_gemini_live_api_key"
         private const val KEY_CUSTOM_OPENAI_API_KEY = "custom_openai_api_key"
         private const val KEY_SERVER_OPENAI_API_KEY = "server_openai_api_key"
+        private const val KEY_SERVER_GEMINI_API_KEY = "server_gemini_api_key"
         private const val KEY_CUSTOM_HUGGINGFACE_API_KEY = "custom_huggingface_api_key"
         private const val KEY_CUSTOM_HF_MOORE_MODEL = "custom_hf_moore_model"
 
@@ -231,9 +243,26 @@ class ApiKeyManager(context: Context) {
         private var cachedServerOpenAiKey: String = ""
 
         @Volatile
+        private var cachedServerGeminiKey: String = ""
+
+        @Volatile
         private var sharedAppContext: Context? = null
 
         private val firestoreListenerStarted = AtomicBoolean(false)
+
+        fun hasActiveInternetConnection(): Boolean {
+            val ctx = sharedAppContext ?: return true
+            return try {
+                val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+                    ?: return true
+                val activeNetwork = cm.activeNetwork ?: return false
+                val caps = cm.getNetworkCapabilities(activeNetwork) ?: return false
+                caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            } catch (_: Throwable) {
+                true
+            }
+        }
 
         private fun updateCachedServerKey(rawKey: String) {
             val clean = rawKey.trim().removeSurrounding("\"").removeSurrounding("'").trim()
@@ -248,6 +277,19 @@ class ApiKeyManager(context: Context) {
             } catch (_: Throwable) {}
         }
 
+        private fun updateCachedServerGeminiKey(rawKey: String) {
+            val clean = rawKey.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+            if (clean.isBlank() || clean == "MY_GEMINI_API_KEY") return
+            cachedServerGeminiKey = clean
+            try {
+                sharedAppContext
+                    ?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    ?.edit()
+                    ?.putString(KEY_SERVER_GEMINI_API_KEY, clean)
+                    ?.apply()
+            } catch (_: Throwable) {}
+        }
+
         fun preloadServerConfig(context: Context) {
             val appCtx = context.applicationContext
             sharedAppContext = appCtx
@@ -257,6 +299,10 @@ class ApiKeyManager(context: Context) {
                 val saved = p.getString(KEY_SERVER_OPENAI_API_KEY, null)?.trim().orEmpty()
                 if (saved.isNotBlank() && saved != "MY_OPENAI_API_KEY") {
                     cachedServerOpenAiKey = saved
+                }
+                val savedGemini = p.getString(KEY_SERVER_GEMINI_API_KEY, null)?.trim().orEmpty()
+                if (savedGemini.isNotBlank() && savedGemini != "MY_GEMINI_API_KEY") {
+                    cachedServerGeminiKey = savedGemini
                 }
             } catch (_: Throwable) {}
 
@@ -273,6 +319,10 @@ class ApiKeyManager(context: Context) {
                         if (cachedVal.isNotBlank()) {
                             updateCachedServerKey(cachedVal)
                         }
+                        val cachedGemVal = snap?.getString("gemini_api_key")?.trim().orEmpty()
+                        if (cachedGemVal.isNotBlank()) {
+                            updateCachedServerGeminiKey(cachedGemVal)
+                        }
                     }
 
                     // Synchronisation temps réel avec le serveur Firebase
@@ -280,6 +330,10 @@ class ApiKeyManager(context: Context) {
                         val serverVal = snapshot?.getString("openai_api_key")?.trim().orEmpty()
                         if (serverVal.isNotBlank()) {
                             updateCachedServerKey(serverVal)
+                        }
+                        val serverGemVal = snapshot?.getString("gemini_api_key")?.trim().orEmpty()
+                        if (serverGemVal.isNotBlank()) {
+                            updateCachedServerGeminiKey(serverGemVal)
                         }
                     }
                 } catch (_: Throwable) {
@@ -350,11 +404,45 @@ class ApiKeyManager(context: Context) {
             if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
                 val fresh = fetchOpenAiKeyFromRemoteFirestore()
                 if (fresh.isNotBlank()) return fresh
+
+                try {
+                    val snap = Tasks.await(
+                        FirebaseFirestore.getInstance()
+                            .collection("app_config")
+                            .document("server_ai_config")
+                            .get(Source.SERVER),
+                        5,
+                        TimeUnit.SECONDS
+                    )
+                    val sdkVal = snap?.getString("openai_api_key")?.trim().orEmpty()
+                    if (sdkVal.isNotBlank() && sdkVal != "MY_OPENAI_API_KEY") {
+                        updateCachedServerKey(sdkVal)
+                    }
+                    val sdkGemVal = snap?.getString("gemini_api_key")?.trim().orEmpty()
+                    if (sdkGemVal.isNotBlank() && sdkGemVal != "MY_GEMINI_API_KEY") {
+                        updateCachedServerGeminiKey(sdkGemVal)
+                    }
+                    if (sdkVal.isNotBlank() && sdkVal != "MY_OPENAI_API_KEY") {
+                        return sdkVal
+                    }
+                } catch (_: Throwable) {}
             }
             return cachedServerOpenAiKey
         }
 
         fun resolveOpenAiApiKeyBlocking(): String {
+            // 0. Clé personnalisée enregistrée localement (si présente)
+            try {
+                val custom = sharedAppContext
+                    ?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    ?.getString(KEY_CUSTOM_OPENAI_API_KEY, null)
+                    ?.trim()
+                    .orEmpty()
+                if (custom.isNotBlank() && custom != "MY_OPENAI_API_KEY") {
+                    return custom
+                }
+            } catch (_: Throwable) {}
+
             // 1. Priorité au cache serveur déjà synchronisé depuis Firebase Firestore
             if (cachedServerOpenAiKey.isNotBlank() && cachedServerOpenAiKey != "MY_OPENAI_API_KEY") {
                 return cachedServerOpenAiKey
@@ -386,8 +474,8 @@ class ApiKeyManager(context: Context) {
 
             // 4. Récupération directe sur le serveur Firebase si on est hors du thread UI
             if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
-                val remote = fetchOpenAiKeyFromRemoteFirestore()
-                if (remote.isNotBlank()) return remote
+                val refreshed = forceRefreshOpenAiKeyFromServer()
+                if (refreshed.isNotBlank()) return refreshed
             }
 
             return cachedServerOpenAiKey

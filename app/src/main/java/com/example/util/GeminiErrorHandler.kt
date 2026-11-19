@@ -91,6 +91,21 @@ object GeminiErrorHandler {
                         combinedText.contains("invalid api key")
                 )
 
+        val isTimeoutException = effectiveCode == null && (
+                throwable is java.net.SocketTimeoutException ||
+                        combinedText.contains("timeout") ||
+                        combinedText.contains("timed out")
+                )
+
+        val isConnectivityException = effectiveCode == null && !isTimeoutException && (
+                throwable is java.net.UnknownHostException ||
+                        throwable is java.net.ConnectException ||
+                        throwable is java.net.NoRouteToHostException ||
+                        combinedText.contains("unable to resolve host") ||
+                        combinedText.contains("failed to connect") ||
+                        combinedText.contains("network is unreachable")
+                )
+
         val friendlyMessage = when {
             isTemporaryOverload ->
                 "Le modèle d'intelligence artificielle est actuellement très sollicité (erreur 503). Les pics de charge sont généralement temporaires. Veuillez patienter quelques instants et réessayer votre question."
@@ -102,10 +117,20 @@ object GeminiErrorHandler {
                 "Le service d'intelligence artificielle effectue une synchronisation. Veuillez patienter un instant ou reformuler votre question."
 
             effectiveCode != null ->
-                "Service d'intelligence artificielle momentanément indisponible (Code $effectiveCode). Veuillez vérifier votre connexion Internet et réessayer."
+                "Le service d'intelligence artificielle est momentanément indisponible (Code $effectiveCode). Veuillez réessayer dans un instant."
+
+            isTimeoutException ->
+                "Le serveur d'intelligence artificielle met un peu plus de temps que prévu à répondre. Veuillez réessayer."
+
+            isConnectivityException ->
+                if (com.example.data.local.ApiKeyManager.hasActiveInternetConnection()) {
+                    "Le service d'intelligence artificielle est momentanément inaccessible. Veuillez réessayer dans un instant."
+                } else {
+                    "Connexion au service d'IA impossible. Veuillez vérifier votre réseau Internet et réessayer."
+                }
 
             else ->
-                "Connexion au service d'IA impossible. Veuillez vérifier votre réseau Internet et réessayer."
+                "Le service d'intelligence artificielle a rencontré une erreur temporaire. Veuillez réessayer dans un instant."
         }
 
         return ParsedGeminiError(
