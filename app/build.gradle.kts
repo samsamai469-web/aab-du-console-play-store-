@@ -275,10 +275,10 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.robolectric)
 
-    // Instrumentation Testing
-    androidTestImplementation(libs.androidx.junit)
-    androidTestImplementation(libs.androidx.espresso.core)
-    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
+    // Instrumentation Testing (Disabled per policy)
+    // androidTestImplementation(libs.androidx.junit)
+    // androidTestImplementation(libs.androidx.espresso.core)
+    // androidTestImplementation(libs.androidx.compose.ui.test.junit4)
 
     // Debug tooling
     debugImplementation(libs.androidx.compose.ui.tooling)
