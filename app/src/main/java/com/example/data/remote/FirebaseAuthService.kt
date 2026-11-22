@@ -41,7 +41,7 @@ object FirebaseAuthService {
     fun getExplicitFirebaseOptions(): com.google.firebase.FirebaseOptions {
         return com.google.firebase.FirebaseOptions.Builder()
             .setProjectId("sam-traduction")
-            .setApplicationId("1:438563104660:android:adc0f63c861d666ba45181")
+            .setApplicationId("1:438563104660:android:ef789e28e3246141a45181")
             .setApiKey("AIzaSyCM2nqPMvLMYxCjHFlLiVXArBbxv1RtPNk")
             .setStorageBucket("sam-traduction.firebasestorage.app")
             .setGcmSenderId("438563104660")

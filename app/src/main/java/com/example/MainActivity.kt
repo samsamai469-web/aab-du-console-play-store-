@@ -245,6 +245,10 @@ class MainActivity : ComponentActivity() {
 
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
+    setIntent(intent)
+    if (BuildConfig.DEBUG && intent.hasExtra("FIREBASE_APPCHECK_DEBUG_TOKEN")) {
+      com.example.util.configureAppCheck(this, intent)
+    }
     try {
       handleIntent(intent)
     } catch (_: Throwable) {}

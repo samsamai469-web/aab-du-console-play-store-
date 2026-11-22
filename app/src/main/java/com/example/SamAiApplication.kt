@@ -56,13 +56,11 @@ class SamAiApplication : Application(), ImageLoaderFactory {
     override fun onCreate() {
         super.onCreate()
 
-        // 1. Initialiser Firebase, le cache d'actualités 24h et précharger la configuration serveur dès l'ouverture de l'application
+        // 1. Initialiser le cache d'actualités local dès l'ouverture (App Check & Firebase sont initialisés dans MainActivity.onCreate avant tout appel Firebase)
         try {
-            com.example.data.remote.FirebaseAuthService.initContext(this)
             com.example.data.repository.NewsRepository.initContext(this)
-            com.example.data.local.ApiKeyManager.preloadServerConfig(this)
         } catch (t: Throwable) {
-            Log.w("SamAiApplication", "Firebase sync init fallback: ${t.message}")
+            Log.w("SamAiApplication", "News cache init fallback: ${t.message}")
         }
 
         // Précharger immédiatement en mémoire les 2 premières images de l'accueil (sans supprimer le cache disque)

@@ -266,62 +266,7 @@ class ApiKeyManager(context: Context) {
         }
 
         fun preloadServerConfig(context: Context) {
-            val appCtx = context.applicationContext
-            sharedAppContext = appCtx
-
-            try {
-                val p = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-                val saved = p.getString(KEY_SERVER_OPENAI_API_KEY, null)?.trim().orEmpty()
-                if (saved.isNotBlank() && saved != "MY_OPENAI_API_KEY") {
-                    cachedServerOpenAiKey = saved
-                }
-                val savedGemini = p.getString(KEY_SERVER_GEMINI_API_KEY, null)?.trim().orEmpty()
-                if (savedGemini.isNotBlank() && savedGemini != "MY_GEMINI_API_KEY") {
-                    cachedServerGeminiKey = savedGemini
-                }
-            } catch (_: Throwable) {}
-
-            // 1. Écoute et cache hors-ligne via le SDK officiel Firebase Firestore
-            if (firestoreListenerStarted.compareAndSet(false, true)) {
-                try {
-                    val docRef = FirebaseFirestore.getInstance()
-                        .collection("app_config")
-                        .document("server_ai_config")
-
-                    // Lecture immédiate depuis le cache local Firestore s'il existe
-                    docRef.get(Source.CACHE).addOnSuccessListener { snap ->
-                        val cachedVal = snap?.getString("openai_api_key")?.trim().orEmpty()
-                        if (cachedVal.isNotBlank()) {
-                            updateCachedServerKey(cachedVal)
-                        }
-                        val cachedGemVal = snap?.getString("gemini_api_key")?.trim().orEmpty()
-                        if (cachedGemVal.isNotBlank()) {
-                            updateCachedServerGeminiKey(cachedGemVal)
-                        }
-                    }
-
-                    // Synchronisation temps réel avec le serveur Firebase
-                    docRef.addSnapshotListener { snapshot, _ ->
-                        val serverVal = snapshot?.getString("openai_api_key")?.trim().orEmpty()
-                        if (serverVal.isNotBlank()) {
-                            updateCachedServerKey(serverVal)
-                        }
-                        val serverGemVal = snapshot?.getString("gemini_api_key")?.trim().orEmpty()
-                        if (serverGemVal.isNotBlank()) {
-                            updateCachedServerGeminiKey(serverGemVal)
-                        }
-                    }
-                } catch (_: Throwable) {
-                    firestoreListenerStarted.set(false)
-                }
-            }
-
-            // 2. Préchargement HTTPS en arrière-plan dès l'ouverture de l'application
-            Thread {
-                try {
-                    fetchOpenAiKeyFromRemoteFirestore()
-                } catch (_: Throwable) {}
-            }.start()
+            sharedAppContext = context.applicationContext
         }
 
         private fun parseFirestoreOpenAiKey(body: String): String {

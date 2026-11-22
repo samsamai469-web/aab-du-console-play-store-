@@ -443,7 +443,15 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             baseModels
         }
 
-        val firebaseContents = messages.map { msg ->
+        val nonBlankMessages = messages.filter { it.content.isNotBlank() }
+        if (nonBlankMessages.isEmpty()) {
+            return@withContext GeminiRequestResult(
+                success = false,
+                text = "",
+                errorMessage = "Le message envoyé est vide."
+            )
+        }
+        val firebaseContents = nonBlankMessages.map { msg ->
             val normalizedRole = if (msg.role.equals("user", ignoreCase = true)) "user" else "model"
             content(role = normalizedRole) {
                 text(msg.content)
