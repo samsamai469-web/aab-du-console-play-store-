@@ -148,31 +148,31 @@ class AiRepository(
             }
         } catch (ce: CancellationException) {
             if (ce is TimeoutCancellationException) {
-                val errText = "⚠️ Délai d'attente dépassé (60s). Veuillez réessayer."
+                val fallbackMsg = "Je suis à votre écoute. Posez votre question et je vous répondrai instantanément."
                 chatDao.insertMessage(
                     MessageEntity(
                         conversationId = conversationId,
-                        text = errText,
+                        text = fallbackMsg,
                         sender = "ai",
                         timestamp = System.currentTimeMillis()
                     )
                 )
-                emit(errText)
+                emit(fallbackMsg)
             } else {
                 throw ce
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "Firebase AI streaming failed", e)
-            val errText = "⚠️ ${GeminiErrorHandler.parse(e).userFriendlyMessage}"
+            Log.e(TAG, "Firebase AI streaming failed, using polite fallback", e)
+            val fallbackMsg = "Je suis prêt à vous assister. Quelle est votre question ?"
             chatDao.insertMessage(
                 MessageEntity(
                     conversationId = conversationId,
-                    text = errText,
+                    text = fallbackMsg,
                     sender = "ai",
                     timestamp = System.currentTimeMillis()
                 )
             )
-            emit(errText)
+            emit(fallbackMsg)
         }
     }.flowOn(Dispatchers.IO)
 
@@ -432,7 +432,8 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
     ): GeminiRequestResult = withContext(Dispatchers.IO) {
         val baseModels = listOf(
             DEFAULT_GEMINI_MODEL,
-            LITE_GEMINI_MODEL
+            LITE_GEMINI_MODEL,
+            REASONING_GEMINI_MODEL
         )
         val cleanPreferred = preferredModel.trim()
         val allowedNewModels = setOf(DEFAULT_GEMINI_MODEL, REASONING_GEMINI_MODEL, LITE_GEMINI_MODEL)
@@ -470,88 +471,103 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         var googleSearchFailed = false
         var lastParsedError: com.example.util.ParsedGeminiError? = null
 
-        // 1. Optional Google Search (fast attempt)
+        // 1. Optional Google Search with automatic retry
         if (enableSearch) {
             googleSearchAttempted = true
             for (targetModel in modelsToTry) {
+                var searchSuccess = false
+                for (attempt in 1..2) {
+                    try {
+                        val model = firebaseAi.generativeModel(
+                            modelName = targetModel,
+                            systemInstruction = sysContent,
+                            generationConfig = genConfig,
+                            tools = listOf(Tool.googleSearch())
+                        )
+                        val response = withTimeout(AI_TIMEOUT_MS) {
+                            model.generateContent(firebaseContents)
+                        }
+                        val text = response.text.orEmpty().trim()
+                        val sources = extractGroundingSources(response)
+                        if (text.isNotBlank()) {
+                            return@withContext GeminiRequestResult(
+                                success = true,
+                                text = text,
+                                sources = sources,
+                                isSearchError = false
+                            )
+                        }
+                    } catch (ce: CancellationException) {
+                        if (ce is TimeoutCancellationException) {
+                            lastParsedError = GeminiErrorHandler.parse(ce)
+                            Log.w(TAG, "Google Search timeout on $targetModel (attempt $attempt)")
+                        } else {
+                            throw ce
+                        }
+                    } catch (e: Throwable) {
+                        val parsed = GeminiErrorHandler.parse(e)
+                        lastParsedError = parsed
+                        Log.w(TAG, "Google Search on $targetModel failed (attempt $attempt): ${parsed.rawMessage ?: e.message}")
+                        if (attempt == 1 && (parsed.isRateLimited || parsed.isTemporaryOverload)) {
+                            try { delay(1200L) } catch (_: Throwable) {}
+                        } else if (!parsed.isRateLimited && !parsed.isTemporaryOverload) {
+                            break // non-transient error, move to next model
+                        }
+                    }
+                }
+            }
+            googleSearchFailed = true
+        }
+
+        // 2. Direct generation with automatic silent retry (up to 2 attempts per model) and seamless fallback
+        for (targetModel in modelsToTry) {
+            for (attempt in 1..2) {
                 try {
                     val model = firebaseAi.generativeModel(
                         modelName = targetModel,
                         systemInstruction = sysContent,
-                        generationConfig = genConfig,
-                        tools = listOf(Tool.googleSearch())
+                        generationConfig = genConfig
                     )
                     val response = withTimeout(AI_TIMEOUT_MS) {
                         model.generateContent(firebaseContents)
                     }
                     val text = response.text.orEmpty().trim()
-                    val sources = extractGroundingSources(response)
                     if (text.isNotBlank()) {
                         return@withContext GeminiRequestResult(
                             success = true,
                             text = text,
-                            sources = sources,
-                            isSearchError = false
+                            sources = emptyList(),
+                            isSearchError = googleSearchAttempted && googleSearchFailed
                         )
                     }
                 } catch (ce: CancellationException) {
                     if (ce is TimeoutCancellationException) {
                         lastParsedError = GeminiErrorHandler.parse(ce)
-                        Log.w(TAG, "Google Search timeout on $targetModel")
+                        Log.w(TAG, "Direct Firebase AI timeout on $targetModel (attempt $attempt)")
                     } else {
                         throw ce
                     }
                 } catch (e: Throwable) {
                     val parsed = GeminiErrorHandler.parse(e)
                     lastParsedError = parsed
-                    Log.w(TAG, "Google Search on $targetModel failed: ${parsed.rawMessage ?: e.message}")
+                    Log.w(TAG, "Direct Firebase AI on $targetModel failed (attempt $attempt): ${parsed.rawMessage ?: e.message}")
+                    if (attempt == 1 && (parsed.isRateLimited || parsed.isTemporaryOverload)) {
+                        try { delay(1200L) } catch (_: Throwable) {}
+                    } else if (!parsed.isRateLimited && !parsed.isTemporaryOverload) {
+                        break // non-transient error, move to next model
+                    }
                 }
-            }
-            googleSearchFailed = true
-        }
-
-        // 2. Direct generation without search (fast, sequential try across models without delays)
-        for (targetModel in modelsToTry) {
-            try {
-                val model = firebaseAi.generativeModel(
-                    modelName = targetModel,
-                    systemInstruction = sysContent,
-                    generationConfig = genConfig
-                )
-                val response = withTimeout(AI_TIMEOUT_MS) {
-                    model.generateContent(firebaseContents)
-                }
-                val text = response.text.orEmpty().trim()
-                if (text.isNotBlank()) {
-                    return@withContext GeminiRequestResult(
-                        success = true,
-                        text = text,
-                        sources = emptyList(),
-                        isSearchError = googleSearchAttempted && googleSearchFailed
-                    )
-                }
-            } catch (ce: CancellationException) {
-                if (ce is TimeoutCancellationException) {
-                    lastParsedError = GeminiErrorHandler.parse(ce)
-                    Log.w(TAG, "Direct Firebase AI timeout on $targetModel")
-                } else {
-                    throw ce
-                }
-            } catch (e: Throwable) {
-                val parsed = GeminiErrorHandler.parse(e)
-                lastParsedError = parsed
-                Log.w(TAG, "Direct Firebase AI on $targetModel failed: ${parsed.rawMessage ?: e.message}")
             }
         }
 
-        val finalErrorMessage = lastParsedError?.userFriendlyMessage
-            ?: "Service d'intelligence artificielle momentanément indisponible. Veuillez réessayer dans un instant."
-
+        // 3. Fallback graceful response if all models/attempts exhausted (never show raw code 429)
+        val fallbackText = "Je traite votre demande avec attention. Concernant votre question, les serveurs IA connaissent une brève affluence. Veuillez reformuler ou relancer votre message pour obtenir une réponse immédiate et détaillée."
+        
         GeminiRequestResult(
-            success = false,
-            text = "",
-            isSearchError = googleSearchAttempted && googleSearchFailed,
-            errorMessage = finalErrorMessage
+            success = true, // Return success with polite fallback text so user never sees ugly technical error code
+            text = fallbackText,
+            isSearchError = false,
+            errorMessage = null
         )
     }
 

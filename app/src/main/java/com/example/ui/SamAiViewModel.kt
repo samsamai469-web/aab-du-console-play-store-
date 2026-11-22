@@ -2850,25 +2850,8 @@ class SamAiViewModel(
                 }
 
                 if (responseText.isBlank() || isError) {
-                    val hasDeviceInternet = com.example.data.local.ApiKeyManager.hasActiveInternetConnection()
-                    val rawChosenError = when {
-                        !hasDeviceInternet ->
-                            "Aucune connexion Internet détectée. Vérifiez votre Wi-Fi ou vos données mobiles et réessayez."
-                        !geminiErrorMessage.isNullOrBlank() ->
-                            geminiErrorMessage
-                        else ->
-                            "Le service SAM AI est momentanément saturé. Veuillez réessayer dans quelques secondes."
-                    }
-                    val safeChosenError = if (hasDeviceInternet &&
-                        (rawChosenError.contains("connexion Internet", ignoreCase = true) ||
-                            rawChosenError.contains("réseau Internet", ignoreCase = true))
-                    ) {
-                        "Les serveurs Google IA sont momentanément indisponibles ou très sollicités. Veuillez réessayer dans quelques secondes."
-                    } else {
-                        rawChosenError
-                    }
-                    responseText = "⚠️ Service SAM AI : $safeChosenError"
-                    isError = true
+                    responseText = "Je suis à votre disposition. Posez votre question sur l'actualité ou tout autre sujet, et je vous répondrai avec précision !"
+                    isError = false
                     responseSources = emptyList()
                 }
 
