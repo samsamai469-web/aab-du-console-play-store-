@@ -7,8 +7,22 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
-import android.util.Base64
 import android.util.Log
+import com.google.firebase.Firebase
+import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.AudioTranscriptionConfig
+import com.google.firebase.ai.type.GenerativeBackend
+import com.google.firebase.ai.type.InlineData
+import com.google.firebase.ai.type.InlineDataPart
+import com.google.firebase.ai.type.LiveServerContent
+import com.google.firebase.ai.type.LiveSession
+import com.google.firebase.ai.type.PublicPreviewAPI
+import com.google.firebase.ai.type.ResponseModality
+import com.google.firebase.ai.type.SpeechConfig
+import com.google.firebase.ai.type.Voice
+import com.google.firebase.ai.type.content
+import com.google.firebase.ai.type.liveGenerationConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -16,42 +30,25 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.add
-import kotlinx.serialization.json.addJsonObject
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonArray
-import kotlinx.serialization.json.putJsonObject
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.WebSocket
-import okhttp3.WebSocketListener
+import kotlinx.coroutines.withTimeout
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.log10
 import kotlin.math.sqrt
 
 /**
- * Client officiel et résilient Google Gemini Live pour Sam Traduction.
- * 
+ * Client officiel et résilient Google Gemini Live pour Sam Traduction (Firebase AI Logic).
+ *
  * Architecture :
  * 1. Capture microphone PCM 16kHz Little-Endian, calcul RMS pour affichage de niveau sonore VAD.
- * 2. Prise en charge officielle du modèle :
- *    - Mode 2 : gemini-3.5-live-translate-preview (Speech-to-Speech + Live Audio PCM 24kHz)
- *    - Mode 1 : gemini-3.5-transcribe-live (Transcription continue ultra-faible latence)
- * 3. Respect strict du protocole BidiGenerateContent : Attente systématique de setupComplete avant l'envoi des chunks audio.
- * 4. Bascule transparente et temps réel sur le moteur vocal adaptatif Android (SpeechRecognizer haute précision)
- *    pour une compatibilité 100% sans interruption quel que soit le réseau ou la langue (Français, Anglais, Mooré, Dioula, Haoussa).
- * 5. Intégration complète des 8 états d'application et journalisation diagnostic sécurisée sans fuite d'identifiants.
+ * 2. Modèles officiels Google Gemini Live :
+ *    - Principal : gemini-3.8-live (dernier modèle phare audio-to-audio en direct)
+ *    - Replis automatiques : gemini-3.1-flash-live-preview -> gemini-2.5-flash-native-audio-preview-12-2025
+ * 3. Connexion sécurisée via Firebase AI Logic + App Check (aucune clé API requise côté client).
+ * 4. Bascule transparente et temps réel sur le moteur vocal adaptatif (SpeechRecognitionManager + Gemini Audio)
+ *    pour une compatibilité 100% sans interruption (Français, Anglais, Mooré, Dioula, Haoussa).
  */
+@OptIn(PublicPreviewAPI::class)
 class GeminiLiveClient(
     private val context: Context,
     private val coroutineScope: CoroutineScope
@@ -60,11 +57,11 @@ class GeminiLiveClient(
     enum class LiveMode(val displayName: String, val modelId: String) {
         CONTROLLED_TRANSLATION(
             displayName = "Mode 1 — Traduction contrôlée",
-            modelId = "models/gemini-flash-latest"
+            modelId = "gemini-3.8-live"
         ),
         INSTANT_INTERPRETER(
             displayName = "Mode 2 — Interprète instantané",
-            modelId = "models/gemini-flash-latest"
+            modelId = "gemini-3.8-live"
         )
     }
 
@@ -78,27 +75,16 @@ class GeminiLiveClient(
         object Stopped : LiveSessionState()
         data class Error(val message: String) : LiveSessionState()
 
-        // Alias rétrocompatibles
         companion object {
             val Idle = Ready
             val Connecting = Ready
         }
     }
 
-    private val json = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-        coerceInputValues = true
+    private val firebaseAi by lazy {
+        Firebase.ai(backend = GenerativeBackend.googleAI())
     }
 
-    private val httpClient = OkHttpClient.Builder()
-        .connectTimeout(10, TimeUnit.SECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS)
-        .writeTimeout(10, TimeUnit.SECONDS)
-        .pingInterval(20, TimeUnit.SECONDS)
-        .build()
-
-    // Flux d'états observables
     private val _liveMode = MutableStateFlow(LiveMode.CONTROLLED_TRANSLATION)
     val liveMode = _liveMode.asStateFlow()
 
@@ -120,28 +106,24 @@ class GeminiLiveClient(
     private val _statusMessage = MutableStateFlow("Prêt pour la traduction")
     val statusMessage = _statusMessage.asStateFlow()
 
-    // Composants audio et réseau
     private var audioRecord: AudioRecord? = null
     private var recordingJob: Job? = null
-    private var webSocket: WebSocket? = null
+    private var receiveJob: Job? = null
+    private var liveSession: LiveSession? = null
     private val isRecording = AtomicBoolean(false)
     private val isSetupComplete = AtomicBoolean(false)
     private val isSessionActive = AtomicBoolean(false)
 
-    // AudioTrack pour la restitution PCM 24kHz
     private var audioTrack: AudioTrack? = null
 
-    // Callbacks
     private var onFinalTranscriptReceived: ((String) -> Unit)? = null
     private var onLiveTranslationReceived: ((String) -> Unit)? = null
     private var onErrorReceived: ((String) -> Unit)? = null
 
-    // Configurations actives
     private var activeSourceLang: String = "Français"
     private var activeTargetLang: String = "Anglais"
     private var activeApiKey: String = ""
 
-    // Gestionnaire de fallback natif
     private val speechRecognitionManager = SpeechRecognitionManager(context)
 
     companion object {
@@ -149,8 +131,9 @@ class GeminiLiveClient(
         private const val SAMPLE_RATE = 16000
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
-        private const val BUFFER_CHUNK_SIZE = 1600 // 100ms à 16kHz
-        private const val WEBSOCKET_URL_BASE = "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+        private const val BUFFER_CHUNK_SIZE = 1600
+        private const val LIVE_MODEL_SECONDARY = "gemini-3.1-flash-live-preview"
+        private const val LIVE_MODEL_FALLBACK = "gemini-2.5-flash-native-audio-preview-12-2025"
     }
 
     init {
@@ -192,22 +175,16 @@ class GeminiLiveClient(
         LiveTranslateLogger.logInit("Mode sélectionné : ${mode.displayName}")
     }
 
-    /**
-     * Démarrage officiel et unifié de la session de traduction vocale en temps réel.
-     * Garantit qu'une seule session est active à la fois.
-     */
     @Synchronized
     fun startLiveStream(
-        apiKey: String,
+        apiKey: String = "",
         sourceLang: String,
         targetLang: String,
         onFinalTranscript: (String) -> Unit,
         onLiveTranslation: (String) -> Unit,
         onError: (String) -> Unit
     ) {
-        LiveTranslateLogger.logInit("Démarrage d'une nouvelle session vocale ($sourceLang → $targetLang)")
-
-        // Arrêt propre de toute session précédente pour éviter les connexions concurrentes
+        LiveTranslateLogger.logInit("Démarrage session vocale ($sourceLang → $targetLang)")
         stopLiveStreamInternal()
 
         activeApiKey = apiKey.trim()
@@ -222,207 +199,155 @@ class GeminiLiveClient(
         _liveTranslation.value = ""
         isSessionActive.set(true)
 
-        if (_liveMode.value == LiveMode.CONTROLLED_TRANSLATION || activeApiKey.isBlank()) {
-            LiveTranslateLogger.logInit("Démarrage du moteur vocal natif Android haute précision")
+        if (_liveMode.value == LiveMode.CONTROLLED_TRANSLATION) {
+            LiveTranslateLogger.logInit("Démarrage du moteur vocal haute précision (Contrôlé)")
             startNativeFallback(sourceLang, targetLang)
             return
         }
 
-        connectWebSocket()
+        connectFirebaseLiveSession()
     }
 
-    private fun connectWebSocket() {
-        try {
-            _sessionState.value = LiveSessionState.Ready
-            _statusMessage.value = "Connexion à Gemini Live (${_liveMode.value.displayName})..."
-            LiveTranslateLogger.logWebSocket("Ouverture WebSocket Gemini Live")
+    private fun connectFirebaseLiveSession() {
+        _sessionState.value = LiveSessionState.Ready
+        _statusMessage.value = "Connexion à Google Gemini Live (${_liveMode.value.displayName})..."
+        LiveTranslateLogger.logWebSocket("Connexion Firebase AI LiveSession")
+        isSetupComplete.set(false)
 
-            val wsUrl = "$WEBSOCKET_URL_BASE?key=$activeApiKey"
-            val request = Request.Builder().url(wsUrl).build()
-            isSetupComplete.set(false)
-
-            webSocket = httpClient.newWebSocket(request, object : WebSocketListener() {
-                override fun onOpen(webSocket: WebSocket, response: Response) {
-                    LiveTranslateLogger.logWebSocket("Connexion établie. Envoi du Setup...")
-                    sendSetupFrame(webSocket)
-                }
-
-                override fun onMessage(webSocket: WebSocket, text: String) {
-                    handleServerMessage(webSocket, text)
-                }
-
-                override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                    LiveTranslateLogger.logError("WebSocket indisponible : ${t.message ?: "Erreur réseau"}")
-                    coroutineScope.launch(Dispatchers.Main) {
-                        _statusMessage.value = "Mode vocal adaptatif actif"
-                        startNativeFallback(activeSourceLang, activeTargetLang)
-                    }
-                }
-
-                override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                    LiveTranslateLogger.logWebSocket("WebSocket fermé code=$code, raison=$reason")
-                }
-            })
-        } catch (e: Exception) {
-            LiveTranslateLogger.logError("Exception lors de la connexion WebSocket : ${e.message}")
-            startNativeFallback(activeSourceLang, activeTargetLang)
-        }
-    }
-
-    /**
-     * Envoie la configuration initiale (Setup frame) conforme aux spécifications officielles.
-     */
-    private fun sendSetupFrame(ws: WebSocket) {
-        val currentMode = _liveMode.value
-        val modelTarget = currentMode.modelId
-        val targetCode = getBcp47Code(activeTargetLang)
-
-        val systemPrompt = if (currentMode == LiveMode.CONTROLLED_TRANSLATION) {
-            """
-            Tu es le modèle officiel Google Gemini Live (gemini-3.5-transcribe-live).
-            Ta mission : Transcrire fidèlement et mot à mot ce que dit l'utilisateur en $activeSourceLang.
-            Règles absolues :
-            - Fournis la transcription directe au format texte clair.
-            - N'ajoute aucun commentaire, aucun préambule et aucune méta-explication.
-            - Respecte scrupuleusement la ponctuation et la structure parlée.
+        coroutineScope.launch(Dispatchers.IO) {
+            val systemPrompt = """
+                Tu es l'interprète vocal instantané Google Gemini Live.
+                Ta mission : Traduire instantanément et fidèlement la parole de $activeSourceLang vers $activeTargetLang.
+                Règles absolues :
+                - Traduis avec exactitude et fluidité naturelle.
+                - Produis uniquement la traduction directe en $activeTargetLang, sans commentaires ni salutations superflues.
             """.trimIndent()
-        } else {
-            """
-            Tu es le modèle officiel Google Gemini Live Translate (gemini-3.5-live-translate-preview).
-            Ta mission : Traduire instantanément la parole de $activeSourceLang vers $activeTargetLang.
-            Règles absolues :
-            - Traduis avec exactitude et fluidité naturelle.
-            - Produis la traduction en audio et en texte sans fioritures.
-            """.trimIndent()
-        }
 
-        val setupJson = buildJsonObject {
-            putJsonObject("setup") {
-                put("model", modelTarget)
-                putJsonObject("generationConfig") {
-                    putJsonArray("responseModalities") {
-                        if (currentMode == LiveMode.INSTANT_INTERPRETER) {
-                            add("AUDIO")
-                        } else {
-                            add("TEXT")
-                        }
+            val config = liveGenerationConfig {
+                responseModality = ResponseModality.AUDIO
+                speechConfig = SpeechConfig(voice = Voice("Charon"))
+                inputAudioTranscription = AudioTranscriptionConfig()
+                outputAudioTranscription = AudioTranscriptionConfig()
+            }
+
+            val modelsToTry = listOf(_liveMode.value.modelId, LIVE_MODEL_SECONDARY, LIVE_MODEL_FALLBACK).distinct()
+            var connectedSession: LiveSession? = null
+            for (modelId in modelsToTry) {
+                if (!isSessionActive.get()) return@launch
+                try {
+                    val liveModel = firebaseAi.liveModel(
+                        modelName = modelId,
+                        generationConfig = config,
+                        systemInstruction = content { text(systemPrompt) }
+                    )
+                    connectedSession = withTimeout(10_000L) {
+                        liveModel.connect()
                     }
-                    if (currentMode == LiveMode.INSTANT_INTERPRETER) {
-                        putJsonObject("translationConfig") {
-                            put("targetLanguageCode", targetCode)
-                        }
-                        putJsonObject("speechConfig") {
-                            putJsonObject("voiceConfig") {
-                                putJsonObject("prebuiltVoiceConfig") {
-                                    put("voiceName", "Aoede")
-                                }
-                            }
-                        }
-                    }
-                }
-                putJsonObject("systemInstruction") {
-                    putJsonArray("parts") {
-                        addJsonObject {
-                            put("text", systemPrompt)
-                        }
-                    }
+                    LiveTranslateLogger.logWebSocket("LiveSession connectée ($modelId)")
+                    break
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Throwable) {
+                    LiveTranslateLogger.logError("LiveSession ($modelId) indisponible : ${e.message}")
                 }
             }
-        }.toString()
 
-        ws.send(setupJson)
-        LiveTranslateLogger.logWebSocket("Setup envoyé (Modèle: $modelTarget)")
-    }
-
-    /**
-     * Traite les trames entrantes de l'API Gemini Live.
-     */
-    private fun handleServerMessage(ws: WebSocket, jsonText: String) {
-        try {
-            val root = json.parseToJsonElement(jsonText).jsonObject
-
-            // 1. Détection de la confirmation SetupComplete
-            if (root.containsKey("setupComplete")) {
-                LiveTranslateLogger.logWebSocket("SetupComplete confirmé par l'API")
-                isSetupComplete.set(true)
+            if (connectedSession == null) {
                 coroutineScope.launch(Dispatchers.Main) {
-                    _sessionState.value = LiveSessionState.Listening
-                    _statusMessage.value = "Écoute en direct ($activeSourceLang)"
-                    LiveTranslateLogger.logState("Écoute")
-                    startAudioRecording(ws)
+                    _statusMessage.value = "Mode vocal adaptatif actif"
+                    startNativeFallback(activeSourceLang, activeTargetLang)
                 }
-                return
+                return@launch
             }
 
-            val serverContent = root["serverContent"]?.jsonObject
-            if (serverContent != null) {
-                val modelTurn = serverContent["modelTurn"]?.jsonObject
-                val parts = modelTurn?.get("parts")?.jsonArray
+            liveSession = connectedSession
+            isSetupComplete.set(true)
 
-                parts?.forEach { partEl ->
-                    val partObj = partEl.jsonObject
+            coroutineScope.launch(Dispatchers.Main) {
+                _sessionState.value = LiveSessionState.Listening
+                _statusMessage.value = "Écoute en direct ($activeSourceLang)"
+                LiveTranslateLogger.logState("Écoute")
+                startAudioRecording(connectedSession)
+            }
 
-                    // Flux textuel (Transcription ou Traduction en direct)
-                    val text = partObj["text"]?.jsonPrimitive?.contentOrNull
-                    if (!text.isNullOrBlank() && text != "null" && text != "undefined") {
+            receiveJob?.cancel()
+            receiveJob = coroutineScope.launch(Dispatchers.IO) {
+                try {
+                    connectedSession.receive().collect { serverMessage ->
+                        if (!isSessionActive.get()) return@collect
+                        if (serverMessage is LiveServerContent) {
+                            handleLiveServerMessage(serverMessage)
+                        }
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Throwable) {
+                    LiveTranslateLogger.logError("Flux Live interrompu : ${e.message}")
+                    if (isSessionActive.get()) {
                         coroutineScope.launch(Dispatchers.Main) {
-                            if (_liveMode.value == LiveMode.CONTROLLED_TRANSLATION) {
-                                _sessionState.value = LiveSessionState.Transcribing
-                                _interimTranscript.value = (_interimTranscript.value + " " + text).trim()
-                                LiveTranslateLogger.logTranscription(isFinal = false, text = _interimTranscript.value)
-                            } else {
-                                _sessionState.value = LiveSessionState.Translating
-                                _liveTranslation.value = (_liveTranslation.value + " " + text).trim()
-                                LiveTranslateLogger.logTranslation(activeSourceLang, activeTargetLang, _liveTranslation.value)
-                                onLiveTranslationReceived?.invoke(_liveTranslation.value)
-                            }
-                        }
-                    }
-
-                    // Flux audio traduit (PCM 24kHz)
-                    val inlineData = partObj["inlineData"]?.jsonObject
-                    val audioBase64 = inlineData?.get("data")?.jsonPrimitive?.contentOrNull
-                    if (!audioBase64.isNullOrBlank()) {
-                        try {
-                            val pcmBytes = Base64.decode(audioBase64, Base64.DEFAULT)
-                            LiveTranslateLogger.logAudioOutput("Réception chunk PCM 24kHz (${pcmBytes.size} octets)")
-                            if (audioTrack == null) initAudioTrack()
-                            audioTrack?.write(pcmBytes, 0, pcmBytes.size)
-                            coroutineScope.launch(Dispatchers.Main) {
-                                _sessionState.value = LiveSessionState.Speaking
-                                LiveTranslateLogger.logState("Lecture")
-                            }
-                        } catch (e: Exception) {
-                            LiveTranslateLogger.logError("Erreur lecture audio PCM : ${e.message}")
-                        }
-                    }
-                }
-
-                // Détection de fin de tour de parole
-                val turnComplete = serverContent["turnComplete"]?.jsonPrimitive?.contentOrNull?.equals("true", ignoreCase = true) ?: false
-                if (turnComplete) {
-                    coroutineScope.launch(Dispatchers.Main) {
-                        if (_liveMode.value == LiveMode.CONTROLLED_TRANSLATION) {
-                            val finalResult = _interimTranscript.value.trim()
-                            if (finalResult.isNotBlank()) {
-                                _finalTranscript.value = finalResult
-                                LiveTranslateLogger.logTranscription(isFinal = true, text = finalResult)
-                                onFinalTranscriptReceived?.invoke(finalResult)
-                            }
+                            _statusMessage.value = "Mode vocal adaptatif actif"
+                            startNativeFallback(activeSourceLang, activeTargetLang)
                         }
                     }
                 }
             }
-        } catch (e: Exception) {
-            LiveTranslateLogger.logError("Erreur parsing message serveur : ${e.message}")
         }
     }
 
-    /**
-     * Capture audio matérielle PCM 16kHz Little-Endian et transmission des chunks.
-     */
+    private fun handleLiveServerMessage(contentMsg: LiveServerContent) {
+        val inputChunk = contentMsg.inputTranscription?.text.orEmpty()
+        if (inputChunk.isNotBlank()) {
+            coroutineScope.launch(Dispatchers.Main) {
+                _sessionState.value = LiveSessionState.Transcribing
+                _interimTranscript.value = (_interimTranscript.value + " " + inputChunk).trim()
+                LiveTranslateLogger.logTranscription(isFinal = false, text = _interimTranscript.value)
+            }
+        }
+
+        val outputChunk = contentMsg.outputTranscription?.text.orEmpty()
+        if (outputChunk.isNotBlank()) {
+            coroutineScope.launch(Dispatchers.Main) {
+                _sessionState.value = LiveSessionState.Translating
+                _liveTranslation.value = (_liveTranslation.value + " " + outputChunk).trim()
+                LiveTranslateLogger.logTranslation(activeSourceLang, activeTargetLang, _liveTranslation.value)
+                onLiveTranslationReceived?.invoke(_liveTranslation.value)
+            }
+        }
+
+        val parts = contentMsg.content?.parts.orEmpty()
+        for (part in parts) {
+            if (part is InlineDataPart) {
+                val pcmBytes = part.inlineData
+                if (pcmBytes.isNotEmpty()) {
+                    try {
+                        if (audioTrack == null) initAudioTrack()
+                        audioTrack?.write(pcmBytes, 0, pcmBytes.size)
+                        coroutineScope.launch(Dispatchers.Main) {
+                            _sessionState.value = LiveSessionState.Speaking
+                            LiveTranslateLogger.logState("Lecture")
+                        }
+                    } catch (e: Exception) {
+                        LiveTranslateLogger.logError("Erreur lecture audio PCM : ${e.message}")
+                    }
+                }
+            }
+        }
+
+        if (contentMsg.turnComplete) {
+            coroutineScope.launch(Dispatchers.Main) {
+                val finalSrc = _interimTranscript.value.trim()
+                if (finalSrc.isNotBlank()) {
+                    _finalTranscript.value = finalSrc
+                    LiveTranslateLogger.logTranscription(isFinal = true, text = finalSrc)
+                    onFinalTranscriptReceived?.invoke(finalSrc)
+                }
+                _interimTranscript.value = ""
+            }
+        }
+    }
+
     @SuppressLint("MissingPermission")
-    private fun startAudioRecording(ws: WebSocket) {
+    private fun startAudioRecording(session: LiveSession) {
         if (!isSessionActive.get()) return
 
         try {
@@ -454,12 +379,10 @@ class GeminiLiveClient(
                 while (isActive && isRecording.get() && isSessionActive.get()) {
                     val readShorts = audioRecord?.read(audioBuffer, 0, BUFFER_CHUNK_SIZE) ?: 0
                     if (readShorts > 0) {
-                        // 1. Calcul précis du niveau RMS en dB pour retour visuel
                         var sum = 0.0
                         for (i in 0 until readShorts) {
                             val sample = audioBuffer[i]
                             sum += (sample * sample).toDouble()
-                            // Conversion en little-endian
                             byteBuffer[i * 2] = (sample.toInt() and 0xFF).toByte()
                             byteBuffer[i * 2 + 1] = ((sample.toInt() shr 8) and 0xFF).toByte()
                         }
@@ -468,21 +391,19 @@ class GeminiLiveClient(
                         val normalizedSound = ((db + 60.0) / 60.0).coerceIn(0.0, 1.0).toFloat()
                         _soundLevel.value = normalizedSound
 
-                        // 2. Envoi du chunk PCM 16kHz via WebSocket uniquement si setupComplete est confirmé
                         if (isSetupComplete.get()) {
-                            val base64Data = Base64.encodeToString(byteBuffer, 0, readShorts * 2, Base64.NO_WRAP)
-                            val realtimeChunk = buildJsonObject {
-                                putJsonObject("realtimeInput") {
-                                    putJsonArray("mediaChunks") {
-                                        addJsonObject {
-                                            put("mimeType", "audio/pcm;rate=$SAMPLE_RATE")
-                                            put("data", base64Data)
-                                        }
-                                    }
-                                }
-                            }.toString()
-
-                            ws.send(realtimeChunk)
+                            try {
+                                session.sendAudioRealtime(
+                                    InlineData(
+                                        data = byteBuffer.copyOf(readShorts * 2),
+                                        mimeType = "audio/pcm;rate=$SAMPLE_RATE"
+                                    )
+                                )
+                            } catch (ce: CancellationException) {
+                                throw ce
+                            } catch (e: Throwable) {
+                                LiveTranslateLogger.logError("Erreur envoi audio Live : ${e.message}")
+                            }
                         }
                     }
                 }
@@ -493,10 +414,6 @@ class GeminiLiveClient(
         }
     }
 
-    /**
-     * Moteur vocal haute précision Android (SpeechRecognizer sur UI Thread).
-     * Assure une transcription immédiate, mot à mot, sans risque de déconnexion.
-     */
     private fun startNativeFallback(sourceLang: String, targetLang: String) {
         if (!isSessionActive.get()) return
 
@@ -527,7 +444,6 @@ class GeminiLiveClient(
                 }
             )
 
-            // Collecte des résultats partiels pour affichage mot à mot
             coroutineScope.launch {
                 speechRecognitionManager.partialText.collect { partial ->
                     if (partial.isNotBlank()) {
@@ -537,7 +453,6 @@ class GeminiLiveClient(
                 }
             }
 
-            // Collecte du niveau sonore RMS
             coroutineScope.launch {
                 speechRecognitionManager.soundLevel.collect { lvl ->
                     _soundLevel.value = lvl
@@ -570,14 +485,6 @@ class GeminiLiveClient(
         }
     }
 
-    /**
-     * Arrêt complet, sécurisé et immédiat de tous les composants :
-     * - Arrêt du microphone
-     * - Arrêt de l'envoi audio
-     * - Fermeture WebSocket
-     * - Arrêt de la lecture audio
-     * - Nettoyage des ressources
-     */
     fun stopLiveStream() {
         stopLiveStreamInternal()
         _soundLevel.value = 0f
@@ -593,6 +500,16 @@ class GeminiLiveClient(
 
         recordingJob?.cancel()
         recordingJob = null
+        receiveJob?.cancel()
+        receiveJob = null
+
+        val sessionToClose = liveSession
+        liveSession = null
+        if (sessionToClose != null) {
+            coroutineScope.launch(Dispatchers.IO) {
+                try { sessionToClose.close() } catch (_: Throwable) {}
+            }
+        }
 
         try {
             audioRecord?.stop()
@@ -600,13 +517,6 @@ class GeminiLiveClient(
             audioRecord = null
         } catch (e: Exception) {
             Log.w(TAG, "AudioRecord stop : ${e.message}")
-        }
-
-        try {
-            webSocket?.close(1000, "User stopped stream")
-            webSocket = null
-        } catch (e: Exception) {
-            Log.w(TAG, "WebSocket close : ${e.message}")
         }
 
         speechRecognitionManager.stopListening()
@@ -634,20 +544,6 @@ class GeminiLiveClient(
             audioTrack = null
         } catch (e: Exception) {
             Log.w(TAG, "AudioTrack release : ${e.message}")
-        }
-    }
-
-    private fun getBcp47Code(langName: String): String {
-        return when (langName.trim().lowercase(Locale.ROOT)) {
-            "français", "francais", "french" -> "fr"
-            "anglais", "english" -> "en"
-            "haoussa", "hausa" -> "ha"
-            "mooré", "moore" -> "fr" // code de proximité
-            "dioula", "dyula" -> "fr"
-            "allemand", "german" -> "de"
-            "arabe", "arabic" -> "ar"
-            "espagnol", "spanish" -> "es"
-            else -> "en"
         }
     }
 }

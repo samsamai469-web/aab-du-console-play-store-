@@ -1,6 +1,5 @@
 
 import com.google.gms.googleservices.GoogleServicesPlugin.MissingGoogleServicesStrategy
-import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -30,29 +29,6 @@ android {
 
         testInstrumentationRunner =
             "androidx.test.runner.AndroidJUnitRunner"
-
-        val envProps = Properties()
-        val envFile = rootProject.file(".env")
-
-        if (envFile.exists()) {
-            envFile.reader().use { reader ->
-                envProps.load(reader)
-            }
-        }
-
-        val openAiKey = (
-            envProps.getProperty("OPENAI_API_KEY")
-                ?.takeIf { it.isNotBlank() }
-                ?: System.getenv("OPENAI_API_KEY")
-                    ?.takeIf { it.isNotBlank() }
-                ?: "MY_OPENAI_API_KEY"
-            ).trim().removeSurrounding("\"")
-
-        buildConfigField(
-            "String",
-            "OPENAI_API_KEY",
-            "\"$openAiKey\""
-        )
     }
 
     // ==========================================
@@ -218,7 +194,6 @@ secrets {
     defaultPropertiesFileName = ".env.example"
 
     ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
-    ignoreList.add("OPENAI_API_KEY")
 }
 
 // ==============================================
@@ -243,6 +218,10 @@ dependencies {
     // Firebase
     implementation(libs.firebase.auth)
     implementation(libs.firebase.firestore)
+    implementation(libs.firebase.ai)
+    implementation(libs.firebase.appcheck)
+    implementation(libs.firebase.appcheck.recaptcha)
+    implementation(libs.firebase.appcheck.debug)
     implementation("com.google.firebase:firebase-storage")
     implementation("com.google.firebase:firebase-functions")
 
@@ -282,7 +261,7 @@ dependencies {
     implementation(libs.logging.interceptor)
     implementation(libs.coil.compose)
     implementation(libs.youtube.player)
-    implementation(libs.generativeai)
+    // implementation(libs.generativeai) // Remplacé par Firebase AI Logic (libs.firebase.ai)
 
     // Credentials & Identity
     implementation(libs.androidx.credentials)

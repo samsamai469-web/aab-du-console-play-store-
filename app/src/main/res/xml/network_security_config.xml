@@ -11,7 +11,6 @@
     <domain-config cleartextTrafficPermitted="false">
         <domain includeSubdomains="true">googleapis.com</domain>
         <domain includeSubdomains="true">google.com</domain>
-        <domain includeSubdomains="true">openai.com</domain>
         <domain includeSubdomains="true">resend.com</domain>
         <trust-anchors>
             <certificates src="system" />

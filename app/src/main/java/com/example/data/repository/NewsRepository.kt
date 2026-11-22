@@ -16,18 +16,21 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import okhttp3.Dns
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.xmlpull.v1.XmlPullParser
-import java.io.InputStream
-import java.io.PushbackInputStream
 import java.io.StringReader
-import java.net.HttpURLConnection
+import java.net.Inet4Address
+import java.net.Inet6Address
+import java.net.InetAddress
 import java.net.URL
 import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.TimeUnit
 import java.util.regex.Pattern
-import java.util.zip.GZIPInputStream
 
 data class RssSource(
     val name: String,
@@ -42,11 +45,36 @@ object NewsRepository {
     private const val KEY_CACHED_ARTICLES = "cached_aib_rtb_articles"
     private const val KEY_LAST_FETCH_SUCCESS = "last_fetch_success_ts"
 
-    // Fenêtre stricte de rétention : 24 heures maximum pour éviter l'accumulation d'anciennes actualités
+    // Fenêtre principale de rétention (24h) avec repli étendu (7 jours) par média si un flux n'a rien publié dans les 24h
     const val RETENTION_WINDOW_MS = 24L * 60L * 60L * 1000L
+    const val EXTENDED_RETENTION_WINDOW_MS = 7L * 24L * 60L * 60L * 1000L
+    private const val FUTURE_CLOCK_SKEW_MS = 2L * 60L * 60L * 1000L
     private const val MAX_DISPLAYED_ARTICLES = 40
     private const val RTB_YOUTUBE_CHANNEL_ID = "UCZl9utbYlPMssMhgrGUqXZA"
+    private const val BROWSER_USER_AGENT =
+        "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
     private val refreshLock = Any()
+
+    private val ipv4PreferredDns = object : Dns {
+        override fun lookup(hostname: String): List<InetAddress> {
+            val all = Dns.SYSTEM.lookup(hostname)
+            val v4 = all.filterIsInstance<Inet4Address>()
+            val v6 = all.filterIsInstance<Inet6Address>()
+            return if (v4.isNotEmpty()) v4 + v6 else all
+        }
+    }
+
+    private val httpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .dns(ipv4PreferredDns)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .retryOnConnectionFailure(true)
+            .connectTimeout(7, TimeUnit.SECONDS)
+            .readTimeout(9, TimeUnit.SECONDS)
+            .callTimeout(12, TimeUnit.SECONDS)
+            .build()
+    }
 
     @Volatile
     private var inFlightRefresh: CompletableDeferred<List<NewsArticle>>? = null
@@ -92,14 +120,7 @@ object NewsRepository {
         val raw = appPrefs?.getString(KEY_CACHED_ARTICLES, null) ?: return
         try {
             val decoded = jsonSerializer.decodeFromString<List<NewsArticle>>(raw)
-            val now = System.currentTimeMillis()
-            val cutoff = now - RETENTION_WINDOW_MS
-            val freshOnly = balanceAibAndRtbArticles(
-                decoded
-                    .filter { isAllowedAibOrRtbSource(it.source) && it.timestamp in cutoff..(now + 60_000L) }
-                    .distinctBy { normalizeTitle(it.title) }
-                    .map { it.copy(date = formatRelativeDate(it.timestamp)) }
-            )
+            val freshOnly = applySourceAwareRetention(decoded)
             cachedArticles = freshOnly
             if (freshOnly.size != decoded.size) {
                 saveCachedArticlesToDisk(freshOnly)
@@ -123,16 +144,36 @@ object NewsRepository {
     }
 
     fun getCachedFreshNews(): List<NewsArticle> {
-        val now = System.currentTimeMillis()
-        val cutoff = now - RETENTION_WINDOW_MS
-        val fresh = balanceAibAndRtbArticles(
-            cachedArticles
-                .filter { isAllowedAibOrRtbSource(it.source) && it.timestamp >= cutoff }
-                .distinctBy { normalizeTitle(it.title) }
-                .map { it.copy(date = formatRelativeDate(it.timestamp)) }
-        )
+        val fresh = applySourceAwareRetention(cachedArticles)
         cachedArticles = fresh
         return fresh
+    }
+
+    private fun executeGetText(
+        url: String,
+        acceptHeader: String = "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7"
+    ): String? {
+        return try {
+            val req = Request.Builder()
+                .url(url)
+                .get()
+                .header("User-Agent", BROWSER_USER_AGENT)
+                .header("Accept", acceptHeader)
+                .header("Accept-Language", "fr-FR,fr;q=0.9,en;q=0.8")
+                .header("Cache-Control", "no-cache")
+                .build()
+            httpClient.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    Log.w(TAG, "HTTP ${resp.code} on $url")
+                    return@use null
+                }
+                val text = resp.body?.string()?.removePrefix("\uFEFF")?.trim().orEmpty()
+                text.ifBlank { null }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "HTTP GET error ($url): ${e.message}")
+            null
+        }
     }
 
     fun updateCustomMetaConfig(
@@ -174,19 +215,9 @@ object NewsRepository {
 
         try {
             val testUrl = "https://graph.facebook.com/v19.0/$cleanAib?fields=id,name&access_token=$cleanToken"
-            var connection: HttpURLConnection? = null
-            try {
-                connection = (URL(testUrl).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 6000
-                    readTimeout = 6000
-                    requestMethod = "GET"
-                    setRequestProperty("User-Agent", "SamTraduction/1.0 (Android)")
-                }
-                if (connection.responseCode in 200..299) {
-                    return@withContext Pair(true, "✅ Connexion Meta établie pour AIB ($cleanAib) et RTB ($cleanRtb).")
-                }
-            } finally {
-                connection?.disconnect()
+            val body = executeGetText(testUrl, "application/json")
+            if (!body.isNullOrBlank()) {
+                return@withContext Pair(true, "✅ Connexion Meta établie pour AIB ($cleanAib) et RTB ($cleanRtb).")
             }
             Pair(false, "Le jeton Meta n'a pas permis d'accéder à la page AIB ($cleanAib).")
         } catch (e: Exception) {
@@ -211,14 +242,14 @@ object NewsRepository {
         }
     }
 
-    // Flux officiels AIB (Agence d'Information du Burkina) — couverture étendue de toutes les rubriques
+    // Flux officiels AIB (Agence d'Information du Burkina) — couverture étendue en parallèle (aib.media & aib.bf)
     val AIB_SOURCES = listOf(
         RssSource(
             name = "AIB",
             feedUrls = listOf(
                 "https://www.aib.media/feed/",
-                "https://www.aib.media/?feed=rss2",
-                "https://aib.media/feed/"
+                "https://aib.media/feed/",
+                "https://www.aib.media/?feed=rss2"
             ),
             defaultCategory = "Burkina Faso",
             siteUrl = "https://www.aib.media"
@@ -226,8 +257,18 @@ object NewsRepository {
         RssSource(
             name = "AIB",
             feedUrls = listOf(
+                "https://www.aib.bf/feed/",
+                "https://aib.bf/feed/",
+                "https://www.aib.bf/?feed=rss2"
+            ),
+            defaultCategory = "Burkina Faso",
+            siteUrl = "https://www.aib.bf"
+        ),
+        RssSource(
+            name = "AIB",
+            feedUrls = listOf(
                 "https://www.aib.media/category/politique/feed/",
-                "https://aib.media/category/politique/feed/"
+                "https://www.aib.bf/category/politique/feed/"
             ),
             defaultCategory = "Burkina Faso",
             siteUrl = "https://www.aib.media"
@@ -237,7 +278,9 @@ object NewsRepository {
             feedUrls = listOf(
                 "https://www.aib.media/category/nation/feed/",
                 "https://www.aib.media/category/burkina-faso/feed/",
-                "https://www.aib.media/category/a-la-une/feed/"
+                "https://www.aib.media/category/a-la-une/feed/",
+                "https://www.aib.bf/category/nation/feed/",
+                "https://www.aib.bf/category/a-la-une/feed/"
             ),
             defaultCategory = "Burkina Faso",
             siteUrl = "https://www.aib.media"
@@ -246,7 +289,8 @@ object NewsRepository {
             name = "AIB",
             feedUrls = listOf(
                 "https://www.aib.media/category/regions/feed/",
-                "https://www.aib.media/category/securite/feed/"
+                "https://www.aib.media/category/securite/feed/",
+                "https://www.aib.bf/category/regions/feed/"
             ),
             defaultCategory = "Burkina Faso",
             siteUrl = "https://www.aib.media"
@@ -256,32 +300,45 @@ object NewsRepository {
             feedUrls = listOf(
                 "https://www.aib.media/category/societe/feed/",
                 "https://www.aib.media/category/sante/feed/",
-                "https://www.aib.media/category/education/feed/"
+                "https://www.aib.media/category/education/feed/",
+                "https://www.aib.bf/category/societe/feed/"
             ),
             defaultCategory = "Société",
             siteUrl = "https://www.aib.media"
         ),
         RssSource(
             name = "AIB",
-            feedUrls = listOf("https://www.aib.media/category/economie/feed/"),
+            feedUrls = listOf(
+                "https://www.aib.media/category/economie/feed/",
+                "https://www.aib.bf/category/economie/feed/"
+            ),
             defaultCategory = "Économie",
             siteUrl = "https://www.aib.media"
         ),
         RssSource(
             name = "AIB",
-            feedUrls = listOf("https://www.aib.media/category/culture/feed/"),
+            feedUrls = listOf(
+                "https://www.aib.media/category/culture/feed/",
+                "https://www.aib.bf/category/culture/feed/"
+            ),
             defaultCategory = "Culture & Arts",
             siteUrl = "https://www.aib.media"
         ),
         RssSource(
             name = "AIB",
-            feedUrls = listOf("https://www.aib.media/category/sport/feed/"),
+            feedUrls = listOf(
+                "https://www.aib.media/category/sport/feed/",
+                "https://www.aib.bf/category/sport/feed/"
+            ),
             defaultCategory = "Sport",
             siteUrl = "https://www.aib.media"
         ),
         RssSource(
             name = "AIB",
-            feedUrls = listOf("https://www.aib.media/category/international/feed/"),
+            feedUrls = listOf(
+                "https://www.aib.media/category/international/feed/",
+                "https://www.aib.bf/category/international/feed/"
+            ),
             defaultCategory = "Burkina Faso",
             siteUrl = "https://www.aib.media"
         )
@@ -411,20 +468,62 @@ object NewsRepository {
     }
 
     /**
-     * Récupère exclusivement les actualités en direct de l'AIB et de la RTB publiées
-     * au cours des dernières 24 heures. Coalesce les appels concurrents pour éviter les courses.
+     * Applique une rétention intelligente par média :
+     * - Priorité absolue aux actualités des dernières 24h pour chaque source (AIB et RTB).
+     * - Si une source (ex: AIB) compte moins de 3 dépêches sur les dernières 24h, conserve ses dépêches les plus récentes jusqu'à 7 jours
+     *   afin qu'« AIB Direct » ne soit jamais vide lorsqu'AIB publie avec un léger décalage.
+     */
+    private fun applySourceAwareRetention(
+        articles: List<NewsArticle>,
+        now: Long = System.currentTimeMillis()
+    ): List<NewsArticle> {
+        val cutoffPreferred = now - RETENTION_WINDOW_MS
+        val cutoffExtended = now - EXTENDED_RETENTION_WINDOW_MS
+        val maxAllowedFuture = now + FUTURE_CLOCK_SKEW_MS
+
+        val validPool = articles
+            .filter {
+                isAllowedAibOrRtbSource(it.source) &&
+                    it.title.isNotBlank() &&
+                    it.url.isNotBlank() &&
+                    it.timestamp in cutoffExtended..maxAllowedFuture
+            }
+            .distinctBy { normalizeTitle(it.title) }
+            .map { it.copy(date = formatRelativeDate(it.timestamp)) }
+
+        if (validPool.isEmpty()) return emptyList()
+
+        val aibAll = validPool.filter { it.source.contains("AIB", ignoreCase = true) }
+            .sortedByDescending { it.timestamp }
+        val rtbAll = validPool.filter { it.source.contains("RTB", ignoreCase = true) }
+            .sortedByDescending { it.timestamp }
+
+        val aib24h = aibAll.filter { it.timestamp >= cutoffPreferred }
+        val rtb24h = rtbAll.filter { it.timestamp >= cutoffPreferred }
+
+        val selectedAib = if (aib24h.size >= 3) {
+            aib24h
+        } else {
+            (aib24h + aibAll).distinctBy { normalizeTitle(it.title) }.take(20)
+        }
+
+        val selectedRtb = if (rtb24h.size >= 3) {
+            rtb24h
+        } else {
+            (rtb24h + rtbAll).distinctBy { normalizeTitle(it.title) }.take(20)
+        }
+
+        return balanceAibAndRtbArticles(selectedAib + selectedRtb, MAX_DISPLAYED_ARTICLES)
+    }
+
+    /**
+     * Récupère exclusivement les actualités en direct de l'AIB et de la RTB (24h en priorité, repli 7j si un média est calme).
+     * Coalesce les appels concurrents pour éviter les courses.
      */
     suspend fun getLiveNews(forceRefresh: Boolean = false): List<NewsArticle> = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
-        val cutoffRetention = now - RETENTION_WINDOW_MS
 
-        // Purge stricte de toute actualité dépassant 24h dans le cache mémoire
-        val prunedCache = balanceAibAndRtbArticles(
-            cachedArticles
-                .filter { isAllowedAibOrRtbSource(it.source) && it.timestamp >= cutoffRetention }
-                .distinctBy { normalizeTitle(it.title) }
-                .map { it.copy(date = formatRelativeDate(it.timestamp)) }
-        )
+        val prunedCache = applySourceAwareRetention(cachedArticles, now)
         cachedArticles = prunedCache
 
         var existingInFlight: CompletableDeferred<List<NewsArticle>>? = null
@@ -453,7 +552,7 @@ object NewsRepository {
 
         val currentDeferred = ownedDeferred!!
         try {
-            val finalArticles = executeBalancedNetworkRefresh(now, cutoffRetention)
+            val finalArticles = executeBalancedNetworkRefresh(now)
             currentDeferred.complete(finalArticles)
             finalArticles
         } catch (t: Throwable) {
@@ -469,10 +568,7 @@ object NewsRepository {
         }
     }
 
-    private suspend fun executeBalancedNetworkRefresh(
-        now: Long,
-        cutoffRetention: Long
-    ): List<NewsArticle> {
+    private suspend fun executeBalancedNetworkRefresh(now: Long): List<NewsArticle> {
         val allFetched = mutableListOf<NewsArticle>()
         var anySourceSucceeded = false
 
@@ -485,7 +581,7 @@ object NewsRepository {
                     withTimeoutOrNull(12000L) { fetchFromRtbRestApi() } ?: emptyList()
                 }
                 val aibApiDeferred = async {
-                    withTimeoutOrNull(12000L) { fetchFromWpRestApi() } ?: emptyList()
+                    withTimeoutOrNull(13000L) { fetchFromWpRestApi() } ?: emptyList()
                 }
                 val rtbYtAtomDeferred = async {
                     withTimeoutOrNull(8000L) { fetchFromRtbYouTubeAtomFeed() } ?: emptyList()
@@ -496,7 +592,16 @@ object NewsRepository {
                 val googleAibMirrorDeferred = async {
                     withTimeoutOrNull(9500L) {
                         fetchGoogleMirrorForSource(
-                            siteQuery = "(site:aib.media OR \"Agence d'Information du Burkina\")",
+                            siteQuery = "(site:aib.media OR site:aib.bf OR \"Agence d'Information du Burkina\")",
+                            canonicalSource = "AIB",
+                            requiredKeyword = "aib"
+                        )
+                    } ?: emptyList()
+                }
+                val bingAibMirrorDeferred = async {
+                    withTimeoutOrNull(8500L) {
+                        fetchBingNewsMirrorForSource(
+                            query = "(site:aib.media OR site:aib.bf OR \"Agence d'Information du Burkina\")",
                             canonicalSource = "AIB",
                             requiredKeyword = "aib"
                         )
@@ -518,7 +623,7 @@ object NewsRepository {
                 }
                 val aibRssDeferredList = AIB_SOURCES.map { source ->
                     async {
-                        withTimeoutOrNull(10000L) { fetchFromSource(source) } ?: emptyList()
+                        withTimeoutOrNull(11000L) { fetchFromSource(source) } ?: emptyList()
                     }
                 }
 
@@ -531,13 +636,15 @@ object NewsRepository {
                 val ytApiResults = ytApiDeferred.await()
                 val metaResults = metaDeferred.await()
 
-                // Priorité 2 : Miroirs Google News strictement limités à AIB et RTB
+                // Priorité 2 : Miroirs Google News & Bing News strictement limités à AIB et RTB
                 val googleAibResults = googleAibMirrorDeferred.await()
+                val bingAibResults = bingAibMirrorDeferred.await()
                 val googleRtbResults = googleRtbMirrorDeferred.await()
 
                 allFetched.addAll(aibResults)
                 allFetched.addAll(aibRssResults)
                 allFetched.addAll(googleAibResults)
+                allFetched.addAll(bingAibResults)
                 allFetched.addAll(rtbResults)
                 allFetched.addAll(rtbRssResults)
                 allFetched.addAll(rtbYtAtomResults)
@@ -548,7 +655,8 @@ object NewsRepository {
                 if (rtbResults.isNotEmpty() || aibResults.isNotEmpty() ||
                     rtbRssResults.isNotEmpty() || aibRssResults.isNotEmpty() ||
                     rtbYtAtomResults.isNotEmpty() || ytApiResults.isNotEmpty() ||
-                    metaResults.isNotEmpty() || googleAibResults.isNotEmpty() || googleRtbResults.isNotEmpty()
+                    metaResults.isNotEmpty() || googleAibResults.isNotEmpty() ||
+                    bingAibResults.isNotEmpty() || googleRtbResults.isNotEmpty()
                 ) {
                     anySourceSucceeded = true
                 }
@@ -557,19 +665,26 @@ object NewsRepository {
             Log.e(TAG, "Error fetching AIB & RTB live feeds", e)
         }
 
-        // Deuxième passe rapide si l'AIB a manqué ou si aucun flux n'a encore répondu (ex: réveil réseau mobile)
-        val hasAnyFreshAib = allFetched.any {
-            it.source.contains("AIB", ignoreCase = true) && it.timestamp in cutoffRetention..(now + 60_000L)
+        // Deuxième passe multi-canaux si l'AIB a moins de 3 dépêches ou si aucun flux n'a encore répondu
+        val extendedCutoff = now - EXTENDED_RETENTION_WINDOW_MS
+        val aibCountSoFar = allFetched.count {
+            it.source.contains("AIB", ignoreCase = true) &&
+                it.timestamp in extendedCutoff..(now + FUTURE_CLOCK_SKEW_MS)
         }
-        if (!hasAnyFreshAib || allFetched.isEmpty()) {
+        if (aibCountSoFar < 3 || allFetched.isEmpty()) {
             try {
                 supervisorScope {
+                    val aibHtmlFallbackDeferred = async {
+                        withTimeoutOrNull(11000L) { fetchAibFromHtmlPages() } ?: emptyList()
+                    }
                     val aibLightRetry = async {
-                        withTimeoutOrNull(5500L) {
+                        withTimeoutOrNull(8000L) {
                             fetchWordPressPosts(
                                 endpoints = listOf(
                                     "https://aib.media/wp-json/wp/v2/posts?per_page=25",
-                                    "https://www.aib.media/index.php?rest_route=/wp/v2/posts&per_page=25"
+                                    "https://www.aib.bf/wp-json/wp/v2/posts?per_page=25",
+                                    "https://www.aib.media/index.php?rest_route=/wp/v2/posts&per_page=25",
+                                    "https://www.aib.bf/index.php?rest_route=/wp/v2/posts&per_page=25"
                                 ),
                                 sourceName = "AIB",
                                 idPrefix = "aib_wp_fast",
@@ -578,9 +693,18 @@ object NewsRepository {
                         } ?: emptyList()
                     }
                     val aibMirrorRetry = async {
-                        withTimeoutOrNull(5500L) {
+                        withTimeoutOrNull(7500L) {
                             fetchGoogleMirrorForSource(
-                                siteQuery = "\"aib.media\" OR \"Agence d'Information du Burkina\"",
+                                siteQuery = "(\"Agence d'Information du Burkina\" OR (AIB \"Burkina Faso\") OR \"aib.media\" OR \"aib.bf\")",
+                                canonicalSource = "AIB",
+                                requiredKeyword = "aib"
+                            )
+                        } ?: emptyList()
+                    }
+                    val aibBingRetry = async {
+                        withTimeoutOrNull(7000L) {
+                            fetchBingNewsMirrorForSource(
+                                query = "\"Agence d'Information du Burkina\" OR (AIB \"Burkina Faso\")",
                                 canonicalSource = "AIB",
                                 requiredKeyword = "aib"
                             )
@@ -588,7 +712,7 @@ object NewsRepository {
                     }
                     val rtbRetry: Deferred<List<NewsArticle>>? = if (allFetched.isEmpty()) {
                         async {
-                            withTimeoutOrNull(5500L) {
+                            withTimeoutOrNull(6500L) {
                                 fetchGoogleMirrorForSource(
                                     siteQuery = "site:rtb.bf OR \"Radiodiffusion Télévision du Burkina\"",
                                     canonicalSource = "RTB",
@@ -598,7 +722,10 @@ object NewsRepository {
                         }
                     } else null
 
-                    val retryAib = aibLightRetry.await() + aibMirrorRetry.await()
+                    val retryAib = aibHtmlFallbackDeferred.await() +
+                        aibLightRetry.await() +
+                        aibMirrorRetry.await() +
+                        aibBingRetry.await()
                     val retryRtb = rtbRetry?.await() ?: emptyList()
                     if (retryAib.isNotEmpty() || retryRtb.isNotEmpty()) {
                         anySourceSucceeded = true
@@ -613,23 +740,12 @@ object NewsRepository {
 
         lastFetchHadNetworkSuccess = anySourceSucceeded
 
-        val validCandidates = allFetched
-            .filter {
-                isAllowedAibOrRtbSource(it.source) &&
-                    it.title.isNotBlank() &&
-                    it.url.isNotBlank() &&
-                    it.timestamp in cutoffRetention..(now + 60_000L)
-            }
-            .distinctBy { normalizeTitle(it.title) }
-            .map { it.copy(date = formatRelativeDate(it.timestamp)) }
-
-        val freshFetched = balanceAibAndRtbArticles(validCandidates, MAX_DISPLAYED_ARTICLES)
+        val freshFetched = applySourceAwareRetention(allFetched, now)
 
         val finalArticles = if (freshFetched.isNotEmpty()) {
             saveCachedArticlesToDisk(freshFetched)
             freshFetched
         } else {
-            // Si hors-ligne ou erreur réseau temporaire, ne conserver que le cache encore valide (< 24h)
             getCachedFreshNews()
         }
 
@@ -643,21 +759,12 @@ object NewsRepository {
     private fun fetchFromRtbYouTubeAtomFeed(): List<NewsArticle> {
         val articles = mutableListOf<NewsArticle>()
         val feedUrl = "https://www.youtube.com/feeds/videos.xml?channel_id=$RTB_YOUTUBE_CHANNEL_ID"
-        var connection: HttpURLConnection? = null
         try {
-            connection = (URL(feedUrl).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 7000
-                readTimeout = 7000
-                instanceFollowRedirects = true
-                requestMethod = "GET"
-                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) SamAI/2.0")
-            }
-            if (connection.responseCode !in 200..299) return emptyList()
-            val xml = connection.inputStream.bufferedReader().use { it.readText() }
-            if (xml.isBlank()) return emptyList()
+            val xml = executeGetText(feedUrl, "application/atom+xml, application/xml, text/xml, */*")
+                ?: return emptyList()
 
             val now = System.currentTimeMillis()
-            val cutoffRetention = now - RETENTION_WINDOW_MS
+            val cutoffRetention = now - EXTENDED_RETENTION_WINDOW_MS
 
             val entryMatcher = Pattern.compile("<entry>(.*?)</entry>", Pattern.DOTALL).matcher(xml)
             while (entryMatcher.find()) {
@@ -701,15 +808,13 @@ object NewsRepository {
             }
         } catch (e: Exception) {
             Log.w(TAG, "RTB YouTube Atom feed error: ${e.message}")
-        } finally {
-            connection?.disconnect()
         }
         return articles
     }
 
     /**
-     * Miroir Google News RSS strictement filtré sur AIB (aib.media) ou RTB (rtb.bf)
-     * afin de garantir les dépêches des dernières 24h même si le serveur direct est lent.
+     * Miroir Google News RSS strictement filtré sur AIB (aib.media / aib.bf) ou RTB (rtb.bf)
+     * afin de garantir les dépêches récentes même si le serveur direct est lent ou bloqué.
      */
     private fun fetchGoogleMirrorForSource(
         siteQuery: String,
@@ -717,24 +822,15 @@ object NewsRepository {
         requiredKeyword: String
     ): List<NewsArticle> {
         val articles = mutableListOf<NewsArticle>()
-        val encoded = URLEncoder.encode("$siteQuery when:2d", "UTF-8")
+        val encoded = URLEncoder.encode("$siteQuery when:7d", "UTF-8")
         val endpoint = "https://news.google.com/rss/search?q=$encoded&hl=fr&gl=BF&ceid=BF:fr"
-        var connection: HttpURLConnection? = null
 
         try {
-            connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 6000
-                readTimeout = 6500
-                instanceFollowRedirects = true
-                requestMethod = "GET"
-                setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 14) SamAI/2.0")
-            }
-            if (connection.responseCode !in 200..299) return emptyList()
-            val xml = readStreamTextSafely(connection.inputStream, connection.contentEncoding)
-            if (xml.isBlank()) return emptyList()
+            val xml = executeGetText(endpoint, "application/rss+xml, application/xml, text/xml, */*")
+                ?: return emptyList()
 
             val now = System.currentTimeMillis()
-            val cutoffRetention = now - RETENTION_WINDOW_MS
+            val cutoffRetention = now - EXTENDED_RETENTION_WINDOW_MS
             val isAibTarget = requiredKeyword.equals("aib", ignoreCase = true)
             val wordRegex = Regex("\\b${Regex.escape(requiredKeyword)}\\b", RegexOption.IGNORE_CASE)
 
@@ -744,24 +840,34 @@ object NewsRepository {
                 val rawTitle = cleanHtml(extractRegexGroup(item, "<title[^>]*>(.*?)</title>"))
                 val link = cleanHtml(extractRegexGroup(item, "<link[^>]*>(.*?)</link>"))
                 val pubDate = extractRegexGroup(item, "<pubDate[^>]*>(.*?)</pubDate>").trim()
+                val rawDesc = cleanHtml(extractRegexGroup(item, "<description[^>]*>(.*?)</description>"))
                 val sourceTag = cleanHtml(extractRegexGroup(item, "<source[^>]*>(.*?)</source>"))
                 val sourceUrlAttr = extractRegexGroup(item, "<source[^>]+url=[\"']([^\"']+)[\"']")
 
-                // Vérifier strictement que la dépêche provient uniquement d'AIB ou de la RTB
-                val domainHint = if (isAibTarget) "aib.media" else "rtb.bf"
+                val domainMatches = if (isAibTarget) {
+                    sourceUrlAttr.contains("aib.media", ignoreCase = true) ||
+                        sourceUrlAttr.contains("aib.bf", ignoreCase = true) ||
+                        link.contains("aib.media", ignoreCase = true) ||
+                        link.contains("aib.bf", ignoreCase = true) ||
+                        rawDesc.contains("aib.media", ignoreCase = true) ||
+                        rawDesc.contains("aib.bf", ignoreCase = true)
+                } else {
+                    sourceUrlAttr.contains("rtb.bf", ignoreCase = true) ||
+                        link.contains("rtb.bf", ignoreCase = true)
+                }
+
                 val agencyFullName = if (isAibTarget) "Agence d'Information du Burkina" else "Radiodiffusion Télévision du Burkina"
-                val sourceMatches = wordRegex.containsMatchIn(sourceTag) ||
+                val sourceMatches = domainMatches ||
+                    wordRegex.containsMatchIn(sourceTag) ||
                     sourceTag.contains(agencyFullName, ignoreCase = true) ||
-                    sourceUrlAttr.contains(domainHint, ignoreCase = true) ||
                     wordRegex.containsMatchIn(sourceUrlAttr) ||
-                    link.contains(domainHint, ignoreCase = true) ||
-                    wordRegex.containsMatchIn(rawTitle)
+                    wordRegex.containsMatchIn(rawTitle) ||
+                    rawDesc.contains(agencyFullName, ignoreCase = true)
 
                 if (!sourceMatches || rawTitle.isBlank() || link.isBlank()) continue
 
-                // Google News ajoute souvent " - AIB" ou " - RTB" à la fin du titre
                 val cleanTitle = rawTitle
-                    .replace(Regex("\\s*-\\s*(AIB|Agence d'Information du Burkina|RTB|Radiodiffusion Télévision du Burkina).*$", RegexOption.IGNORE_CASE), "")
+                    .replace(Regex("\\s*-\\s*(AIB|Agence d'Information du Burkina|aib\\.media|aib\\.bf|RTB|Radiodiffusion Télévision du Burkina).*$", RegexOption.IGNORE_CASE), "")
                     .trim()
                     .ifBlank { rawTitle }
 
@@ -769,33 +875,421 @@ object NewsRepository {
                 if (ts < cutoffRetention) continue
 
                 val category = inferCategory(cleanTitle, canonicalSource)
-                val summary = if (canonicalSource == "RTB") {
+                val defaultSummary = if (canonicalSource == "RTB") {
                     "Information officielle publiée par la Radiodiffusion Télévision du Burkina (RTB)."
                 } else {
                     "Dépêche officielle publiée par l'Agence d'Information du Burkina (AIB)."
+                }
+                val cleanSummary = if (rawDesc.length > 35 && !rawDesc.equals(rawTitle, ignoreCase = true)) {
+                    if (rawDesc.length > 220) rawDesc.take(217) + "..." else rawDesc
+                } else {
+                    defaultSummary
                 }
 
                 articles.add(
                     NewsArticle(
                         id = "${requiredKeyword}_gn_${link.hashCode()}",
                         title = cleanTitle,
-                        summary = summary,
+                        summary = cleanSummary,
                         category = category,
                         date = formatRelativeDate(ts),
                         source = canonicalSource,
                         url = link,
                         imageUrl = "",
                         timestamp = ts,
-                        fullContent = "$cleanTitle\n\n$summary"
+                        fullContent = "$cleanTitle\n\n$cleanSummary"
                     )
                 )
             }
         } catch (e: Exception) {
             Log.w(TAG, "Google News mirror ($canonicalSource) error: ${e.message}")
-        } finally {
-            connection?.disconnect()
         }
         return articles
+    }
+
+    /**
+     * Miroir secondaire Bing News RSS pour AIB / RTB lorsque les flux directs sont indisponibles.
+     */
+    private fun fetchBingNewsMirrorForSource(
+        query: String,
+        canonicalSource: String,
+        requiredKeyword: String
+    ): List<NewsArticle> {
+        val articles = mutableListOf<NewsArticle>()
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        val endpoint = "https://www.bing.com/news/search?q=$encoded&format=rss&setlang=fr-fr"
+
+        try {
+            val xml = executeGetText(endpoint, "application/rss+xml, application/xml, text/xml, */*")
+                ?: return emptyList()
+
+            val now = System.currentTimeMillis()
+            val cutoffRetention = now - EXTENDED_RETENTION_WINDOW_MS
+            val isAibTarget = requiredKeyword.equals("aib", ignoreCase = true)
+            val wordRegex = Regex("\\b${Regex.escape(requiredKeyword)}\\b", RegexOption.IGNORE_CASE)
+
+            val itemMatcher = Pattern.compile("<item>(.*?)</item>", Pattern.DOTALL).matcher(xml)
+            while (itemMatcher.find()) {
+                val item = itemMatcher.group(1) ?: continue
+                val rawTitle = cleanHtml(extractRegexGroup(item, "<title[^>]*>(.*?)</title>"))
+                val rawLink = cleanHtml(extractRegexGroup(item, "<link[^>]*>(.*?)</link>"))
+                val pubDate = extractRegexGroup(item, "<pubDate[^>]*>(.*?)</pubDate>").trim()
+                val rawDesc = cleanHtml(extractRegexGroup(item, "<description[^>]*>(.*?)</description>"))
+                val newsSource = cleanHtml(extractRegexGroup(item, "<News:Source[^>]*>(.*?)</News:Source>"))
+                val newsImage = sanitizeImageUrl(extractRegexGroup(item, "<News:Image[^>]*>(.*?)</News:Image>"))
+
+                // Bing News encapsule parfois l'URL finale dans ?url=https%3a%2f%2f...
+                val decodedLink = try {
+                    val urlParam = Regex("[?&]url=([^&]+)").find(rawLink)?.groupValues?.get(1)
+                    if (!urlParam.isNullOrBlank()) java.net.URLDecoder.decode(urlParam, "UTF-8") else rawLink
+                } catch (_: Exception) {
+                    rawLink
+                }
+
+                val agencyFullName = if (isAibTarget) "Agence d'Information du Burkina" else "Radiodiffusion Télévision du Burkina"
+                val domainMatches = if (isAibTarget) {
+                    decodedLink.contains("aib.media", ignoreCase = true) ||
+                        decodedLink.contains("aib.bf", ignoreCase = true) ||
+                        newsSource.contains("aib", ignoreCase = true)
+                } else {
+                    decodedLink.contains("rtb.bf", ignoreCase = true) ||
+                        newsSource.contains("rtb", ignoreCase = true)
+                }
+
+                val matchesSource = domainMatches ||
+                    wordRegex.containsMatchIn(newsSource) ||
+                    newsSource.contains(agencyFullName, ignoreCase = true) ||
+                    wordRegex.containsMatchIn(rawTitle) ||
+                    rawDesc.contains(agencyFullName, ignoreCase = true)
+
+                if (!matchesSource || rawTitle.isBlank() || decodedLink.isBlank()) continue
+
+                val ts = parsePubDateToMillis(pubDate)
+                if (ts < cutoffRetention) continue
+
+                val cleanTitle = rawTitle
+                    .replace(Regex("\\s*-\\s*(AIB|Agence d'Information du Burkina|RTB).*$", RegexOption.IGNORE_CASE), "")
+                    .trim()
+                    .ifBlank { rawTitle }
+                val summary = if (rawDesc.isNotBlank()) {
+                    if (rawDesc.length > 220) rawDesc.take(217) + "..." else rawDesc
+                } else {
+                    "Dépêche officielle publiée par l'Agence d'Information du Burkina (AIB)."
+                }
+
+                articles.add(
+                    NewsArticle(
+                        id = "${requiredKeyword}_bing_${decodedLink.hashCode()}",
+                        title = cleanTitle,
+                        summary = summary,
+                        category = inferCategory(cleanTitle, canonicalSource),
+                        date = formatRelativeDate(ts),
+                        source = canonicalSource,
+                        url = decodedLink,
+                        imageUrl = newsImage,
+                        timestamp = ts,
+                        fullContent = if (rawDesc.isNotBlank()) "$cleanTitle\n\n$rawDesc" else summary
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Bing News mirror ($canonicalSource) error: ${e.message}")
+        }
+        return articles
+    }
+
+    /**
+     * Repli HTML direct sur les pages d'accueil d'AIB (aib.media / aib.bf)
+     * au cas où wp-json et /feed/ seraient temporairement limités ou bloqués par un pare-feu WordPress.
+     */
+    private suspend fun fetchAibFromHtmlPages(): List<NewsArticle> {
+        val candidatePages = listOf(
+            "https://www.aib.media/",
+            "https://aib.media/",
+            "https://www.aib.bf/",
+            "https://aib.bf/",
+            "https://www.aib.media/category/a-la-une/",
+            "https://www.aib.media/category/burkina-faso/"
+        )
+
+        val discovered = linkedMapOf<String, NewsArticle>()
+        val now = System.currentTimeMillis()
+
+        for (pageUrl in candidatePages) {
+            val html = executeGetText(pageUrl, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                ?: continue
+            val parsed = parseAibHtmlListings(html, pageUrl, now)
+            for (art in parsed) {
+                discovered.putIfAbsent(normalizeTitle(art.title), art)
+            }
+            if (discovered.size >= 12) break
+        }
+
+        if (discovered.isEmpty()) return emptyList()
+
+        // Enrichir les 8 premières dépêches avec leur vraie date, image og:image et paragraphes complets
+        val topList = discovered.values.toList()
+        val toEnrich = topList.take(8)
+        val remainder = topList.drop(8)
+
+        val enrichedTop = supervisorScope {
+            toEnrich.mapIndexed { idx, base ->
+                async {
+                    withTimeoutOrNull(4500L) {
+                        enrichAibHtmlArticle(base, now, idx)
+                    } ?: base.copy(timestamp = if (base.timestamp > 0L) base.timestamp else (now - idx * 20L * 60_000L))
+                }
+            }.awaitAll()
+        }
+
+        return (enrichedTop + remainder).map { art ->
+            val safeTs = if (art.timestamp > 0L) art.timestamp else now
+            art.copy(
+                timestamp = safeTs,
+                date = formatRelativeDate(safeTs)
+            )
+        }
+    }
+
+    private fun parseAibHtmlListings(html: String, baseUrl: String, now: Long): List<NewsArticle> {
+        val list = mutableListOf<NewsArticle>()
+        val seenUrls = HashSet<String>()
+        val baseHostUrl = try {
+            val u = URL(baseUrl)
+            "${u.protocol}://${u.host}"
+        } catch (_: Exception) {
+            "https://www.aib.media"
+        }
+
+        fun resolveAibUrl(rawHref: String): String {
+            val trimmed = rawHref.trim()
+            if (trimmed.isBlank() || trimmed.startsWith("#") || trimmed.startsWith("javascript:", true)) return ""
+            return when {
+                trimmed.startsWith("http://", true) -> "https://" + trimmed.removePrefix("http://").removePrefix("HTTP://")
+                trimmed.startsWith("https://", true) -> trimmed
+                trimmed.startsWith("//") -> "https:$trimmed"
+                trimmed.startsWith("/") -> "$baseHostUrl$trimmed"
+                else -> "$baseHostUrl/$trimmed"
+            }
+        }
+
+        fun isArticleUrl(url: String): Boolean {
+            val lower = url.lowercase(Locale.ROOT)
+            if (!lower.contains("aib.media") && !lower.contains("aib.bf")) return false
+            val excluded = listOf(
+                "/category/", "/tag/", "/author/", "/page/", "/wp-content/", "/wp-json/",
+                "/wp-admin/", "/feed", "facebook.com", "twitter.com", "youtube.com",
+                "/contact", "/a-propos", "/qui-sommes-nous", "/mentions-legales", "/search"
+            )
+            if (excluded.any { lower.contains(it) }) return false
+            val path = try { URL(url).path.trim('/') } catch (_: Exception) { "" }
+            return path.length >= 10 && path.contains("-")
+        }
+
+        // Stratégie 1 : blocs <article>...</article>
+        val articleMatcher = Pattern.compile("<article\\b[^>]*>(.*?)</article>", Pattern.DOTALL or Pattern.CASE_INSENSITIVE).matcher(html)
+        var rank = 0
+        while (articleMatcher.find() && list.size < 20) {
+            val block = articleMatcher.group(1) ?: continue
+            val headingLinkMatcher = Pattern.compile(
+                "<h[1-5][^>]*>.*?<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
+                Pattern.DOTALL or Pattern.CASE_INSENSITIVE
+            ).matcher(block)
+            val fallbackLinkMatcher = Pattern.compile(
+                "<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
+                Pattern.DOTALL or Pattern.CASE_INSENSITIVE
+            ).matcher(block)
+
+            var articleUrl = ""
+            var title = ""
+            if (headingLinkMatcher.find()) {
+                articleUrl = resolveAibUrl(headingLinkMatcher.group(1).orEmpty())
+                title = cleanHtml(headingLinkMatcher.group(2).orEmpty())
+            } else {
+                while (fallbackLinkMatcher.find()) {
+                    val candUrl = resolveAibUrl(fallbackLinkMatcher.group(1).orEmpty())
+                    val candTitle = cleanHtml(fallbackLinkMatcher.group(2).orEmpty())
+                    if (isArticleUrl(candUrl) && candTitle.length >= 18) {
+                        articleUrl = candUrl
+                        title = candTitle
+                        break
+                    }
+                }
+            }
+
+            if (!isArticleUrl(articleUrl) || title.length < 18 || !seenUrls.add(articleUrl)) continue
+
+            val rawDateAttr = extractRegexGroup(block, "<time[^>]+datetime=[\"']([^\"']+)[\"']")
+                .ifBlank { extractRegexGroup(block, "<time[^>]*>(.*?)</time>") }
+            val parsedTs = parseFlexibleDateToMillis(rawDateAttr)
+                .takeIf { it > 0L }
+                ?: extractDateFromUrl(articleUrl)
+                ?: (now - rank * 25L * 60_000L)
+
+            val imgUrl = extractBestImageFromHtmlBlock(block, baseHostUrl)
+            val excerpt = cleanHtml(extractRegexGroup(block, "<p[^>]*>(.*?)</p>"))
+            val summary = if (excerpt.length >= 25) {
+                if (excerpt.length > 220) excerpt.take(217) + "..." else excerpt
+            } else {
+                "Dépêche officielle publiée par l'Agence d'Information du Burkina (AIB)."
+            }
+
+            list.add(
+                NewsArticle(
+                    id = "aib_html_${articleUrl.hashCode()}",
+                    title = title,
+                    summary = summary,
+                    category = inferCategory(title, "AIB"),
+                    date = formatRelativeDate(parsedTs),
+                    source = "AIB",
+                    url = articleUrl,
+                    imageUrl = imgUrl,
+                    timestamp = parsedTs,
+                    fullContent = if (excerpt.isNotBlank()) "$title\n\n$excerpt" else summary
+                )
+            )
+            rank++
+        }
+
+        // Stratégie 2 : titres <h1>..<h5> contenant un lien d'article AIB si peu de <article>
+        if (list.size < 4) {
+            val hMatcher = Pattern.compile(
+                "<h[1-5][^>]*>(?:(?!</h[1-5]>).)*?<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>(.*?)</a>",
+                Pattern.DOTALL or Pattern.CASE_INSENSITIVE
+            ).matcher(html)
+            while (hMatcher.find() && list.size < 20) {
+                val articleUrl = resolveAibUrl(hMatcher.group(1).orEmpty())
+                val title = cleanHtml(hMatcher.group(2).orEmpty())
+                if (!isArticleUrl(articleUrl) || title.length < 18 || !seenUrls.add(articleUrl)) continue
+                val ts = extractDateFromUrl(articleUrl) ?: (now - rank * 25L * 60_000L)
+                val summary = "Dépêche officielle publiée par l'Agence d'Information du Burkina (AIB)."
+                list.add(
+                    NewsArticle(
+                        id = "aib_html_${articleUrl.hashCode()}",
+                        title = title,
+                        summary = summary,
+                        category = inferCategory(title, "AIB"),
+                        date = formatRelativeDate(ts),
+                        source = "AIB",
+                        url = articleUrl,
+                        imageUrl = "",
+                        timestamp = ts,
+                        fullContent = "$title\n\n$summary"
+                    )
+                )
+                rank++
+            }
+        }
+
+        return list
+    }
+
+    private fun enrichAibHtmlArticle(base: NewsArticle, now: Long, fallbackIndex: Int): NewsArticle {
+        val html = executeGetText(base.url, "text/html,application/xhtml+xml,*/*;q=0.8")
+            ?: return base
+
+        val metaPublished = extractRegexGroup(html, "<meta[^>]+property=[\"']article:published_time[\"'][^>]+content=[\"']([^\"']+)[\"']")
+            .ifBlank { extractRegexGroup(html, "<meta[^>]+content=[\"']([^\"']+)[\"'][^>]+property=[\"']article:published_time[\"']") }
+            .ifBlank { extractRegexGroup(html, "\"datePublished\"\\s*:\\s*\"([^\"]+)\"") }
+            .ifBlank { extractRegexGroup(html, "<time[^>]+datetime=[\"']([^\"']+)[\"']") }
+        val realTs = parseFlexibleDateToMillis(metaPublished)
+            .takeIf { it > 0L }
+            ?: base.timestamp.takeIf { it > 0L }
+            ?: (now - fallbackIndex * 25L * 60_000L)
+
+        val ogImage = sanitizeImageUrl(
+            extractRegexGroup(html, "<meta[^>]+property=[\"']og:image[\"'][^>]+content=[\"']([^\"']+)[\"']")
+                .ifBlank { extractRegexGroup(html, "<meta[^>]+content=[\"']([^\"']+)[\"'][^>]+property=[\"']og:image[\"']") }
+        )
+
+        val ogDesc = cleanHtml(
+            extractRegexGroup(html, "<meta[^>]+property=[\"']og:description[\"'][^>]+content=[\"']([^\"']+)[\"']")
+                .ifBlank { extractRegexGroup(html, "<meta[^>]+name=[\"']description[\"'][^>]+content=[\"']([^\"']+)[\"']") }
+        )
+
+        // Extraire les paragraphes principaux du corps de l'article
+        val bodyBlock = extractRegexGroup(html, "<div[^>]+class=[\"'][^\"']*(?:entry-content|post-content|td-post-content|article-content)[^\"']*[\"'][^>]*>(.*?)</div>\\s*(?:<footer|</article|<div[^>]+class=[\"'][^\"']*sharedaddy)")
+            .ifBlank { extractRegexGroup(html, "<article[^>]*>(.*?)</article>") }
+        val pMatcher = Pattern.compile("<p[^>]*>(.*?)</p>", Pattern.DOTALL or Pattern.CASE_INSENSITIVE)
+            .matcher(bodyBlock)
+        val paragraphs = mutableListOf<String>()
+        while (pMatcher.find() && paragraphs.size < 12) {
+            val pText = cleanHtml(pMatcher.group(1).orEmpty())
+            if (pText.length >= 35 && !pText.contains("aib.media", ignoreCase = true)) {
+                paragraphs.add(pText)
+            }
+        }
+        val fullBody = if (paragraphs.isNotEmpty()) paragraphs.joinToString("\n\n") else ogDesc.ifBlank { base.fullContent }
+        val finalSummary = when {
+            ogDesc.length >= 35 -> if (ogDesc.length > 220) ogDesc.take(217) + "..." else ogDesc
+            paragraphs.isNotEmpty() -> if (paragraphs.first().length > 220) paragraphs.first().take(217) + "..." else paragraphs.first()
+            else -> base.summary
+        }
+
+        return base.copy(
+            timestamp = realTs,
+            date = formatRelativeDate(realTs),
+            imageUrl = ogImage.ifBlank { base.imageUrl },
+            summary = finalSummary,
+            fullContent = fullBody
+        )
+    }
+
+    private fun extractBestImageFromHtmlBlock(html: String, baseHostUrl: String): String {
+        val attrs = listOf("data-lazy-src", "data-src", "src")
+        for (attr in attrs) {
+            val m = Pattern.compile("<img[^>]+$attr=[\"']([^\"'>]+)[\"']", Pattern.CASE_INSENSITIVE).matcher(html)
+            while (m.find()) {
+                val raw = m.group(1).orEmpty().trim()
+                val lower = raw.lowercase(Locale.ROOT)
+                if (raw.isBlank() || lower.startsWith("data:") || lower.contains("avatar") || lower.contains("logo") || lower.contains("emoji")) continue
+                val resolved = when {
+                    raw.startsWith("http://", true) || raw.startsWith("https://", true) -> raw
+                    raw.startsWith("//") -> "https:$raw"
+                    raw.startsWith("/") -> "$baseHostUrl$raw"
+                    else -> ""
+                }
+                if (resolved.isNotBlank()) return sanitizeImageUrl(resolved)
+            }
+        }
+        return ""
+    }
+
+    private fun extractDateFromUrl(url: String): Long? {
+        val m = Pattern.compile("/(20\\d{2})/(\\d{2})/(\\d{2})/").matcher(url)
+        if (m.find()) {
+            val y = m.group(1) ?: return null
+            val mo = m.group(2) ?: return null
+            val d = m.group(3) ?: return null
+            return parseIsoDateToMillis("$y-$mo-${d}T12:00:00Z").takeIf { it > 0L }
+        }
+        return null
+    }
+
+    private fun parseFlexibleDateToMillis(rawDate: String): Long {
+        if (rawDate.isBlank()) return 0L
+        val iso = parseIsoDateToMillis(rawDate)
+        if (iso > 0L) return iso
+        val cleaned = cleanHtml(rawDate)
+            .replace("à", "")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+        val frenchFormats = listOf(
+            SimpleDateFormat("d MMMM yyyy", Locale.FRENCH),
+            SimpleDateFormat("dd MMMM yyyy", Locale.FRENCH),
+            SimpleDateFormat("d MMM yyyy", Locale.FRENCH),
+            SimpleDateFormat("dd/MM/yyyy", Locale.FRENCH)
+        )
+        for (fmt in frenchFormats) {
+            try {
+                val parsed = fmt.parse(cleaned)
+                if (parsed != null) {
+                    val now = System.currentTimeMillis()
+                    return if (parsed.time > now) now else parsed.time
+                }
+            } catch (_: Exception) {}
+        }
+        return 0L
     }
 
     /**
@@ -815,64 +1309,50 @@ object NewsRepository {
         }
 
         val now = System.currentTimeMillis()
-        val cutoffRetention = now - RETENTION_WINDOW_MS
+        val cutoffRetention = now - EXTENDED_RETENTION_WINDOW_MS
 
         for ((pageName, sourceLabel) in dynamicTargets) {
             val endpoint = "https://graph.facebook.com/v19.0/$pageName/posts?fields=id,message,created_time,full_picture,permalink_url&limit=15&access_token=$customMetaToken"
-            var connection: HttpURLConnection? = null
             try {
-                connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 5000
-                    readTimeout = 5000
-                    instanceFollowRedirects = true
-                    requestMethod = "GET"
-                    setRequestProperty("User-Agent", "SamTraduction/1.0 (Android)")
-                    setRequestProperty("Accept", "application/json")
-                }
+                val jsonText = executeGetText(endpoint, "application/json") ?: continue
+                val dataArray = org.json.JSONObject(jsonText).optJSONArray("data") ?: continue
 
-                if (connection.responseCode in 200..299) {
-                    val jsonText = connection.inputStream.bufferedReader().use { it.readText() }
-                    val dataArray = org.json.JSONObject(jsonText).optJSONArray("data") ?: continue
+                for (i in 0 until dataArray.length()) {
+                    val item = dataArray.optJSONObject(i) ?: continue
+                    val idStr = item.optString("id", "")
+                    val message = item.optString("message", "").trim()
+                    val createdTime = item.optString("created_time", "")
+                    val fullPicture = sanitizeImageUrl(item.optString("full_picture", ""))
+                    val permalinkUrl = item.optString("permalink_url", "https://www.facebook.com/$pageName")
 
-                    for (i in 0 until dataArray.length()) {
-                        val item = dataArray.optJSONObject(i) ?: continue
-                        val idStr = item.optString("id", "")
-                        val message = item.optString("message", "").trim()
-                        val createdTime = item.optString("created_time", "")
-                        val fullPicture = sanitizeImageUrl(item.optString("full_picture", ""))
-                        val permalinkUrl = item.optString("permalink_url", "https://www.facebook.com/$pageName")
+                    if (message.isBlank()) continue
 
-                        if (message.isBlank()) continue
+                    val parsedTimestamp = parseIsoDateToMillis(createdTime)
+                    if (parsedTimestamp < cutoffRetention) continue
 
-                        val parsedTimestamp = parseIsoDateToMillis(createdTime)
-                        if (parsedTimestamp < cutoffRetention) continue
+                    val lines = message.lines().filter { it.isNotBlank() }
+                    val rawTitle = lines.firstOrNull() ?: message
+                    val title = cleanHtml(if (rawTitle.length > 110) rawTitle.take(107) + "..." else rawTitle)
+                    val summary = cleanHtml(if (message.length > 220) message.take(217) + "..." else message)
+                    val isRtb = pageName.contains("RTB", ignoreCase = true)
 
-                        val lines = message.lines().filter { it.isNotBlank() }
-                        val rawTitle = lines.firstOrNull() ?: message
-                        val title = cleanHtml(if (rawTitle.length > 110) rawTitle.take(107) + "..." else rawTitle)
-                        val summary = cleanHtml(if (message.length > 220) message.take(217) + "..." else message)
-                        val isRtb = pageName.contains("RTB", ignoreCase = true)
-
-                        articles.add(
-                            NewsArticle(
-                                id = "meta_${pageName}_${idStr.ifBlank { parsedTimestamp.toString() }}",
-                                title = title,
-                                summary = summary,
-                                category = if (isRtb) "Burkina Faso" else "AIB Direct",
-                                date = formatRelativeDate(parsedTimestamp),
-                                source = sourceLabel,
-                                url = permalinkUrl,
-                                imageUrl = fullPicture,
-                                timestamp = parsedTimestamp,
-                                fullContent = message
-                            )
+                    articles.add(
+                        NewsArticle(
+                            id = "meta_${pageName}_${idStr.ifBlank { parsedTimestamp.toString() }}",
+                            title = title,
+                            summary = summary,
+                            category = if (isRtb) "Burkina Faso" else "AIB Direct",
+                            date = formatRelativeDate(parsedTimestamp),
+                            source = sourceLabel,
+                            url = permalinkUrl,
+                            imageUrl = fullPicture,
+                            timestamp = parsedTimestamp,
+                            fullContent = message
                         )
-                    }
+                    )
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "Meta Graph API check for $pageName: ${e.message}")
-            } finally {
-                connection?.disconnect()
             }
         }
         return articles
@@ -892,63 +1372,50 @@ object NewsRepository {
             return emptyList()
         }
 
-        var connection: HttpURLConnection? = null
         try {
             val endpoint = "https://www.googleapis.com/youtube/v3/search?part=snippet&channelId=$RTB_YOUTUBE_CHANNEL_ID&maxResults=10&order=date&type=video&key=$apiKey"
-            connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-                connectTimeout = 6000
-                readTimeout = 6000
-                requestMethod = "GET"
-                setRequestProperty("User-Agent", "SamTraduction/1.0 (Android)")
-                setRequestProperty("Accept", "application/json")
-            }
+            val jsonText = executeGetText(endpoint, "application/json") ?: return emptyList()
+            val items = org.json.JSONObject(jsonText).optJSONArray("items") ?: return emptyList()
+            val now = System.currentTimeMillis()
+            val cutoffRetention = now - EXTENDED_RETENTION_WINDOW_MS
 
-            if (connection.responseCode in 200..299) {
-                val jsonText = connection.inputStream.bufferedReader().use { it.readText() }
-                val items = org.json.JSONObject(jsonText).optJSONArray("items") ?: return emptyList()
-                val now = System.currentTimeMillis()
-                val cutoffRetention = now - RETENTION_WINDOW_MS
+            for (i in 0 until items.length()) {
+                val item = items.optJSONObject(i) ?: continue
+                val videoId = item.optJSONObject("id")?.optString("videoId", "") ?: ""
+                if (videoId.isBlank()) continue
 
-                for (i in 0 until items.length()) {
-                    val item = items.optJSONObject(i) ?: continue
-                    val videoId = item.optJSONObject("id")?.optString("videoId", "") ?: ""
-                    if (videoId.isBlank()) continue
+                val snippet = item.optJSONObject("snippet") ?: continue
+                val title = cleanHtml(snippet.optString("title", ""))
+                val description = cleanHtml(snippet.optString("description", ""))
+                val publishedAt = snippet.optString("publishedAt", "")
+                val parsedTimestamp = parseIsoDateToMillis(publishedAt)
+                if (parsedTimestamp < cutoffRetention || title.isBlank()) continue
 
-                    val snippet = item.optJSONObject("snippet") ?: continue
-                    val title = cleanHtml(snippet.optString("title", ""))
-                    val description = cleanHtml(snippet.optString("description", ""))
-                    val publishedAt = snippet.optString("publishedAt", "")
-                    val parsedTimestamp = parseIsoDateToMillis(publishedAt)
-                    if (parsedTimestamp < cutoffRetention || title.isBlank()) continue
+                val thumbnails = snippet.optJSONObject("thumbnails")
+                val highThumb = thumbnails?.optJSONObject("high")?.optString("url", "")
+                    ?: thumbnails?.optJSONObject("medium")?.optString("url", "")
+                    ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
 
-                    val thumbnails = snippet.optJSONObject("thumbnails")
-                    val highThumb = thumbnails?.optJSONObject("high")?.optString("url", "")
-                        ?: thumbnails?.optJSONObject("medium")?.optString("url", "")
-                        ?: "https://i.ytimg.com/vi/$videoId/hqdefault.jpg"
-
-                    articles.add(
-                        NewsArticle(
-                            id = "yt_$videoId",
-                            title = title,
-                            summary = description.ifBlank { "Édition et reportage vidéo diffusés par la RTB sur YouTube." },
-                            category = "RTB Télé & Radio",
-                            date = formatRelativeDate(parsedTimestamp),
-                            source = "RTB (YouTube)",
-                            url = "https://www.youtube.com/watch?v=$videoId",
-                            imageUrl = sanitizeImageUrl(highThumb),
-                            timestamp = parsedTimestamp,
-                            isVideo = true,
-                            youtubeId = videoId,
-                            videoUrl = "https://www.youtube.com/watch?v=$videoId",
-                            fullContent = description
-                        )
+                articles.add(
+                    NewsArticle(
+                        id = "yt_$videoId",
+                        title = title,
+                        summary = description.ifBlank { "Édition et reportage vidéo diffusés par la RTB sur YouTube." },
+                        category = "RTB Télé & Radio",
+                        date = formatRelativeDate(parsedTimestamp),
+                        source = "RTB (YouTube)",
+                        url = "https://www.youtube.com/watch?v=$videoId",
+                        imageUrl = sanitizeImageUrl(highThumb),
+                        timestamp = parsedTimestamp,
+                        isVideo = true,
+                        youtubeId = videoId,
+                        videoUrl = "https://www.youtube.com/watch?v=$videoId",
+                        fullContent = description
                     )
-                }
+                )
             }
         } catch (e: Exception) {
             Log.w(TAG, "YouTube API fetch failed: ${e.message}")
-        } finally {
-            connection?.disconnect()
         }
         return articles
     }
@@ -972,38 +1439,29 @@ object NewsRepository {
     }
 
     /**
-     * API REST WordPress de l'AIB — requêtes optimisées (per_page=25) avec repli rapide sans _embed.
+     * API REST WordPress de l'AIB — interroge en parallèle aib.media et aib.bf (avec et sans _embed).
      */
-    private fun fetchFromWpRestApi(): List<NewsArticle> {
-        val endpoints = listOf(
-            "https://www.aib.media/wp-json/wp/v2/posts?_embed=wp:featuredmedia,wp:term&per_page=25",
+    private suspend fun fetchFromWpRestApi(): List<NewsArticle> = supervisorScope {
+        val mediaEndpoints = listOf(
+            "https://www.aib.media/wp-json/wp/v2/posts?_embed=wp:featuredmedia,wp:term&per_page=20",
             "https://www.aib.media/wp-json/wp/v2/posts?per_page=25",
-            "https://www.aib.media/index.php?rest_route=/wp/v2/posts&per_page=25",
-            "https://aib.media/wp-json/wp/v2/posts?per_page=25"
+            "https://aib.media/wp-json/wp/v2/posts?per_page=25",
+            "https://www.aib.media/index.php?rest_route=/wp/v2/posts&per_page=25"
         )
-        return fetchWordPressPosts(
-            endpoints = endpoints,
-            sourceName = "AIB",
-            idPrefix = "aib_wp",
-            defaultFallbackSummary = "Dépêche officielle transmise en direct par l'Agence d'Information du Burkina (AIB)."
+        val bfEndpoints = listOf(
+            "https://www.aib.bf/wp-json/wp/v2/posts?_embed=wp:featuredmedia,wp:term&per_page=20",
+            "https://www.aib.bf/wp-json/wp/v2/posts?per_page=25",
+            "https://aib.bf/wp-json/wp/v2/posts?per_page=25",
+            "https://www.aib.bf/index.php?rest_route=/wp/v2/posts&per_page=25"
         )
-    }
-
-    private fun readStreamTextSafely(rawStream: InputStream, @Suppress("UNUSED_PARAMETER") contentEncoding: String?): String {
-        val pushback = PushbackInputStream(rawStream, 2)
-        val header = ByteArray(2)
-        val bytesRead = pushback.read(header, 0, 2)
-        if (bytesRead <= 0) return ""
-        pushback.unread(header, 0, bytesRead)
-        val hasGzipMagic = bytesRead == 2 && (header[0] == 0x1f.toByte() && header[1] == 0x8b.toByte())
-        val stream: InputStream = if (hasGzipMagic) {
-            GZIPInputStream(pushback)
-        } else {
-            pushback
+        val aibSummary = "Dépêche officielle transmise en direct par l'Agence d'Information du Burkina (AIB)."
+        val mediaJob = async {
+            fetchWordPressPosts(mediaEndpoints, "AIB", "aib_wp", aibSummary)
         }
-        return stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            .removePrefix("\uFEFF")
-            .trim()
+        val bfJob = async {
+            fetchWordPressPosts(bfEndpoints, "AIB", "aib_bf_wp", aibSummary)
+        }
+        (mediaJob.await() + bfJob.await()).distinctBy { normalizeTitle(it.title) }
     }
 
     private fun fetchWordPressPosts(
@@ -1015,29 +1473,13 @@ object NewsRepository {
         val articles = mutableListOf<NewsArticle>()
 
         for (endpoint in endpoints) {
-            var connection: HttpURLConnection? = null
             try {
-                connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 3500
-                    readTimeout = 4500
-                    instanceFollowRedirects = true
-                    requestMethod = "GET"
-                    setRequestProperty(
-                        "User-Agent",
-                        "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
-                    )
-                    setRequestProperty("Accept", "application/json, text/plain, */*")
-                    setRequestProperty("Cache-Control", "no-cache")
-                }
-
-                if (connection.responseCode !in 200..299) continue
-
-                val jsonText = readStreamTextSafely(connection.inputStream, connection.contentEncoding)
+                val jsonText = executeGetText(endpoint, "application/json, text/plain, */*") ?: continue
                 if (!jsonText.startsWith("[")) continue
 
                 val jsonArray = org.json.JSONArray(jsonText)
                 val now = System.currentTimeMillis()
-                val cutoffRetention = now - RETENTION_WINDOW_MS
+                val cutoffRetention = now - EXTENDED_RETENTION_WINDOW_MS
 
                 for (i in 0 until jsonArray.length()) {
                     val item = jsonArray.optJSONObject(i) ?: continue
@@ -1135,12 +1577,10 @@ object NewsRepository {
                     )
                 }
 
-                // Si le JSON était valide et a répondu (même si < 24h vide), pas besoin de retenter les autres endpoints du même site
-                return articles
+                // Retourner immédiatement dès que des articles valides ont été trouvés ; sinon tester les autres endpoints/domaines
+                if (articles.isNotEmpty()) return articles
             } catch (e: Exception) {
                 Log.w(TAG, "Error fetching $sourceName WP REST ($endpoint): ${e.message}")
-            } finally {
-                connection?.disconnect()
             }
         }
         return articles
@@ -1157,58 +1597,20 @@ object NewsRepository {
     }
 
     private fun fetchFromUrl(urlStr: String, source: RssSource): List<NewsArticle> {
-        var connection: HttpURLConnection? = null
-        var currentUrl = urlStr
-        var redirects = 0
-
-        while (redirects < 4) {
-            try {
-                val url = URL(currentUrl)
-                connection = (url.openConnection() as HttpURLConnection).apply {
-                    connectTimeout = 5500
-                    readTimeout = 6000
-                    instanceFollowRedirects = true
-                    requestMethod = "GET"
-                    setRequestProperty(
-                        "User-Agent",
-                        "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36"
-                    )
-                    setRequestProperty(
-                        "Accept",
-                        "application/rss+xml, application/atom+xml, application/xml, text/xml, */*"
-                    )
-                }
-
-                val status = connection.responseCode
-                if (status == HttpURLConnection.HTTP_MOVED_PERM ||
-                    status == HttpURLConnection.HTTP_MOVED_TEMP ||
-                    status == HttpURLConnection.HTTP_SEE_OTHER ||
-                    status == 307 || status == 308
-                ) {
-                    val newUrl = connection.getHeaderField("Location")
-                    if (!newUrl.isNullOrBlank()) {
-                        currentUrl = if (newUrl.startsWith("http")) newUrl else URL(url, newUrl).toString()
-                        connection.disconnect()
-                        redirects++
-                        continue
-                    }
-                }
-
-                if (status in 200..299) {
-                    val bodyText = readStreamTextSafely(connection.inputStream, connection.contentEncoding)
-                    if (bodyText.contains("<item", ignoreCase = true) || bodyText.contains("<entry", ignoreCase = true)) {
-                        return parseRssXmlSafe(bodyText, source)
-                    }
-                }
-                break
-            } catch (e: Exception) {
-                Log.w(TAG, "Failed feed $currentUrl (${source.name}): ${e.message}")
-                break
-            } finally {
-                connection?.disconnect()
+        return try {
+            val bodyText = executeGetText(
+                urlStr,
+                "application/rss+xml, application/atom+xml, application/xml, text/xml, */*"
+            ) ?: return emptyList()
+            if (bodyText.contains("<item", ignoreCase = true) || bodyText.contains("<entry", ignoreCase = true)) {
+                parseRssXmlSafe(bodyText, source)
+            } else {
+                emptyList()
             }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed feed $urlStr (${source.name}): ${e.message}")
+            emptyList()
         }
-        return emptyList()
     }
 
     /**
@@ -1217,7 +1619,7 @@ object NewsRepository {
     private fun parseRssXmlSafe(xmlText: String, source: RssSource): List<NewsArticle> {
         val list = mutableListOf<NewsArticle>()
         val nowTime = System.currentTimeMillis()
-        val cutoffRetention = nowTime - RETENTION_WINDOW_MS
+        val cutoffRetention = nowTime - EXTENDED_RETENTION_WINDOW_MS
 
         try {
             val parser = Xml.newPullParser()
@@ -1656,13 +2058,15 @@ object NewsRepository {
         val diff = System.currentTimeMillis() - timestamp
         val minutes = diff / (1000 * 60)
         val hours = diff / (1000 * 60 * 60)
+        val days = diff / (1000 * 60 * 60 * 24)
 
         return when {
             diff <= 0 -> "À l'instant"
             minutes < 2 -> "À l'instant"
             minutes < 60 -> "Il y a $minutes min"
             hours < 24 -> "Il y a $hours h"
-            else -> "Il y a 24 h"
+            days < 2 -> "Hier"
+            else -> "Il y a $days j"
         }
     }
 
@@ -1671,7 +2075,7 @@ object NewsRepository {
     }
 
     /**
-     * Aucun faux article codé en dur : ne retourne que les vraies actualités AIB & RTB en cache (< 24h).
+     * Retourne uniquement les vraies actualités AIB & RTB en cache.
      */
     fun getDefaultBurkinaNews(): List<NewsArticle> = getCachedFreshNews()
 }

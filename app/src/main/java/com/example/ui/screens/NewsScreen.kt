@@ -403,7 +403,7 @@ fun NewsScreen(
                             text = if (hasActiveFilter) {
                                 "Aucune actualité récente pour ce filtre"
                             } else {
-                                newsErrorMessage ?: "Aucune actualité AIB / RTB (dernières 24h)"
+                                newsErrorMessage ?: "Aucune actualité AIB / RTB disponible"
                             },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
@@ -413,7 +413,7 @@ fun NewsScreen(
                             text = when {
                                 hasActiveFilter -> "Touchez le bouton ci-dessous pour afficher toutes les actualités AIB et RTB."
                                 newsErrorMessage != null -> "Vérifiez votre connexion Internet puis réessayez."
-                                else -> "Les actualités datant de plus de 24h sont masquées automatiquement."
+                                else -> "Touchez Réessayer pour charger les dernières dépêches AIB et RTB."
                             },
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant

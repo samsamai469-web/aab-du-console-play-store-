@@ -1,24 +1,21 @@
 package com.example.data.remote
 
-import com.example.BuildConfig
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
-import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import retrofit2.http.Body
 import retrofit2.http.POST
+import retrofit2.http.Path
 import retrofit2.http.Query
 import java.util.concurrent.TimeUnit
-
-import retrofit2.http.Path
 
 interface GeminiApiService {
     @POST("v1beta/models/{model}:generateContent")
     suspend fun generateContent(
-        @Path("model") model: String = "gemini-3.5-flash",
-        @Query("key") apiKey: String = BuildConfig.GEMINI_API_KEY,
+        @Path("model") model: String = "gemini-3.8-flash",
+        @Query("key") apiKey: String = "",
         @Body request: GenerateContentRequest
     ): GenerateContentResponse
 }

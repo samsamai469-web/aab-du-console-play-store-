@@ -12,7 +12,16 @@ import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
-import com.example.data.local.ApiKeyManager
+import com.google.firebase.Firebase
+import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.GenerativeBackend
+import com.google.firebase.ai.type.InlineDataPart
+import com.google.firebase.ai.type.PublicPreviewAPI
+import com.google.firebase.ai.type.ResponseModality
+import com.google.firebase.ai.type.SpeechConfig
+import com.google.firebase.ai.type.Voice
+import com.google.firebase.ai.type.generationConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -22,16 +31,13 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.put
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.Locale
-import java.util.concurrent.TimeUnit
 import kotlin.math.sqrt
 
 class TtsManager(context: Context) : TextToSpeech.OnInitListener {
@@ -53,24 +59,17 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var speechJob: Job? = null
-    private val apiKeyManager by lazy { ApiKeyManager(appContext) }
 
-    private val httpClient by lazy {
-        OkHttpClient.Builder()
-            .connectTimeout(6000, TimeUnit.MILLISECONDS)
-            .readTimeout(12000, TimeUnit.MILLISECONDS)
-            .callTimeout(15000, TimeUnit.MILLISECONDS)
-            .build()
+    private val firebaseAi by lazy {
+        Firebase.ai(backend = GenerativeBackend.googleAI())
     }
 
     companion object {
-        // Voix masculine la plus humaine, chaleureuse et naturelle recommandée par OpenAI pour gpt-4o-mini-tts
-        private const val PRIMARY_TTS_MODEL = "gpt-4o-mini-tts"
-        private const val UNIFIED_OPENAI_MALE_VOICE = "cedar"
-        // Repli haute définition uniquement si gpt-4o-mini-tts est indisponible
-        private const val FALLBACK_TTS_MODEL = "tts-1-hd"
-        private const val FALLBACK_TTS1_MALE_VOICE = "onyx"
-        private const val CACHE_PREFIX = "sam_tts_v5_"
+        // Modèles Google Gemini TTS officiels de dernière génération (voix masculine naturelle "Charon")
+        private const val PRIMARY_TTS_MODEL = "gemini-3.8-flash-tts"
+        private const val FALLBACK_TTS_MODEL = "gemini-3.1-flash-tts-preview"
+        private const val UNIFIED_GOOGLE_MALE_VOICE = "Charon"
+        private const val CACHE_PREFIX = "sam_tts_google_v6_"
 
         private val activeInstances = java.util.Collections.synchronizedSet(
             java.util.Collections.newSetFromMap(java.util.WeakHashMap<TtsManager, Boolean>())
@@ -117,7 +116,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         } catch (_: Exception) {
             isReady = false
         }
-        // Purge les anciens fichiers audio mis en cache avant la mise à niveau vocale v4
+        // Purge les anciens fichiers audio mis en cache avant la migration 100 % Google Gemini TTS
         scope.launch {
             try {
                 val dir = File(appContext.cacheDir, "tts_voice_cache")
@@ -151,13 +150,29 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         }
     }
 
+    private fun toBcp47LanguageCode(langCode: String): String {
+        return when (langCode) {
+            "en" -> "en-US"
+            "de" -> "de-DE"
+            "es" -> "es-ES"
+            "ar" -> "ar-XA"
+            "it" -> "it-IT"
+            "pt" -> "pt-BR"
+            "ru" -> "ru-RU"
+            "zh" -> "cmn-CN"
+            // Le Mooré, Dioula et Haoussa passent par la transcription phonétique française
+            "mos", "dyu", "ha", "fr" -> "fr-FR"
+            else -> "fr-FR"
+        }
+    }
+
     private fun getCachedVoiceFile(spokenText: String, langCode: String, speed: Float): File {
         val dir = File(appContext.cacheDir, "tts_voice_cache").apply { if (!exists()) mkdirs() }
         val speedTag = "%.2f".format(Locale.US, speed)
-        val normalized = "${langCode}_${UNIFIED_OPENAI_MALE_VOICE}_${speedTag}_${spokenText.lowercase(Locale.ROOT).trim()}"
+        val normalized = "${langCode}_${UNIFIED_GOOGLE_MALE_VOICE}_${speedTag}_${spokenText.lowercase(Locale.ROOT).trim()}"
         val h1 = normalized.hashCode().toUInt().toString(16)
         val h2 = normalized.reversed().hashCode().toUInt().toString(16)
-        return File(dir, "${CACHE_PREFIX}${langCode}_${UNIFIED_OPENAI_MALE_VOICE}_${h1}_$h2.mp3")
+        return File(dir, "${CACHE_PREFIX}${langCode}_${UNIFIED_GOOGLE_MALE_VOICE}_${h1}_$h2.wav")
     }
 
     override fun onInit(status: Int) {
@@ -284,16 +299,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         SpeechRecognitionManager.pauseAllActiveRecognizersForTts()
 
         speechJob = scope.launch {
-            var apiKey = apiKeyManager.getActiveOpenAiApiKey()
-            if (apiKey.isBlank() || apiKey == "MY_OPENAI_API_KEY") {
-                apiKey = ApiKeyManager.forceRefreshOpenAiKeyFromServer()
-            }
-            val success = if (apiKey.isNotBlank() && apiKey != "MY_OPENAI_API_KEY") {
-                trySpeakWithNeuralVoice(spokenText, apiKey, langCode, rate)
-            } else {
-                Log.w("TtsManager", "Clé OpenAI absente, repli vers TTS local Android")
-                false
-            }
+            val success = trySpeakWithNeuralVoice(spokenText, langCode, rate)
             if (!success) {
                 withContext(Dispatchers.Main) {
                     speakWithLocalAndroidTts(spokenText, langCode, rate)
@@ -302,25 +308,25 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         }
     }
 
-    private fun buildHumanVoiceInstructions(langCode: String): String {
-        return when (langCode) {
-            "en" -> "Speak in warm, relaxed everyday English, like a real person talking casually face-to-face with a friend. Natural conversational rhythm, subtle breathing, effortless phrasing, and gentle falling inflection."
-            "es" -> "Habla en español natural y cercano, como una persona real conversando tranquilamente con un amigo. Voz cálida, ritmo fluido, vocales claras e inflexión humana espontánea."
-            "de" -> "Sprich natürliches, entspanntes Alltagsdeutsch wie ein echter Mensch im ruhigen Gespräch mit einem Freund. Warme Stimme, natürliche Betonung und fließender Sprechrhythmus."
-            "ar" -> "تحدث بعربية واضحة وطبيعية ودافئة مثل إنسان حقيقي يتحدث بهدوء مع صديق، بنبرة مريحة وإيقاع كلام طبيعي غير متكلف."
-            "it" -> "Parla in italiano naturale, caldo e rilassato, come una persona vera che chiacchiera tranquillamente con un amico. Cadenza fluida e intonazione spontanea."
-            "pt" -> "Fale em português natural, caloroso e descontraído, como uma pessoa real conversando com um amigo. Ritmo fluido e entonação humana espontânea."
-            "ru" -> "Говори живым, тёплым и естественным разговорным русским языком, как реальный человек в спокойной беседе с другом, с естественными паузами и интонацией."
-            "zh" -> "用温暖、自然、放松的日常普通话说话，就像真人和朋友面对面轻松聊天一样，语调自然流畅，没有播音腔。"
-            "mos" -> "Lis cette transcription phonétique française à voix haute comme un locuteur burkinabè calme et chaleureux qui parle naturellement en mooré dans la vie de tous les jours. Prononce chaque voyelle clairement selon l'orthographe française (ou, é, è, ô, an, on), avec un rythme détendu, humain et fluide."
-            "dyu" -> "Lis cette transcription phonétique française à voix haute comme un locuteur ouest-africain calme et chaleureux qui parle naturellement en dioula dans une vraie conversation. Prononce chaque voyelle et consonne clairement selon l'orthographe française (ou, é, è, ô, gn, tch, dj), avec un rythme posé et humain."
-            "ha" -> "Lis cette transcription phonétique française à voix haute comme un locuteur ouest-africain calme et chaleureux qui parle naturellement en haoussa dans la vie quotidienne. Prononce clairement chaque voyelle et consonne selon l'orthographe française (ou, é, è, tch, ch, dj), avec une intonation humaine détendue."
-            else -> "Parle naturellement comme une vraie personne francophone qui discute calmement avec un ami. Voix masculine posée, chaude et détendue, liaisons naturelles, légères respirations et intonation fluide."
+    private fun buildHumanVoiceDirectorPrompt(langCode: String, ttsInput: String): String {
+        val styleDirection = when (langCode) {
+            "en" -> "Speak in a warm, relaxed everyday male English voice, like a real person talking face-to-face with a friend. Natural conversational rhythm."
+            "es" -> "Habla con una voz masculina cálida y natural en español, como una persona real conversando tranquilamente con un amigo."
+            "de" -> "Sprich mit einer warmen, natürlichen männlichen Stimme auf Deutsch, wie ein echter Mensch im ruhigen Gespräch."
+            "ar" -> "تحدث بصوت رجالي دافئ وطبيعي وواضح باللغة العربية مثل إنسان حقيقي يتحدث بهدوء مع صديق."
+            "it" -> "Parla con una voce maschile naturale, calda e rilassata in italiano, come in una vera conversazione tra amici."
+            "pt" -> "Fale com uma voz masculina natural, calorosa e descontraída em português, como em uma conversa tranquila."
+            "ru" -> "Говори тёплым, спокойным и естественным мужским голосом на русском языке, как живой человек в беседе."
+            "zh" -> "用温暖、自然、放松的男性日常普通话说话，就像真人和朋友面对面聊天一样自然流畅。"
+            "mos" -> "Lis exactement cette transcription phonétique en mooré à voix haute comme un locuteur burkinabè calme et chaleureux. Prononce chaque voyelle et syllabe clairement (ou, é, è, ô, an, on) avec un rythme humain détendu."
+            "dyu" -> "Lis exactement cette transcription phonétique en dioula à voix haute comme un locuteur ouest-africain calme et chaleureux. Prononce clairement chaque syllabe (ou, é, è, ô, gn, tch, dj)."
+            "ha" -> "Lis exactement cette transcription phonétique en haoussa à voix haute comme un locuteur ouest-africain calme et chaleureux. Prononce clairement chaque syllabe (ou, é, è, tch, ch, dj)."
+            else -> "Parle avec une voix masculine française posée, chaude, naturelle et humaine, comme dans une conversation authentique."
         }
+        return "$styleDirection\n\n$ttsInput"
     }
 
     private fun computeNaturalSpeed(userRate: Float): Float {
-        // Conserve 1.0f par défaut pour préserver le timbre organique sans étirement temporel artificiel
         return userRate.coerceIn(0.65f, 1.5f)
     }
 
@@ -336,60 +342,123 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     }
 
     private data class NeuralAudioResult(
-        val bytes: ByteArray,
+        val wavOrAudioBytes: ByteArray,
         val isPrimaryModel: Boolean
     )
 
+    private fun hasRiffWavHeader(bytes: ByteArray): Boolean {
+        return bytes.size >= 12 &&
+            bytes[0] == 'R'.code.toByte() &&
+            bytes[1] == 'I'.code.toByte() &&
+            bytes[2] == 'F'.code.toByte() &&
+            bytes[3] == 'F'.code.toByte() &&
+            bytes[8] == 'W'.code.toByte() &&
+            bytes[9] == 'A'.code.toByte() &&
+            bytes[10] == 'V'.code.toByte() &&
+            bytes[11] == 'E'.code.toByte()
+    }
+
+    private fun wrapPcm24kMono16BitAsWav(pcmBytes: ByteArray, sampleRate: Int = 24000): ByteArray {
+        val channels = 1
+        val bitsPerSample = 16
+        val byteRate = sampleRate * channels * (bitsPerSample / 8)
+        val blockAlign = channels * (bitsPerSample / 8)
+        val totalDataLen = pcmBytes.size
+        val totalAudioLen = totalDataLen + 36
+
+        val header = ByteBuffer.allocate(44).order(ByteOrder.LITTLE_ENDIAN).apply {
+            put("RIFF".toByteArray(Charsets.US_ASCII))
+            putInt(totalAudioLen)
+            put("WAVE".toByteArray(Charsets.US_ASCII))
+            put("fmt ".toByteArray(Charsets.US_ASCII))
+            putInt(16) // PCM subchunk size
+            putShort(1.toShort()) // AudioFormat = 1 (PCM)
+            putShort(channels.toShort())
+            putInt(sampleRate)
+            putInt(byteRate)
+            putShort(blockAlign.toShort())
+            putShort(bitsPerSample.toShort())
+            put("data".toByteArray(Charsets.US_ASCII))
+            putInt(totalDataLen)
+        }.array()
+
+        val out = ByteArray(header.size + pcmBytes.size)
+        System.arraycopy(header, 0, out, 0, header.size)
+        System.arraycopy(pcmBytes, 0, out, header.size, pcmBytes.size)
+        return out
+    }
+
+    private fun parseSampleRateFromMimeType(mimeType: String): Int {
+        val match = Regex("rate=(\\d+)").find(mimeType)
+        return match?.groupValues?.getOrNull(1)?.toIntOrNull()?.coerceIn(8000, 48000) ?: 24000
+    }
+
+    @OptIn(PublicPreviewAPI::class)
     private suspend fun synthesizeNeuralBytes(
         spokenText: String,
-        initialApiKey: String,
-        langCode: String,
-        speed: Float
+        langCode: String
     ): NeuralAudioResult? = withContext(Dispatchers.IO) {
-        val naturalSpeed = computeNaturalSpeed(speed)
-        val instructions = buildHumanVoiceInstructions(langCode)
-        val ttsInput = ensureNaturalSentenceEnding(spokenText).take(2500)
-        var activeKey = initialApiKey
+        val ttsInput = ensureNaturalSentenceEnding(spokenText).take(2200)
+        val prompt = buildHumanVoiceDirectorPrompt(langCode, ttsInput)
+        val bcp47 = toBcp47LanguageCode(langCode)
 
-        val primaryPayload = buildJsonObject {
-            put("model", PRIMARY_TTS_MODEL)
-            put("input", ttsInput)
-            put("voice", UNIFIED_OPENAI_MALE_VOICE)
-            put("instructions", instructions)
-            put("response_format", "mp3")
-            put("speed", naturalSpeed)
-        }.toString()
+        val ttsConfig = generationConfig {
+            responseModalities = listOf(ResponseModality.AUDIO)
+            speechConfig = SpeechConfig(
+                voice = Voice(UNIFIED_GOOGLE_MALE_VOICE),
+                languageCode = bcp47
+            )
+        }
 
-        var response = requestOpenAiAudioBytes(primaryPayload, activeKey, PRIMARY_TTS_MODEL)
-        if (response.httpCode == 401 || response.httpCode == 403) {
-            val refreshed = ApiKeyManager.forceRefreshOpenAiKeyFromServer()
-            if (refreshed.isNotBlank() && refreshed != activeKey) {
-                activeKey = refreshed
-                response = requestOpenAiAudioBytes(primaryPayload, activeKey, PRIMARY_TTS_MODEL)
+        val models = listOf(
+            PRIMARY_TTS_MODEL to true,
+            FALLBACK_TTS_MODEL to false
+        )
+
+        for ((modelName, isPrimary) in models) {
+            try {
+                val model = firebaseAi.generativeModel(
+                    modelName = modelName,
+                    generationConfig = ttsConfig
+                )
+                val audioStream = ByteArrayOutputStream()
+                var detectedMimeType = "audio/pcm;rate=24000"
+
+                model.generateContentStream(prompt).collect { chunk ->
+                    val parts = chunk.candidates.firstOrNull()?.content?.parts.orEmpty()
+                    for (part in parts) {
+                        if (part is InlineDataPart) {
+                            if (part.mimeType.isNotBlank()) {
+                                detectedMimeType = part.mimeType
+                            }
+                            audioStream.write(part.inlineData)
+                        }
+                    }
+                }
+
+                val rawAudio = audioStream.toByteArray()
+                if (rawAudio.size >= 200) {
+                    val playableBytes = when {
+                        hasRiffWavHeader(rawAudio) ||
+                            detectedMimeType.contains("wav", ignoreCase = true) && hasRiffWavHeader(rawAudio) -> rawAudio
+                        else -> wrapPcm24kMono16BitAsWav(
+                            pcmBytes = rawAudio,
+                            sampleRate = parseSampleRateFromMimeType(detectedMimeType)
+                        )
+                    }
+                    return@withContext NeuralAudioResult(playableBytes, isPrimaryModel = isPrimary)
+                }
+            } catch (ce: CancellationException) {
+                throw ce
+            } catch (e: Throwable) {
+                Log.w("TtsManager", "Google Gemini TTS $modelName indisponible: ${e.message}")
             }
-        }
-        if (response.bytes != null && response.bytes.size >= 200) {
-            return@withContext NeuralAudioResult(response.bytes, isPrimaryModel = true)
-        }
-
-        // Repli HD (tts-1-hd + onyx) sans polluer le cache principal
-        val fallbackPayload = buildJsonObject {
-            put("model", FALLBACK_TTS_MODEL)
-            put("input", ttsInput)
-            put("voice", FALLBACK_TTS1_MALE_VOICE)
-            put("response_format", "mp3")
-            put("speed", naturalSpeed)
-        }.toString()
-        val fallbackResp = requestOpenAiAudioBytes(fallbackPayload, activeKey, FALLBACK_TTS_MODEL)
-        if (fallbackResp.bytes != null && fallbackResp.bytes.size >= 200) {
-            return@withContext NeuralAudioResult(fallbackResp.bytes, isPrimaryModel = false)
         }
         null
     }
 
     private suspend fun trySpeakWithNeuralVoice(
         spokenText: String,
-        apiKey: String,
         langCode: String,
         rate: Float
     ): Boolean = withContext(Dispatchers.IO) {
@@ -401,16 +470,16 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             if (cachedFile.exists() && cachedFile.length() >= 200) {
                 audioFileToPlay = cachedFile
             } else {
-                val result = kotlinx.coroutines.withTimeoutOrNull(18000L) {
-                    synthesizeNeuralBytes(spokenText, apiKey, langCode, rate)
+                val result = withTimeoutOrNull(22000L) {
+                    synthesizeNeuralBytes(spokenText, langCode)
                 } ?: return@withContext false
 
                 if (result.isPrimaryModel) {
-                    FileOutputStream(cachedFile).use { it.write(result.bytes) }
+                    FileOutputStream(cachedFile).use { it.write(result.wavOrAudioBytes) }
                     audioFileToPlay = cachedFile
                 } else {
-                    val tempFallback = File(appContext.cacheDir, "tts_fallback_tmp.mp3")
-                    FileOutputStream(tempFallback).use { it.write(result.bytes) }
+                    val tempFallback = File(appContext.cacheDir, "tts_google_fallback_tmp.wav")
+                    FileOutputStream(tempFallback).use { it.write(result.wavOrAudioBytes) }
                     audioFileToPlay = tempFallback
                 }
             }
@@ -432,6 +501,11 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                         setOnPreparedListener { mp ->
                             isGlobalTtsSpeaking = true
                             SpeechRecognitionManager.pauseAllActiveRecognizersForTts()
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && kotlin.math.abs(naturalSpeed - 1.0f) > 0.03f) {
+                                try {
+                                    mp.playbackParams = mp.playbackParams.setSpeed(naturalSpeed)
+                                } catch (_: Exception) {}
+                            }
                             try {
                                 audioVisualizer = Visualizer(mp.audioSessionId).apply {
                                     captureSize = Visualizer.getCaptureSizeRange()[0]
@@ -505,41 +579,11 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 }
             }
             return@withContext true
+        } catch (ce: CancellationException) {
+            throw ce
         } catch (e: Exception) {
-            Log.w("TtsManager", "Exception Neural TTS, repli local: ${e.message}")
+            Log.w("TtsManager", "Exception Google Gemini TTS, repli local: ${e.message}")
             return@withContext false
-        }
-    }
-
-    private data class OpenAiAudioResponse(
-        val bytes: ByteArray? = null,
-        val httpCode: Int = 0
-    )
-
-    private fun requestOpenAiAudioBytes(
-        payloadJson: String,
-        apiKey: String,
-        modelLabel: String
-    ): OpenAiAudioResponse {
-        return try {
-            val request = Request.Builder()
-                .url("https://api.openai.com/v1/audio/speech")
-                .addHeader("Authorization", "Bearer $apiKey")
-                .addHeader("Content-Type", "application/json")
-                .post(payloadJson.toRequestBody("application/json; charset=utf-8".toMediaType()))
-                .build()
-
-            httpClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) {
-                    val errBody = try { response.body?.string()?.take(200) } catch (_: Exception) { null }
-                    Log.w("TtsManager", "OpenAI TTS $modelLabel HTTP ${response.code}: ${errBody ?: response.message}")
-                    return OpenAiAudioResponse(null, response.code)
-                }
-                OpenAiAudioResponse(response.body?.bytes(), response.code)
-            }
-        } catch (e: Exception) {
-            Log.w("TtsManager", "OpenAI TTS $modelLabel network error: ${e.message}")
-            OpenAiAudioResponse(null, 0)
         }
     }
 

@@ -3,6 +3,7 @@ package com.example.data.repository
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.util.Base64
+import android.util.Log
 import com.example.data.local.ApiKeyManager
 import com.example.data.local.AuditDao
 import com.example.data.local.ChatDao
@@ -11,16 +12,22 @@ import com.example.data.local.LinguisticDao
 import com.example.data.local.MessageEntity
 import com.example.data.local.WebSource
 import com.example.data.remote.GoogleTranslationService
-import com.example.util.SecurityUtils
-import com.google.ai.client.generativeai.GenerativeModel
-import com.google.ai.client.generativeai.type.content
+import com.example.util.GeminiErrorHandler
+import com.google.firebase.Firebase
+import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.GenerativeBackend
+import com.google.firebase.ai.type.Tool
+import com.google.firebase.ai.type.content
+import com.google.firebase.ai.type.generationConfig
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
-import com.example.util.GeminiErrorHandler
+import kotlinx.coroutines.withTimeout
 
 data class ChatMessage(
     val role: String,
@@ -46,7 +53,18 @@ class AiRepository(
     val apiKeyManager: ApiKeyManager,
     private val auditDao: AuditDao? = null
 ) {
-    private val openAiBackendService = com.example.data.remote.OpenAiBackendService()
+    companion object {
+        private const val TAG = "AiRepository"
+        const val DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+        const val REASONING_GEMINI_MODEL = "gemini-4-argon"
+        const val LITE_GEMINI_MODEL = "gemini-3.5-flash-lite"
+        private const val AI_TIMEOUT_MS = 60_000L
+    }
+
+    private val firebaseAi by lazy {
+        Firebase.ai(backend = GenerativeBackend.googleAI())
+    }
+
     fun getConversationsForUser(userId: String): Flow<List<ConversationEntity>> {
         return chatDao.getConversationsForUser(userId)
     }
@@ -78,44 +96,41 @@ class AiRepository(
             )
         )
 
-        val apiKey = apiKeyManager.getActiveGeminiApiKey().ifBlank {
-            try {
-                com.example.BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
-            } catch (_: Throwable) { "" }
-        }
-        if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-            val errText = "⚠️ Service SAM AI temporairement indisponible."
-            chatDao.insertMessage(
-                MessageEntity(
-                    conversationId = conversationId,
-                    text = errText,
-                    sender = "ai",
-                    timestamp = System.currentTimeMillis()
-                )
-            )
-            emit(errText)
-            return@flow
-        }
         try {
-            val systemInstruction = "Tu es SAM AI, l'assistant intelligent d'élite, cultivé et polyvalent. Réponds directement, intelligemment et sans bavardage superflu. Ne te présente JAMAIS (pas de 'Bonjour', 'Je suis SAM AI') dans une discussion déjà engagée. Si l'utilisateur demande de détailler ou pose une question complémentaire, approfondis directement et de manière riche et structurée."
-            val prompt = "$systemInstruction\n\nQuestion de l'utilisateur : $text"
+            val systemText =
+                "Tu es SAM AI, l'assistant intelligent d'élite, cultivé et polyvalent, conçu par Abdoul Mohamine Sawadogo. " +
+                "Réponds directement, intelligemment et sans bavardage superflu. " +
+                "Ne te présente JAMAIS (pas de 'Bonjour', 'Je suis SAM AI') dans une discussion déjà engagée. " +
+                "Si l'utilisateur demande de détailler ou pose une question complémentaire, approfondis directement et de manière riche et structurée."
 
             var fullResponse = ""
             var lastStreamError: Throwable? = null
-            for (streamModel in listOf("gemini-2.5-flash", "gemini-flash-latest", "gemini-3.5-flash")) {
+            for (streamModel in listOf(DEFAULT_GEMINI_MODEL, LITE_GEMINI_MODEL)) {
                 try {
-                    val model = GenerativeModel(
+                    val model = firebaseAi.generativeModel(
                         modelName = streamModel,
-                        apiKey = apiKey
+                        systemInstruction = content { text(systemText) },
+                        tools = listOf(Tool.googleSearch())
                     )
                     fullResponse = ""
-                    model.generateContentStream(prompt).collect { chunk ->
-                        val chunkText = chunk.text ?: ""
-                        fullResponse += chunkText
-                        emit(fullResponse)
+                    withTimeout(AI_TIMEOUT_MS) {
+                        model.generateContentStream(text).collect { chunk ->
+                            val chunkText = chunk.text.orEmpty()
+                            if (chunkText.isNotEmpty()) {
+                                fullResponse += chunkText
+                                emit(fullResponse)
+                            }
+                        }
                     }
                     if (fullResponse.isNotBlank()) break
+                } catch (ce: CancellationException) {
+                    if (ce is TimeoutCancellationException) {
+                        lastStreamError = ce
+                    } else {
+                        throw ce
+                    }
                 } catch (e: Throwable) {
+                    Log.w(TAG, "Stream with $streamModel failed: ${e.message}")
                     lastStreamError = e
                 }
             }
@@ -132,7 +147,23 @@ class AiRepository(
             } else if (lastStreamError != null) {
                 throw lastStreamError
             }
+        } catch (ce: CancellationException) {
+            if (ce is TimeoutCancellationException) {
+                val errText = "⚠️ Délai d'attente dépassé (60s). Veuillez réessayer."
+                chatDao.insertMessage(
+                    MessageEntity(
+                        conversationId = conversationId,
+                        text = errText,
+                        sender = "ai",
+                        timestamp = System.currentTimeMillis()
+                    )
+                )
+                emit(errText)
+            } else {
+                throw ce
+            }
         } catch (e: Throwable) {
+            Log.e(TAG, "Firebase AI streaming failed", e)
             val errText = "⚠️ ${GeminiErrorHandler.parse(e).userFriendlyMessage}"
             chatDao.insertMessage(
                 MessageEntity(
@@ -166,12 +197,6 @@ class AiRepository(
         val cleanSrc = srcText.trim()
         if (cleanSrc.isBlank()) return@withContext ""
 
-        val effectiveKey = apiKeyManager.getActiveGeminiApiKey().ifBlank {
-            try {
-                com.example.BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
-            } catch (_: Throwable) { "" }
-        }
-
         val systemInstructionText = """
 Tu es un traducteur expert linguistique de très haute fidélité.
 Tu dois traduire STRICTEMENT le texte donné du $srcLang vers le $tgtLang.
@@ -191,7 +216,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             srcLang.contains("jula", ignoreCase = true) ||
             tgtLang.contains("jula", ignoreCase = true)
 
-        // 0. Pour le Mooré et le Dioula : le Dictionnaire Local & Moteur d'Assemblage prend le relais
+        // 0. Pour le Mooré et le Dioula : le Dictionnaire Local & Moteur d'Assemblage est prioritaire
         if (isMooreOrDioula) {
             val localAssembled = com.example.data.engine.DictionaryLookupEngine.assembleSentenceFromLocalDictionary(
                 input = cleanSrc,
@@ -205,75 +230,39 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             }
         }
 
-        // 1. Pour toutes les autres langues : OpenAI (GPT-4o) prend le relais
-        try {
-            val openAiTranslation = openAiBackendService.translateWithOpenAi(cleanSrc, srcLang, tgtLang)
-            if (openAiTranslation.isNotBlank() && !openAiTranslation.equals(cleanSrc, ignoreCase = true)) {
-                return@withContext openAiTranslation.trim()
-            }
-        } catch (e: Throwable) {
-            android.util.Log.w("AiRepository", "OpenAI translation notice: ${e.message}")
-        }
-
-        // 1. Moteur IA principal via Retrofit REST (Direct, ultra-rapide et fiable)
-        if (effectiveKey.isNotBlank() && effectiveKey != "MY_GEMINI_API_KEY") {
-            val candidateModels = listOf("gemini-3.5-flash", "gemini-flash-latest")
-            for (candidateModel in candidateModels) {
-                try {
-                    val req = com.example.data.remote.GenerateContentRequest(
-                        contents = listOf(
-                            com.example.data.remote.Content(
-                                role = "user",
-                                parts = listOf(com.example.data.remote.Part(text = "Texte à traduire du $srcLang vers le $tgtLang :\n$cleanSrc"))
-                            )
-                        ),
-                        systemInstruction = com.example.data.remote.Content(
-                            parts = listOf(com.example.data.remote.Part(text = systemInstructionText))
-                        ),
-                        generationConfig = com.example.data.remote.GenerationConfig(
-                            temperature = 0.1f,
-                            maxOutputTokens = 1000
-                        )
-                    )
-                    val resp = com.example.data.remote.RetrofitClient.geminiService.generateContent(
-                        model = candidateModel,
-                        apiKey = effectiveKey,
-                        request = req
-                    )
-                    val rawResult = resp.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text.orEmpty().trim()
-                    val cleanResult = extractCleanTranslation(rawResult, tgtLang)
-
-                    if (cleanResult.isNotBlank() && !cleanResult.equals(cleanSrc, ignoreCase = true) && !isExplanatoryOrMixed(cleanResult, tgtLang)) {
-                        return@withContext cleanResult
+        // 1. Moteur IA principal 100 % Google via Firebase AI Logic (gemini-3.8-flash -> gemini-3.5-flash-lite)
+        val candidateModels = listOf(DEFAULT_GEMINI_MODEL, LITE_GEMINI_MODEL)
+        for (candidateModel in candidateModels) {
+            try {
+                val model = firebaseAi.generativeModel(
+                    modelName = candidateModel,
+                    systemInstruction = content { text(systemInstructionText) },
+                    generationConfig = generationConfig {
+                        temperature = 0.1f
+                        maxOutputTokens = 1000
                     }
-                } catch (e: Throwable) {
-                    android.util.Log.w("AiRepository", "Retrofit translation with $candidateModel failed: ${e.message}")
+                )
+                val prompt = "Texte à traduire du $srcLang vers le $tgtLang :\n$cleanSrc"
+                val response = withTimeout(45_000L) {
+                    model.generateContent(prompt)
                 }
-            }
+                val rawResult = response.text.orEmpty().trim()
+                val cleanResult = extractCleanTranslation(rawResult, tgtLang)
 
-            // 2. Moteur IA de secours via GenerativeModel SDK
-            for (candidateModel in candidateModels) {
-                try {
-                    val model = GenerativeModel(
-                        modelName = candidateModel,
-                        apiKey = effectiveKey,
-                        systemInstruction = content { text(systemInstructionText) }
-                    )
-                    val prompt = "Texte à traduire du $srcLang vers le $tgtLang : \"$cleanSrc\""
-                    val response = model.generateContent(prompt)
-                    val rawResult = response.text ?: ""
-                    val cleanResult = extractCleanTranslation(rawResult, tgtLang)
-
-                    if (cleanResult.isNotBlank() && !cleanResult.equals(cleanSrc, ignoreCase = true) && !isExplanatoryOrMixed(cleanResult, tgtLang)) {
-                        return@withContext cleanResult
-                    }
-                } catch (_: Throwable) {
-                    // Modèle suivant si indisponible
+                if (cleanResult.isNotBlank() &&
+                    !cleanResult.equals(cleanSrc, ignoreCase = true) &&
+                    !isExplanatoryOrMixed(cleanResult, tgtLang)
+                ) {
+                    return@withContext cleanResult
                 }
+            } catch (ce: CancellationException) {
+                if (ce !is TimeoutCancellationException) throw ce
+            } catch (e: Throwable) {
+                Log.w(TAG, "Firebase AI translation with $candidateModel failed: ${e.message}")
             }
         }
 
-        // 3. Google Translate officiel de repli pour langues supportées
+        // 2. Google Translate officiel de repli pour langues supportées
         try {
             val googleResult = GoogleTranslationService.translate(cleanSrc, srcLang, tgtLang)
             if (!googleResult.isNullOrBlank() && !googleResult.equals(cleanSrc, ignoreCase = true)) {
@@ -304,16 +293,19 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             text = when {
                 !quoteMatch.isNullOrBlank() && !quoteMatch.contains("se traduit", ignoreCase = true) -> quoteMatch
                 !boldMatch.isNullOrBlank() && !boldMatch.contains("se traduit", ignoreCase = true) -> boldMatch
-                else -> lines.firstOrNull { 
-                    !it.contains("se traduit", ignoreCase = true) && 
-                    !it.startsWith("Décomposition", ignoreCase = true) &&
-                    !it.startsWith("*")
+                else -> lines.firstOrNull {
+                    !it.contains("se traduit", ignoreCase = true) &&
+                        !it.startsWith("Décomposition", ignoreCase = true) &&
+                        !it.startsWith("*")
                 } ?: lines.first()
             }
         }
 
         text = text.replace("*", "").replace("`", "")
-        text = text.replace(Regex("""^(Traduction|Translation|En Mooré|En Dioula|En Haoussa|En Français|En Anglais|Traduction en [^:]+)\s*:\s*""", RegexOption.IGNORE_CASE), "")
+        text = text.replace(
+            Regex("""^(Traduction|Translation|En Mooré|En Dioula|En Haoussa|En Français|En Anglais|Traduction en [^:]+)\s*:\s*""", RegexOption.IGNORE_CASE),
+            ""
+        )
         text = text.removeSurrounding("\"").removeSurrounding("«", "»").trim()
         return text
     }
@@ -334,22 +326,24 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         srcLang: String,
         tgtLang: String
     ): String = withContext(Dispatchers.IO) {
-        val apiKey = apiKeyManager.getActiveGeminiApiKey()
-        if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-            return@withContext ""
-        }
         try {
-            val model = GenerativeModel(
-                modelName = "gemini-3.5-flash",
-                apiKey = apiKey
-            )
+            val model = firebaseAi.generativeModel(modelName = DEFAULT_GEMINI_MODEL)
             val inputContent = content {
                 image(bitmap)
                 text("Extrais tout le texte visible dans cette image et traduis-le fidèlement en $tgtLang. Si le texte est en Mooré ou Dioula, donne la traduction précise en Français.")
             }
-            val response = model.generateContent(inputContent)
+            val response = withTimeout(AI_TIMEOUT_MS) {
+                model.generateContent(inputContent)
+            }
             response.text?.trim() ?: "Aucun texte détecté."
+        } catch (ce: CancellationException) {
+            if (ce is TimeoutCancellationException) {
+                "Délai dépassé lors de l'analyse d'image. Veuillez réessayer."
+            } else {
+                throw ce
+            }
         } catch (e: Throwable) {
+            Log.e(TAG, "Image translation failed", e)
             "Erreur lors de l'analyse d'image : ${e.localizedMessage ?: "Veuillez réessayer"}"
         }
     }
@@ -361,27 +355,23 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         sourceLang: String,
         targetLang: String
     ): ImageTranslationResult = withContext(Dispatchers.IO) {
-        val key = apiKey.ifBlank { apiKeyManager.getActiveGeminiApiKey() }
-        if (key.isBlank() || key == "MY_GEMINI_API_KEY") {
-            return@withContext ImageTranslationResult(
-                extractedText = "",
-                translatedText = "Service de vision non disponible."
-            )
-        }
         try {
             val decodedBytes = Base64.decode(base64Data, Base64.DEFAULT)
             val bitmap = BitmapFactory.decodeByteArray(decodedBytes, 0, decodedBytes.size)
+                ?: return@withContext ImageTranslationResult(
+                    extractedText = "",
+                    translatedText = "Impossible de décoder l'image sélectionnée."
+                )
 
-            val model = GenerativeModel(
-                modelName = "gemini-3.5-flash",
-                apiKey = key
-            )
+            val model = firebaseAi.generativeModel(modelName = DEFAULT_GEMINI_MODEL)
             val inputContent = content {
                 image(bitmap)
                 text("Extrais le texte visible et traduis-le de $sourceLang vers $targetLang. Réponds sous la forme: TEXTE EXTRAIT: [texte]\nTRADUCTION: [traduction]")
             }
-            val response = model.generateContent(inputContent)
-            val full = response.text ?: ""
+            val response = withTimeout(AI_TIMEOUT_MS) {
+                model.generateContent(inputContent)
+            }
+            val full = response.text.orEmpty()
             val extracted = full.substringAfter("TEXTE EXTRAIT:").substringBefore("TRADUCTION:").trim()
             val translated = full.substringAfter("TRADUCTION:").trim()
             if (extracted.isNotBlank() && translated.isNotBlank()) {
@@ -389,7 +379,17 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             } else {
                 ImageTranslationResult(extractedText = full, translatedText = full)
             }
+        } catch (ce: CancellationException) {
+            if (ce is TimeoutCancellationException) {
+                ImageTranslationResult(
+                    extractedText = "",
+                    translatedText = "Délai dépassé lors de l'analyse OCR. Veuillez réessayer."
+                )
+            } else {
+                throw ce
+            }
         } catch (e: Throwable) {
+            Log.e(TAG, "Base64 image translation failed", e)
             ImageTranslationResult(
                 extractedText = "",
                 translatedText = "Erreur OCR : ${e.localizedMessage ?: "Veuillez réessayer"}"
@@ -401,114 +401,86 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         prompt: String,
         systemPrompt: String = ""
     ): String = withContext(Dispatchers.IO) {
-        val apiKey = apiKeyManager.getActiveGeminiApiKey()
-        if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-            return@withContext ""
-        }
         try {
-            val model = GenerativeModel(
-                modelName = "gemini-3.5-flash",
-                apiKey = apiKey
+            val model = firebaseAi.generativeModel(
+                modelName = DEFAULT_GEMINI_MODEL,
+                systemInstruction = if (systemPrompt.isNotBlank()) content { text(systemPrompt) } else null
             )
-            val fullPrompt = if (systemPrompt.isNotBlank()) "$systemPrompt\n\n$prompt" else prompt
-            val response = model.generateContent(fullPrompt)
-            response.text?.trim() ?: ""
+            val response = withTimeout(AI_TIMEOUT_MS) {
+                model.generateContent(prompt)
+            }
+            response.text?.trim().orEmpty()
+        } catch (ce: CancellationException) {
+            if (ce is TimeoutCancellationException) {
+                "Le serveur d'intelligence artificielle met trop de temps à répondre. Veuillez réessayer."
+            } else {
+                throw ce
+            }
         } catch (e: Throwable) {
-            com.example.util.GeminiErrorHandler.parse(e).userFriendlyMessage
+            Log.e(TAG, "executeGeminiRequest(prompt) failed", e)
+            GeminiErrorHandler.parse(e).userFriendlyMessage
         }
     }
 
     suspend fun executeGeminiRequest(
-        apiKey: String,
+        apiKey: String = "",
         messages: List<ChatMessage>,
         systemInstruction: String,
         enableSearch: Boolean,
         temperature: Double,
         maxOutputTokens: Int,
-        preferredModel: String
+        preferredModel: String = DEFAULT_GEMINI_MODEL
     ): GeminiRequestResult = withContext(Dispatchers.IO) {
-        val effectiveKey = apiKey.ifBlank { apiKeyManager.getActiveGeminiApiKey() }
-        if (effectiveKey.isBlank() || effectiveKey == "MY_GEMINI_API_KEY") {
-            return@withContext GeminiRequestResult(
-                success = false,
-                text = "",
-                errorMessage = "Service IA temporairement indisponible."
-            )
-        }
-
-        // Modèles officiels supportés et vérifiés
         val baseModels = listOf(
-            "gemini-2.5-flash",
-            "gemini-flash-latest",
-            "gemini-3.5-flash",
-            "gemini-3.1-flash-lite-preview",
-            "gemini-3.1-pro-preview"
+            DEFAULT_GEMINI_MODEL,
+            LITE_GEMINI_MODEL
         )
         val cleanPreferred = preferredModel.trim()
-        val modelsToTry = if (cleanPreferred.isNotBlank() && cleanPreferred != "gemini-3.6-flash") {
+        val allowedNewModels = setOf(DEFAULT_GEMINI_MODEL, REASONING_GEMINI_MODEL, LITE_GEMINI_MODEL)
+        val modelsToTry = if (cleanPreferred in allowedNewModels) {
             (listOf(cleanPreferred) + baseModels).distinct()
         } else {
             baseModels
+        }
+
+        val firebaseContents = messages.map { msg ->
+            val normalizedRole = if (msg.role.equals("user", ignoreCase = true)) "user" else "model"
+            content(role = normalizedRole) {
+                text(msg.content)
+            }
+        }
+        val sysContent = if (systemInstruction.isNotBlank()) {
+            content { text(systemInstruction) }
+        } else {
+            null
+        }
+        val genConfig = generationConfig {
+            this.temperature = temperature.toFloat()
+            this.maxOutputTokens = maxOutputTokens
         }
 
         var googleSearchAttempted = false
         var googleSearchFailed = false
         var lastParsedError: com.example.util.ParsedGeminiError? = null
 
-        // 1. Si la recherche Google Search intégrée est demandée, tenter l'appel avec le Grounding
+        // 1. Si la recherche Web Google Search Grounding est activée
         if (enableSearch) {
             googleSearchAttempted = true
-            val googleSearchTool = kotlinx.serialization.json.buildJsonObject {
-                put("googleSearch", kotlinx.serialization.json.buildJsonObject {})
-            }
-
             for (targetModel in modelsToTry) {
-                // Tentatives limitées avec délai progressif pour les erreurs temporaires (503 / 429)
                 val maxAttempts = 2
                 for (attempt in 1..maxAttempts) {
                     try {
-                        val req = com.example.data.remote.GenerateContentRequest(
-                            contents = messages.map {
-                                com.example.data.remote.Content(
-                                    role = it.role,
-                                    parts = listOf(com.example.data.remote.Part(text = it.content))
-                                )
-                            },
-                            systemInstruction = if (systemInstruction.isNotBlank()) {
-                                com.example.data.remote.Content(
-                                    parts = listOf(com.example.data.remote.Part(text = systemInstruction))
-                                )
-                            } else null,
-                            generationConfig = com.example.data.remote.GenerationConfig(
-                                temperature = temperature.toFloat(),
-                                maxOutputTokens = maxOutputTokens
-                            ),
-                            tools = listOf(googleSearchTool)
+                        val model = firebaseAi.generativeModel(
+                            modelName = targetModel,
+                            systemInstruction = sysContent,
+                            generationConfig = genConfig,
+                            tools = listOf(Tool.googleSearch())
                         )
-                        val resp = com.example.data.remote.RetrofitClient.geminiService.generateContent(
-                            model = targetModel,
-                            apiKey = effectiveKey,
-                            request = req
-                        )
-                        val candidate = resp.candidates.firstOrNull()
-                        val text = candidate?.content?.parts?.firstOrNull()?.text?.trim() ?: ""
-                        val sources = mutableListOf<WebSource>()
-                        candidate?.groundingMetadata?.groundingChunks?.forEach { chunk ->
-                            val uri = chunk.web?.uri.orEmpty().trim()
-                            val title = chunk.web?.title.orEmpty().trim()
-                            if (uri.isNotBlank()) {
-                                val domain = try {
-                                    java.net.URI(uri).host?.removePrefix("www.").orEmpty()
-                                } catch (_: Throwable) { "" }
-                                sources.add(
-                                    WebSource(
-                                        title = title.ifBlank { domain.ifBlank { "Google Search" } },
-                                        url = uri,
-                                        domain = domain
-                                    )
-                                )
-                            }
+                        val response = withTimeout(AI_TIMEOUT_MS) {
+                            model.generateContent(firebaseContents)
                         }
+                        val text = response.text.orEmpty().trim()
+                        val sources = extractGroundingSources(response)
 
                         if (text.isNotBlank()) {
                             return@withContext GeminiRequestResult(
@@ -518,16 +490,22 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                                 isSearchError = false
                             )
                         }
+                    } catch (ce: CancellationException) {
+                        if (ce is TimeoutCancellationException) {
+                            lastParsedError = GeminiErrorHandler.parse(ce)
+                            Log.w(TAG, "Google Search timeout on $targetModel (attempt $attempt)")
+                        } else {
+                            throw ce
+                        }
                     } catch (e: Throwable) {
                         val parsed = GeminiErrorHandler.parse(e)
                         lastParsedError = parsed
-                        android.util.Log.w("AiRepository", "Google Search attempt $attempt on $targetModel failed: ${parsed.rawMessage}")
+                        Log.w(TAG, "Google Search attempt $attempt on $targetModel failed: ${parsed.rawMessage ?: e.message}", e)
 
                         if (attempt < maxAttempts && (parsed.isTemporaryOverload || parsed.isRateLimited)) {
                             val waitSec = (parsed.retryAfterSeconds ?: 1L).coerceIn(1L, 3L)
                             delay(waitSec * 1000L)
                         } else {
-                            // Basculement vers le modèle suivant
                             break
                         }
                     }
@@ -536,37 +514,20 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             googleSearchFailed = true
         }
 
-        // 2. Appel direct SANS outil (direct text generation)
-        // Utilisé si enableSearch == false OU comme solution de secours si Google Search a échoué
+        // 2. Appel direct sans outil Google Search (ou repli si l'outil Search a échoué)
         for (targetModel in modelsToTry) {
             val maxAttempts = 2
             for (attempt in 1..maxAttempts) {
                 try {
-                    val req = com.example.data.remote.GenerateContentRequest(
-                        contents = messages.map {
-                            com.example.data.remote.Content(
-                                role = it.role,
-                                parts = listOf(com.example.data.remote.Part(text = it.content))
-                            )
-                        },
-                        systemInstruction = if (systemInstruction.isNotBlank()) {
-                            com.example.data.remote.Content(
-                                parts = listOf(com.example.data.remote.Part(text = systemInstruction))
-                            )
-                        } else null,
-                        generationConfig = com.example.data.remote.GenerationConfig(
-                            temperature = temperature.toFloat(),
-                            maxOutputTokens = maxOutputTokens
-                        ),
-                        tools = null
+                    val model = firebaseAi.generativeModel(
+                        modelName = targetModel,
+                        systemInstruction = sysContent,
+                        generationConfig = genConfig
                     )
-                    val resp = com.example.data.remote.RetrofitClient.geminiService.generateContent(
-                        model = targetModel,
-                        apiKey = effectiveKey,
-                        request = req
-                    )
-                    val candidate = resp.candidates.firstOrNull()
-                    val text = candidate?.content?.parts?.firstOrNull()?.text?.trim() ?: ""
+                    val response = withTimeout(AI_TIMEOUT_MS) {
+                        model.generateContent(firebaseContents)
+                    }
+                    val text = response.text.orEmpty().trim()
                     if (text.isNotBlank()) {
                         return@withContext GeminiRequestResult(
                             success = true,
@@ -575,16 +536,22 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                             isSearchError = googleSearchAttempted && googleSearchFailed
                         )
                     }
+                } catch (ce: CancellationException) {
+                    if (ce is TimeoutCancellationException) {
+                        lastParsedError = GeminiErrorHandler.parse(ce)
+                        Log.w(TAG, "Direct Firebase AI timeout on $targetModel (attempt $attempt)")
+                    } else {
+                        throw ce
+                    }
                 } catch (e: Throwable) {
                     val parsed = GeminiErrorHandler.parse(e)
                     lastParsedError = parsed
-                    android.util.Log.w("AiRepository", "Direct Gemini attempt $attempt on $targetModel failed: ${parsed.rawMessage}")
+                    Log.w(TAG, "Direct Firebase AI attempt $attempt on $targetModel failed: ${parsed.rawMessage ?: e.message}", e)
 
                     if (attempt < maxAttempts && (parsed.isTemporaryOverload || parsed.isRateLimited)) {
                         val waitSec = (parsed.retryAfterSeconds ?: 1L).coerceIn(1L, 3L)
                         delay(waitSec * 1000L)
                     } else {
-                        // Basculement vers le modèle suivant
                         break
                     }
                 }
@@ -600,5 +567,34 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             isSearchError = googleSearchAttempted && googleSearchFailed,
             errorMessage = finalErrorMessage
         )
+    }
+
+    private fun extractGroundingSources(response: com.google.firebase.ai.type.GenerateContentResponse): List<WebSource> {
+        val sources = mutableListOf<WebSource>()
+        try {
+            val groundingChunks = response.candidates.firstOrNull()?.groundingMetadata?.groundingChunks.orEmpty()
+            groundingChunks.forEach { chunk ->
+                val web = chunk.web
+                val uri = web?.uri.orEmpty().trim()
+                val title = web?.title.orEmpty().trim()
+                val domain = web?.domain.orEmpty().trim().ifBlank {
+                    try {
+                        java.net.URI(uri).host?.removePrefix("www.").orEmpty()
+                    } catch (_: Throwable) { "" }
+                }
+                if (uri.isNotBlank() && sources.none { it.url == uri }) {
+                    sources.add(
+                        WebSource(
+                            title = title.ifBlank { domain.ifBlank { "Google Search" } },
+                            url = uri,
+                            domain = domain
+                        )
+                    )
+                }
+            }
+        } catch (e: Throwable) {
+            Log.w(TAG, "Grounding metadata extraction warning: ${e.message}")
+        }
+        return sources
     }
 }

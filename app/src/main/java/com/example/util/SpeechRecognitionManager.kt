@@ -21,7 +21,7 @@ import java.util.Locale
  * Gestionnaire intelligent de reconnaissance vocale haute performance :
  * - Mode streaming en direct ultra-rapide (Google SpeechRecognizer) : écrit mot par mot en temps réel
  *   pendant que vous parlez ("Ça écrit automatiquement quand tu parles").
- * - Mode haute précision multilingue (OpenAI Whisper) : activé automatiquement pour les langues nationales
+ * - Mode haute précision multilingue (Google Gemini via Firebase AI Logic) : activé automatiquement pour les langues nationales
  *   (Mooré, Dioula, etc.) ou en cas d'indisponibilité du service natif.
  */
 class SpeechRecognitionManager(private val context: Context) {
@@ -143,7 +143,7 @@ class SpeechRecognitionManager(private val context: Context) {
         _soundLevel.value = 0f
         _state.value = State.Listening
 
-        // Capture directe PCM 16kHz sans perte + transcription neuronale OpenAI (comprend Français + Mooré sans délai ni échec natif)
+        // Capture directe PCM 16kHz sans perte + transcription Google Gemini (comprend Français + Mooré sans délai ni échec natif)
         startWhisperRecognition(language)
     }
 
@@ -363,9 +363,9 @@ class SpeechRecognitionManager(private val context: Context) {
                     onFinished?.invoke("")
                 }
             }.onFailure { err ->
-                Log.e(TAG, "Erreur Whisper: ${err.message}")
+                Log.e(TAG, "Erreur transcription audio Google Gemini: ${err.message}")
                 val errMsg = when {
-                    err.message?.contains("API") == true -> "Clé OpenAI requise ou quota atteint."
+                    err.message?.contains("API") == true -> "Service vocal Google momentanément indisponible."
                     err.message?.contains("connexion") == true || err.message?.contains("réseau") == true -> "Vérifiez votre connexion Internet."
                     else -> err.localizedMessage ?: "Erreur de transcription audio."
                 }

@@ -1837,9 +1837,9 @@ enum class VoiceCallState {
 }
 
 /**
- * Mode Appel Vocal Direct et Continu propulsé par l'API OpenAI Realtime (WebSocket Audio-to-Audio).
+ * Mode Appel Vocal Direct et Continu propulsé par Google Gemini Live (Firebase AI Logic).
  * L'utilisateur parle librement en Français, SAM AI écoute et répond en temps réel avec détection
- * vocale serveur (server_vad) et possibilité d'interrompre SAM AI naturellement à tout moment.
+ * vocale intégrée, Google Search en direct et interruption naturelle (barge-in) à tout moment.
  */
 @Composable
 fun SamAiVoiceCallDialog(
@@ -1862,7 +1862,7 @@ fun SamAiVoiceCallDialog(
     val fallbackSoundLevel by speechManager.soundLevel.collectAsState()
     val fallbackPartialTranscript by speechManager.partialText.collectAsState()
 
-    // Boucle de secours (avec gpt-4o-mini-tts voix humaine "ash") uniquement si le WebSocket Realtime est indisponible
+    // Boucle de secours (avec Google Gemini TTS voix humaine "Charon") uniquement si la session Live est indisponible
     fun listenFallbackTurn() {
         if (!isCallActive || isMicMuted || !isUsingFallbackRest || ttsManager.isSpeaking() || TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) return
         if (callState == VoiceCallState.SAM_SPEAKING || callState == VoiceCallState.THINKING) return
@@ -1943,7 +1943,7 @@ fun SamAiVoiceCallDialog(
     val startFallbackListening = rememberUpdatedState { listenFallbackTurn() }
 
     val realtimeManager = remember {
-        com.example.util.OpenAiRealtimeCallManager(
+        com.example.util.GoogleGeminiLiveCallManager(
             context = context,
             onTurnCompleted = { userText, aiText ->
                 viewModel.recordRealtimeCallTurn(userText, aiText)
@@ -1976,7 +1976,7 @@ fun SamAiVoiceCallDialog(
         }
     }
 
-    // Synchronisation de l'état et des transcriptions en direct depuis l'API OpenAI Realtime
+    // Synchronisation de l'état et des transcriptions en direct depuis Google Gemini Live
     LaunchedEffect(realtimeCallState, isUsingFallbackRest) {
         if (!isUsingFallbackRest) {
             callState = realtimeCallState
@@ -2048,7 +2048,7 @@ fun SamAiVoiceCallDialog(
         }
     }
 
-    // Démarrage instantané de l'API OpenAI Realtime avec capture microphone dès 0 ms
+    // Démarrage instantané de Google Gemini Live avec capture microphone dès 0 ms
     LaunchedEffect(Unit) {
         val hasPermission = ContextCompat.checkSelfPermission(
             context,
@@ -2113,7 +2113,7 @@ fun SamAiVoiceCallDialog(
                             Text("🇫🇷", fontSize = 14.sp)
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Appel Realtime • Français",
+                                text = "Appel Google Live • Français",
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = Color.White
@@ -2191,7 +2191,7 @@ fun SamAiVoiceCallDialog(
                                 VoiceCallState.SAM_SPEAKING -> if (lastDetectedLang == "mooré") "🔊 SAM AI vous répond en Mooré..." else "🔊 SAM AI vous répond en direct..."
                                 VoiceCallState.USER_SPEAKING -> "🎙️ À vous de parler, SAM AI écoute..."
                                 VoiceCallState.THINKING -> "⚡ Réponse instantanée..."
-                                VoiceCallState.CONNECTING -> "Connexion Realtime en cours..."
+                                VoiceCallState.CONNECTING -> "Connexion Google Live en cours..."
                             },
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Bold,

@@ -157,7 +157,7 @@ fun ProfessionalVoiceModal(
     fun stopAndProcess() {
         isListening = false
         soundLevel = 0f
-        statusMessage = "Transcription OpenAI..."
+        statusMessage = "Transcription vocale Google..."
         speechManager.stopListening { transcribed ->
             val textToUse = transcribed.ifBlank { editableText }
             if (textToUse.isNotBlank()) {

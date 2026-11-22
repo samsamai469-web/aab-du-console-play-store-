@@ -91,7 +91,6 @@ class SamAiViewModel(
     val audienceManager: AnonymousAudienceManager? = null
 ) : ViewModel() {
 
-    private val openAiBackendService = com.example.data.remote.OpenAiBackendService()
     private val liveNewsFeedService = com.example.data.remote.LiveNewsFeedService()
 
     fun auditLog(actionId: String, severity: String, details: String) {
@@ -284,7 +283,7 @@ class SamAiViewModel(
         _newsSearchQuery
     ) { articles, category, source, query ->
         val now = System.currentTimeMillis()
-        val cutoffRetention = now - com.example.data.repository.NewsRepository.RETENTION_WINDOW_MS // 24h max
+        val cutoffRetention = now - com.example.data.repository.NewsRepository.EXTENDED_RETENTION_WINDOW_MS
 
         var list = articles.filter {
             (it.source.contains("AIB", ignoreCase = true) || it.source.contains("RTB", ignoreCase = true)) &&
@@ -434,7 +433,8 @@ class SamAiViewModel(
         val currentArticles = _newsArticles.value
         val staleAfterMs = 60_000L
         val isStale = (System.currentTimeMillis() - lastNewsRefreshSuccessTimeMs) > staleAfterMs
-        if (currentArticles.isEmpty() || isStale) {
+        val missingAib = currentArticles.none { it.source.contains("AIB", ignoreCase = true) }
+        if (currentArticles.isEmpty() || isStale || missingAib) {
             loadLiveNews(forceRefresh = true)
         }
     }
@@ -1856,12 +1856,8 @@ class SamAiViewModel(
                 scaledBitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, outputStream)
                 val base64Data = android.util.Base64.encodeToString(outputStream.toByteArray(), android.util.Base64.NO_WRAP)
 
-                val activeKey = aiRepository.apiKeyManager.getActiveGeminiApiKey().ifBlank {
-                    try { BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim() } catch (_: Throwable) { "" }
-                }
-
                 val result = aiRepository.translateImage(
-                    apiKey = activeKey,
+                    apiKey = "",
                     base64Data = base64Data,
                     mimeType = "image/jpeg",
                     sourceLang = sourceLang,
@@ -2778,83 +2774,79 @@ class SamAiViewModel(
                     }
                 }
 
-                // 1. Envoi principal à OpenAI (gpt-4o-search-preview / gpt-4o / gpt-4o-mini)
-                val openAiResult = openAiBackendService.sendChatMessage(
-                    messages = currentHistory,
-                    userQuestion = userText,
-                    enableWebSearch = isWebSearchNeeded || liveSources.isNotEmpty(),
-                    preferredModel = "gpt-4o",
-                    newsContext = liveContextSummary,
-                    sources = liveSources,
-                    isMooreVoice = false,
-                    isVoiceCall = isVoiceCall
-                )
+                // Moteur IA 100 % Google via Firebase AI Logic (gemini-3.8-flash + Google Search Grounding + repli gemini-3.5-flash-lite)
+                var responseText = ""
+                var isError = true
+                var responseSources = liveSources
+                var geminiErrorMessage: String? = null
 
-                var responseText = openAiResult.text
-                var isError = !openAiResult.success || responseText.isBlank()
-                var responseSources = openAiResult.sources
-                var fallbackErrorMessage: String? = null
-
-                // 2. Repli automatique sur le moteur Gemini (avec Google Search en direct) si OpenAI a échoué
-                if (isError) {
-                    try {
-                        val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
-                        val fallbackSystemPrompt = buildString {
-                            append("Tu es SAM AI, une intelligence artificielle d'élite, cultivée et polyvalente, conçue par Abdoul Mohamine Sawadogo.\n")
-                            append("Aujourd'hui nous sommes exactement le $dateStr.\n")
-                            if (liveContextSummary.isNotBlank()) {
-                                append("\n--- ACTUALITÉS EN TEMPS RÉEL ---\n")
-                                append(liveContextSummary)
-                                append("\n--------------------------------\n")
-                            }
-                            append("Réponds directement en français clair, précis et naturel sans jamais commencer par 'Bonjour' (sauf si l'utilisateur salue uniquement). ")
-                            append("Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025. ")
-                            append("Tu t'appelles exclusivement Sam AI (ne mentionne JAMAIS Gemini, Google, OpenAI ou ChatGPT).")
+                try {
+                    val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
+                    val systemPrompt = buildString {
+                        append("Tu es SAM AI, une intelligence artificielle d'élite, cultivée, rapide et polyvalente, conçue par Abdoul Mohamine Sawadogo.\n")
+                        append("Aujourd'hui nous sommes exactement le $dateStr (octobre 2026).\n")
+                        if (liveContextSummary.isNotBlank()) {
+                            append("\n--- ACTUALITÉS EN TEMPS RÉEL ---\n")
+                            append(liveContextSummary)
+                            append("\n--------------------------------\n")
                         }
-                        val rawGeminiMessages = if (currentHistory.isNotEmpty() && !isVoiceCall) {
-                            currentHistory
+                        if (isVoiceCall) {
+                            append("Mode appel vocal en direct : réponds directement en phrases naturelles, fluides et concises à dire à voix haute, sans puces ni markdown, et sans commencer par 'Bonjour' ou 'Salut'. ")
                         } else {
-                            listOf(com.example.data.repository.ChatMessage(role = "user", content = userText))
+                            append("Réponds directement en français clair, précis, structuré et naturel sans jamais commencer par 'Bonjour' (sauf si l'utilisateur salue uniquement). ")
                         }
-                        val geminiMessages = mutableListOf<com.example.data.repository.ChatMessage>()
-                        for (msg in rawGeminiMessages) {
-                            val normalizedRole = if (msg.role == "user") "user" else "model"
-                            val last = geminiMessages.lastOrNull()
-                            if (last != null && last.role == normalizedRole) {
-                                geminiMessages[geminiMessages.lastIndex] = last.copy(
-                                    content = "${last.content}\n\n${msg.content}".trim()
-                                )
-                            } else {
-                                geminiMessages.add(com.example.data.repository.ChatMessage(role = normalizedRole, content = msg.content))
-                            }
-                        }
-                        if (geminiMessages.firstOrNull()?.role == "model") {
-                            geminiMessages.removeAt(0)
-                        }
-                        val safeGeminiMessages = if (geminiMessages.isNotEmpty()) {
-                            geminiMessages
-                        } else {
-                            listOf(com.example.data.repository.ChatMessage(role = "user", content = userText))
-                        }
-                        val geminiFallback = aiRepository.executeGeminiRequest(
-                            apiKey = "",
-                            messages = safeGeminiMessages,
-                            systemInstruction = fallbackSystemPrompt,
-                            enableSearch = isWebSearchNeeded,
-                            temperature = if (isWebSearchNeeded || liveContextSummary.isNotBlank()) 0.45 else 0.2,
-                            maxOutputTokens = if (isVoiceCall) 450 else 3000,
-                            preferredModel = "gemini-2.5-flash"
-                        )
-                        if (geminiFallback.success && geminiFallback.text.isNotBlank()) {
-                            responseText = sanitizeSamAiFallbackBranding(geminiFallback.text)
-                            isError = false
-                            responseSources = (responseSources + geminiFallback.sources).distinctBy { it.url }
-                        } else {
-                            fallbackErrorMessage = geminiFallback.errorMessage
-                        }
-                    } catch (fallbackErr: Throwable) {
-                        Log.w("SamAiViewModel", "Gemini fallback error: ${fallbackErr.message}")
+                        append("Utilise l'outil Google Search en direct dès qu'une information récente ou factuelle est demandée. ")
+                        append("Ne dis JAMAIS que tes connaissances s'arrêtent en 2023, 2024 ou 2025. ")
+                        append("Tu t'appelles exclusivement Sam AI (ne mentionne JAMAIS Gemini, Google, OpenAI ou ChatGPT comme étant ton propre nom).")
                     }
+
+                    val rawGeminiMessages = if (currentHistory.isNotEmpty() && !isVoiceCall) {
+                        currentHistory
+                    } else {
+                        listOf(com.example.data.repository.ChatMessage(role = "user", content = userText))
+                    }
+                    val geminiMessages = mutableListOf<com.example.data.repository.ChatMessage>()
+                    for (msg in rawGeminiMessages) {
+                        val normalizedRole = if (msg.role == "user") "user" else "model"
+                        val last = geminiMessages.lastOrNull()
+                        if (last != null && last.role == normalizedRole) {
+                            geminiMessages[geminiMessages.lastIndex] = last.copy(
+                                content = "${last.content}\n\n${msg.content}".trim()
+                            )
+                        } else {
+                            geminiMessages.add(com.example.data.repository.ChatMessage(role = normalizedRole, content = msg.content))
+                        }
+                    }
+                    if (geminiMessages.firstOrNull()?.role == "model") {
+                        geminiMessages.removeAt(0)
+                    }
+                    val safeGeminiMessages = if (geminiMessages.isNotEmpty()) {
+                        geminiMessages
+                    } else {
+                        listOf(com.example.data.repository.ChatMessage(role = "user", content = userText))
+                    }
+
+                    val geminiResult = aiRepository.executeGeminiRequest(
+                        apiKey = "",
+                        messages = safeGeminiMessages,
+                        systemInstruction = systemPrompt,
+                        enableSearch = isWebSearchNeeded || liveSources.isNotEmpty(),
+                        temperature = if (isWebSearchNeeded || liveContextSummary.isNotBlank()) 0.4 else 0.25,
+                        maxOutputTokens = if (isVoiceCall) 450 else 3000,
+                        preferredModel = com.example.data.repository.AiRepository.DEFAULT_GEMINI_MODEL
+                    )
+                    if (geminiResult.success && geminiResult.text.isNotBlank()) {
+                        responseText = sanitizeSamAiFallbackBranding(geminiResult.text)
+                        isError = false
+                        responseSources = (responseSources + geminiResult.sources).distinctBy { it.url }
+                    } else {
+                        geminiErrorMessage = geminiResult.errorMessage
+                    }
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    throw ce
+                } catch (err: Throwable) {
+                    Log.w("SamAiViewModel", "Firebase AI chat error: ${err.message}")
+                    geminiErrorMessage = com.example.util.GeminiErrorHandler.parse(err).userFriendlyMessage
                 }
 
                 if (responseText.isBlank() || isError) {
@@ -2862,12 +2854,8 @@ class SamAiViewModel(
                     val rawChosenError = when {
                         !hasDeviceInternet ->
                             "Aucune connexion Internet détectée. Vérifiez votre Wi-Fi ou vos données mobiles et réessayez."
-                        !openAiResult.errorMessage.isNullOrBlank() && !openAiResult.isNetworkError ->
-                            openAiResult.errorMessage
-                        !fallbackErrorMessage.isNullOrBlank() ->
-                            fallbackErrorMessage
-                        !openAiResult.errorMessage.isNullOrBlank() ->
-                            openAiResult.errorMessage
+                        !geminiErrorMessage.isNullOrBlank() ->
+                            geminiErrorMessage
                         else ->
                             "Le service SAM AI est momentanément saturé. Veuillez réessayer dans quelques secondes."
                     }
@@ -2875,7 +2863,7 @@ class SamAiViewModel(
                         (rawChosenError.contains("connexion Internet", ignoreCase = true) ||
                             rawChosenError.contains("réseau Internet", ignoreCase = true))
                     ) {
-                        "Les serveurs SAM AI sont momentanément indisponibles ou très sollicités. Veuillez réessayer dans quelques secondes."
+                        "Les serveurs Google IA sont momentanément indisponibles ou très sollicités. Veuillez réessayer dans quelques secondes."
                     } else {
                         rawChosenError
                     }
@@ -2928,14 +2916,14 @@ class SamAiViewModel(
     }
 
     /**
-     * Alias explicite pour appeler l'assistant propulsé par OpenAI
+     * Alias rétrocompatible redirigeant vers le moteur Google Gemini (Firebase AI Logic)
      */
     fun askSamAiOpenAi(userQuestion: String) {
         askSamAiGemini(userQuestion)
     }
 
     /**
-     * Enregistre un tour de parole issu d'un appel vocal OpenAI Realtime dans l'historique de chat
+     * Enregistre un tour de parole issu d'un appel vocal Google Gemini Live dans l'historique de chat
      */
     fun recordRealtimeCallTurn(userQuestion: String, aiResponse: String) {
         val cleanUser = userQuestion.trim()
