@@ -55,10 +55,10 @@ class AiRepository(
 ) {
     companion object {
         private const val TAG = "AiRepository"
-        const val DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
-        const val REASONING_GEMINI_MODEL = "gemini-4-argon"
+        const val DEFAULT_GEMINI_MODEL = "gemini-3.5-flash-lite"
+        const val REASONING_GEMINI_MODEL = "gemini-3.8-flash"
         const val LITE_GEMINI_MODEL = "gemini-3.5-flash-lite"
-        private const val AI_TIMEOUT_MS = 10_000L
+        private const val AI_TIMEOUT_MS = 6_000L
     }
 
     private val firebaseAi by lazy {
