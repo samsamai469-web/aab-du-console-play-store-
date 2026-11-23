@@ -2731,7 +2731,7 @@ class SamAiViewModel(
                             .joinToString("\n") { it.text }
 
                         if (isVoiceCall) {
-                            val fastNews = kotlinx.coroutines.withTimeoutOrNull(3500L) {
+                            val fastNews = kotlinx.coroutines.withTimeoutOrNull(2000L) {
                                 liveNewsFeedService.fetchLiveNews(
                                     query = effectiveQuery,
                                     alreadyMentionedText = alreadyMentionedInChat
@@ -2740,35 +2740,17 @@ class SamAiViewModel(
                             if (fastNews != null && fastNews.hasNews) {
                                 liveContextSummary = fastNews.contextSummary
                                 liveSources = fastNews.sources
-                            } else {
-                                liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(
-                                    query = effectiveQuery,
-                                    fallbackBurkinaArticles = _newsArticles.value
-                                )
                             }
                         } else {
-                            try {
-                                val newsResult = kotlinx.coroutines.withTimeoutOrNull(7500L) {
-                                    liveNewsFeedService.fetchLiveNews(
-                                        query = effectiveQuery,
-                                        alreadyMentionedText = alreadyMentionedInChat
-                                    )
-                                }
-                                if (newsResult != null && newsResult.hasNews) {
-                                    liveContextSummary = newsResult.contextSummary
-                                    liveSources = newsResult.sources
-                                } else {
-                                    liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(
-                                        query = effectiveQuery,
-                                        fallbackBurkinaArticles = _newsArticles.value
-                                    )
-                                }
-                            } catch (e: Throwable) {
-                                android.util.Log.w("SamAiViewModel", "Notice actualités en direct: ${e.message}")
-                                liveContextSummary = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(
+                            val newsResult = kotlinx.coroutines.withTimeoutOrNull(2500L) {
+                                liveNewsFeedService.fetchLiveNews(
                                     query = effectiveQuery,
-                                    fallbackBurkinaArticles = _newsArticles.value
+                                    alreadyMentionedText = alreadyMentionedInChat
                                 )
+                            }
+                            if (newsResult != null && newsResult.hasNews) {
+                                liveContextSummary = newsResult.contextSummary
+                                liveSources = newsResult.sources
                             }
                         }
                     }
