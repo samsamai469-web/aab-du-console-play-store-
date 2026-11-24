@@ -74,12 +74,22 @@ class OpenAiWhisperService(@Suppress("UNUSED_PARAMETER") context: Context) {
             else -> "audio/mp4"
         }
 
-        val targetLangLabel = when (languageHint?.trim()?.lowercase(Locale.ROOT)) {
-            "en", "anglais", "english" -> "anglais"
-            "es", "espagnol", "spanish" -> "espagnol"
-            "de", "allemand", "german" -> "allemand"
-            "ar", "arabe", "arabic" -> "arabe"
-            "ha", "haoussa", "hausa" -> "haoussa"
+        val normalizedHint = languageHint?.trim()?.lowercase(Locale.ROOT).orEmpty()
+        val isMooreHint = normalizedHint == "mos" || normalizedHint.contains("moor") || normalizedHint.contains("mòor")
+        val isDioulaHint = normalizedHint == "dyu" || normalizedHint.contains("dioula") || normalizedHint.contains("jula")
+
+        val targetLangLabel = when {
+            normalizedHint in setOf("en", "anglais", "english") -> "anglais"
+            normalizedHint in setOf("es", "espagnol", "spanish") -> "espagnol"
+            normalizedHint in setOf("de", "allemand", "german", "deutsch") -> "allemand"
+            normalizedHint in setOf("ar", "arabe", "arabic") -> "arabe"
+            normalizedHint in setOf("it", "italien", "italian") -> "italien"
+            normalizedHint in setOf("pt", "portugais", "portuguese") -> "portugais"
+            normalizedHint in setOf("ru", "russe", "russian") -> "russe"
+            normalizedHint in setOf("zh", "chinois", "chinese") -> "chinois"
+            normalizedHint in setOf("ha", "haoussa", "hausa") -> "haoussa"
+            isMooreHint -> "mooré"
+            isDioulaHint -> "dioula"
             else -> "français"
         }
 
@@ -98,16 +108,26 @@ class OpenAiWhisperService(@Suppress("UNUSED_PARAMETER") context: Context) {
             return@withContext Result.failure(IllegalArgumentException("Enregistrement audio trop court."))
         }
 
-        val instruction =
-            "Transcris mot pour mot et fidèlement en $targetLangLabel ce que dit la personne dans cet audio. " +
-            "Renvoie UNIQUEMENT le texte prononcé, sans guillemets, sans commentaire et sans préambule. " +
-            "S'il n'y a aucune parole audible ou uniquement du bruit, renvoie une chaîne vide."
+        val systemGuideText = buildTranscriptionSystemInstruction(targetLangLabel, isMooreHint, isDioulaHint)
+        val instruction = when {
+            isMooreHint ->
+                "Transcris fidèlement en mooré (orthographe mooré standard ou phonétique fidèle) ce que dit la personne dans cet audio. " +
+                    "Renvoie UNIQUEMENT les mots prononcés, sans guillemets ni commentaire."
+            isDioulaHint ->
+                "Transcris fidèlement en dioula / jula ce que dit la personne dans cet audio. " +
+                    "Renvoie UNIQUEMENT les mots prononcés, sans guillemets ni commentaire."
+            else ->
+                "Écoute attentivement cet enregistrement audio et transcris mot pour mot, fidèlement, ce que dit la personne (langue attendue : $targetLangLabel). " +
+                    "Renvoie UNIQUEMENT le texte prononcé, sans guillemets, sans commentaire et sans préambule. " +
+                    "S'il n'y a vraiment aucune parole humaine audible, renvoie uniquement une chaîne vide."
+        }
 
         var lastError: Throwable? = null
         for (modelId in listOf(PRIMARY_TRANSCRIBE_MODEL, FALLBACK_TRANSCRIBE_MODEL)) {
             try {
                 val model = firebaseAi.generativeModel(
                     modelName = modelId,
+                    systemInstruction = content { text(systemGuideText) },
                     generationConfig = generationConfig {
                         temperature = 0.0f
                         maxOutputTokens = 512
@@ -129,8 +149,14 @@ class OpenAiWhisperService(@Suppress("UNUSED_PARAMETER") context: Context) {
                 if (rawText.isBlank() || isHallucinationOrPromptEcho(rawText)) {
                     return@withContext Result.success("")
                 }
-                Log.d(TAG, "Transcription Google ($modelId) -> \"$rawText\"")
-                return@withContext Result.success(rawText)
+
+                val postProcessed = when {
+                    isMooreHint -> applyMoorePhoneticCorrections(rawText, isMooreHint = true)
+                    isDioulaHint -> applyDioulaPhoneticCorrections(rawText, isDioulaHint = true)
+                    else -> rawText
+                }
+                Log.d(TAG, "Transcription Google ($modelId / $targetLangLabel) -> \"$postProcessed\" (raw=\"$rawText\")")
+                return@withContext Result.success(postProcessed)
             } catch (ce: CancellationException) {
                 if (ce is TimeoutCancellationException) {
                     lastError = ce
@@ -159,12 +185,53 @@ class OpenAiWhisperService(@Suppress("UNUSED_PARAMETER") context: Context) {
         Result.failure(Exception(errMsg, lastError))
     }
 
+    private fun buildTranscriptionSystemInstruction(
+        targetLangLabel: String,
+        isMooreHint: Boolean,
+        isDioulaHint: Boolean
+    ): String {
+        return when {
+            isMooreHint -> """
+Tu es un système de reconnaissance vocale (ASR) spécialisé en MOORÉ (langue nationale du Burkina Faso).
+RÈGLES STRICTES :
+1. Transcris fidèlement ce que la personne prononce en mooré (y compris s'il y a quelques mots empruntés au français).
+2. NE TRANSFORME JAMAIS un mot mooré en mot français qui lui ressemble phonétiquement (exemple interdit : transformer « Barka » en « barca », « Nii yi beogo » en « ni biogo » ou « il est beau », « Sugri » en « souris », « Fo laafi » en « faut la fille », « Kibaré » en « qui barré »).
+3. Utilise l'orthographe mooré naturelle (avec ʋ, ɩ, ɛ, ã, ẽ, ĩ, õ, ũ si approprié ou graphie claire).
+4. Repères lexicaux mooré fréquents :
+   - Salutations : Nii yi beogo, Ne y beogo, Yibeo kibare, Nii windga, Windga kibare, Nii zabre, Zabre kibare, Niyungo, Yungo kibare, Neewôgô, Ne y waoongo, Kibaré, Fo laafi, Yãmb laafi bame wa, Laafi bala, Mam laafi bala, Ya sonma, Laafi beeme, La fõ.
+   - Politesse & Bases : Barka, Bark wusgo, Barka ka be ye, Sugri, M kosa sugri, Tõnd kotame, N-ye, Ayo, A zemsame, A yaa sõma, A pa sõma ye, Yaa sɩda, Bilmãse, Nindaaré, Beoogo laafi, Wind da ganeg laafi, Wẽnd na ning barka.
+   - Phrases courantes : M, Maam, Fo, Fõ, Tõnd, Yãmb, M debda raagẽ, M debda zakin, M debda tʋʋmde, M debda lekollẽ, M yita zakin, M data ligdi, M ka ligd ye, M tara ligdi, Kõ-m koom, Kõ-m rɩɩbo, Kõ-m ligdi, A yaa ligd a wãna, A yaa toogo, M wʋmame, M pa wʋm ye, M miime, M pa mi ye, M nan gounsam, M nonga foo, Fo yʋʋre la bõe, Mam yʋʋre la, Song maam, Wa ka, Zĩnd ka, Gũ-m, Gom bila bila.
+   - Mots : koom (eau), ligdi (argent), rɩɩbo (nourriture), zaka / roogo (maison), raaga (marché), rawa (homme), paga (femme), biiga (enfant), mougne (riz), saabo (tô), buru (pain), nemdo (viande), zĩm (poisson), zom-kom, kênge, wa, rɩ, yũ, gũsi.
+5. Renvoie uniquement la transcription exacte, sans guillemets, sans traduction ni commentaire. Si aucune voix humaine n'est audible, renvoie une chaîne vide.
+            """.trimIndent()
+            isDioulaHint -> """
+Tu es un système de reconnaissance vocale (ASR) spécialisé en DIOULA / JULA (Burkina Faso, Côte d'Ivoire, Mali).
+RÈGLES STRICTES :
+1. Transcris fidèlement ce que la personne prononce en dioula (y compris s'il y a quelques mots empruntés au français).
+2. NE TRANSFORME JAMAIS un mot dioula en mot français qui lui ressemble phonétiquement (exemple interdit : transformer « I ni ce » en « initié » ou « il dit c'est », « I ni sogoma » en « il ni sogoma », « Tɔɔrɔ tɛ » en « trop tard » ou « toro té », « N bɛ taa » en « en bêtat », « I ka kɛnɛ wa » en « il a qu'à... »).
+3. Phonologie dioula : c = tch (I ni ce = i ni tché), j = dj (ji = dji, joli = djoli), u = ou (sugu = sougou, dumuni = doumouni), ɛ = è, ɔ = o ouvert, ɲ = gn, ŋ = ng.
+4. Repères lexicaux dioula fréquents :
+   - Salutations : I ni sogoma, Aw ni sogoma, I ni tilen, I ni wula, I ni su, K'an su diya, I ni ce, I ni ce kosɛbɛ, I ni baara, Aw ni baara, I ka kɛnɛ wa, Aw ka kɛnɛ wa, N ka kɛnɛ, Tɔɔrɔ tɛ, Ile do, I dansɛ, Aw dansɛ, Sabali, Yafa n ma, Hakɛto, K'an bɛn, K'an bɛn sini, K'an bɛn sɔɔni, Awo, Ayi, A bɛnna, A ka ɲi, A man ɲi, Tiɛn don, Tiɛn tɛ.
+   - Phrases courantes : N, Ne, I, Ile, A, An, Aw, U, N bɛ taa sugu la, N bɛ taa so, N bɛ taa baara la, N bɛ taa lakɔli la, N taara, N bɛ na, N bɔra so, I bɛ taa min, I bɛ mun kɛ, I bɛ min, Kɔngɔ bɛ n na, Minnɔgɔ bɛ n na, Ji di n ma, Dumuni di n ma, Wari di n ma, Wari bɛ n bolo, Wari tɛ n bolo, A sɔngɔ ye joli ye, A sɔngɔ ka gɛlɛn, Dɔgɔ bɔ a la, N y'a faamu, N m'a faamu, N y'a lɔn, N m'a lɔn, Kuma dɔɔni dɔɔni, Segi a kan, N dɛmɛ, N wele, N b'i fɛ, I tɔgɔ ye di, N tɔgɔ ye, Na yan, I sigi, N makɔnɔ.
+   - Mots & Chiffres : ji (eau), wari (argent), dumuni (nourriture), so (maison), sugu (marché), dugu (village/ville), baara (travail), tɛri (ami), fa (père), ba (mère), den (enfant), cɛ (homme), muso (femme), malo (riz), sogo (viande), jɛgɛ (poisson), kelen, fila, saba, naani, duuru, wɔɔrɔ, wolonwula, seegin, kɔnɔntɔn, tan.
+5. Renvoie uniquement la transcription exacte, sans guillemets, sans traduction ni commentaire. Si aucune voix humaine n'est audible, renvoie une chaîne vide.
+            """.trimIndent()
+            else -> """
+Tu es un système de reconnaissance vocale (ASR) multilingue de très haute précision (langue attendue : $targetLangLabel).
+Transcris mot pour mot et fidèlement ce que dit la personne sans commentaire, sans guillemets et sans préambule. S'il n'y a aucune parole humaine audible, renvoie une chaîne vide.
+            """.trimIndent()
+        }
+    }
+
     private fun isHallucinationOrPromptEcho(text: String): Boolean {
         val lower = text.trim().lowercase(Locale.ROOT)
         if (lower.length < 2) return true
+        if (lower in setOf("[silence]", "[bruit]", "(silence)", "(inaudible)", "[inaudible]", "[musique]", "aucune parole", "silence")) return true
         if (HALLUCINATION_PATTERNS.any { lower.contains(it) }) return true
         if (lower.contains("transcris mot pour mot")) return true
-        if (lower.contains("renvoie uniquement le texte")) return true
+        if (lower.contains("transcris fidèlement")) return true
+        if (lower.contains("renvoie uniquement")) return true
+        if (lower.contains("chaîne vide")) return true
         return false
     }
 
@@ -172,6 +239,12 @@ class OpenAiWhisperService(@Suppress("UNUSED_PARAMETER") context: Context) {
         val s = input.trim()
         if (s.isEmpty() || !isMooreHint) return s
         return com.example.data.engine.DictionaryLookupEngine.normalizeMooreProlongations(s)
+    }
+
+    fun applyDioulaPhoneticCorrections(input: String, isDioulaHint: Boolean = false): String {
+        val s = input.trim()
+        if (s.isEmpty() || !isDioulaHint) return s
+        return com.example.data.engine.DictionaryLookupEngine.normalizeDioulaAsrTranscript(s)
     }
 
     @Suppress("UNUSED_PARAMETER")

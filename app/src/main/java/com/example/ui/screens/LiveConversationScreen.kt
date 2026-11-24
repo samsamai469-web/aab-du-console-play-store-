@@ -178,6 +178,8 @@ fun LiveConversationScreen(
     val user1SpeechManager = remember { SpeechRecognitionManager(context) }
     val user2SpeechManager = remember { SpeechRecognitionManager(context) }
 
+    val user1SpeechState by user1SpeechManager.state.collectAsStateWithLifecycle()
+    val user2SpeechState by user2SpeechManager.state.collectAsStateWithLifecycle()
     val user1Partial by user1SpeechManager.partialText.collectAsStateWithLifecycle()
     val user2Partial by user2SpeechManager.partialText.collectAsStateWithLifecycle()
     val user1SoundLevel by user1SpeechManager.soundLevel.collectAsStateWithLifecycle()
@@ -240,6 +242,39 @@ fun LiveConversationScreen(
         turnsList = LiveConversationHistoryManager.getHistory(context)
     }
 
+    // Synchronisation automatique de l'état micro -> transcription (même sur arrêt automatique par silence)
+    LaunchedEffect(user1SpeechState) {
+        when (user1SpeechState) {
+            is SpeechRecognitionManager.State.Processing -> {
+                isUser1Listening = false
+                user1Status = "Transcription..."
+            }
+            is SpeechRecognitionManager.State.Error -> {
+                isUser1Listening = false
+                if (user1Status.startsWith("Écoute") || user1Status.startsWith("Transcription")) {
+                    user1Status = "Prêt"
+                }
+            }
+            else -> {}
+        }
+    }
+
+    LaunchedEffect(user2SpeechState) {
+        when (user2SpeechState) {
+            is SpeechRecognitionManager.State.Processing -> {
+                isUser2Listening = false
+                user2Status = "Transcription..."
+            }
+            is SpeechRecognitionManager.State.Error -> {
+                isUser2Listening = false
+                if (user2Status.startsWith("Écoute") || user2Status.startsWith("Transcription")) {
+                    user2Status = "Prêt"
+                }
+            }
+            else -> {}
+        }
+    }
+
     // Mise à jour de la transcription partielle en direct
     LaunchedEffect(user1Partial) {
         if (isUser1Listening && user1Partial.isNotBlank()) {
@@ -280,8 +315,8 @@ fun LiveConversationScreen(
 
     // Réinitialisation complète et instantanée de la conversation
     fun resetConversation() {
-        user1SpeechManager.stopListening()
-        user2SpeechManager.stopListening()
+        user1SpeechManager.reset()
+        user2SpeechManager.reset()
         ttsManager.stop()
         isUser1Listening = false
         isUser2Listening = false
@@ -445,8 +480,8 @@ fun LiveConversationScreen(
 
     // Démarrage de la reconnaissance vocale pour User 1 (Abdoul)
     fun startUser1Listening() {
-        // Arrête toute écoute d'Aminata
-        user2SpeechManager.stopListening()
+        // Annule proprement toute écoute d'Aminata sans lancer de transcription croisée
+        user2SpeechManager.reset()
         isUser2Listening = false
         user2Status = "Prêt"
         ttsManager.stop()
@@ -459,24 +494,28 @@ fun LiveConversationScreen(
             language = user1Lang,
             continuousMode = false,
             onResult = { result ->
+                isUser1Listening = false
                 if (result.isNotBlank()) {
                     user1Transcript = result
-                    isUser1Listening = false
-                    user1SpeechManager.stopListening()
                     processUser1SpokenSpeech(result)
+                } else {
+                    user1Status = "Prêt"
                 }
             },
             onError = { err ->
                 isUser1Listening = false
                 user1Status = "Prêt"
+                if (err.isNotBlank()) {
+                    errorMessage = err
+                }
             }
         )
     }
 
     // Démarrage de la reconnaissance vocale pour User 2 (Aminata)
     fun startUser2Listening() {
-        // Arrête toute écoute d'Abdoul
-        user1SpeechManager.stopListening()
+        // Annule proprement toute écoute d'Abdoul sans lancer de transcription croisée
+        user1SpeechManager.reset()
         isUser1Listening = false
         user1Status = "Prêt"
         ttsManager.stop()
@@ -489,16 +528,20 @@ fun LiveConversationScreen(
             language = user2Lang,
             continuousMode = false,
             onResult = { result ->
+                isUser2Listening = false
                 if (result.isNotBlank()) {
                     user2Transcript = result
-                    isUser2Listening = false
-                    user2SpeechManager.stopListening()
                     processUser2SpokenSpeech(result)
+                } else {
+                    user2Status = "Prêt"
                 }
             },
             onError = { err ->
                 isUser2Listening = false
                 user2Status = "Prêt"
+                if (err.isNotBlank()) {
+                    errorMessage = err
+                }
             }
         )
     }
@@ -596,8 +639,8 @@ fun LiveConversationScreen(
         user1Transcript = ""
         user2Transcript = ""
 
-        user1SpeechManager.stopListening()
-        user2SpeechManager.stopListening()
+        user1SpeechManager.reset()
+        user2SpeechManager.reset()
         isUser1Listening = false
         isUser2Listening = false
         user1Status = "Prêt"
@@ -1034,6 +1077,7 @@ fun LiveConversationScreen(
                         }
                         val roleLabel = when {
                             isUser1Listening -> "● Écoute en cours..."
+                            user1Status.startsWith("Transcription") -> "⏳ Transcription..."
                             user1Status.startsWith("Traduction") -> "⏳ Traduction..."
                             lastSpeaker == 1 && (user1SentText.isNotBlank() || user1Transcript.isNotBlank()) -> "🗣️ Phrase de départ"
                             lastSpeaker == 2 && (user1ReceivedText.isNotBlank() || user1Transcript.isNotBlank()) -> "✨ Traduction finale"
@@ -1041,7 +1085,7 @@ fun LiveConversationScreen(
                         }
                         val roleColor = when {
                             isUser1Listening -> liveGreen
-                            user1Status.startsWith("Traduction") -> primaryColor
+                            user1Status.startsWith("Transcription") || user1Status.startsWith("Traduction") -> primaryColor
                             lastSpeaker == 2 && user1ReceivedText.isNotBlank() -> primaryColor
                             else -> textSecondaryColor
                         }
@@ -1101,7 +1145,12 @@ fun LiveConversationScreen(
                             }
                         }
                     }
-                } else if (user1Status.startsWith("Traduction")) {
+                } else if (user1Status.startsWith("Transcription") || user1Status.startsWith("Traduction")) {
+                    val loadingLabel = if (user1Status.startsWith("Transcription")) {
+                        "Analyse et transcription de votre voix ($user1Lang)..."
+                    } else {
+                        "Traduction en cours vers $user1Lang..."
+                    }
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = if (isDark) primaryColor.copy(alpha = 0.14f) else primaryColor.copy(alpha = 0.08f),
@@ -1119,7 +1168,7 @@ fun LiveConversationScreen(
                                 color = primaryColor
                             )
                             Text(
-                                text = "Traduction en cours vers $user1Lang...",
+                                text = loadingLabel,
                                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
                                 color = primaryColor
                             )
@@ -1356,6 +1405,7 @@ fun LiveConversationScreen(
                         }
                         val roleLabel = when {
                             isUser2Listening -> "● Écoute en cours..."
+                            user2Status.startsWith("Transcription") -> "⏳ Transcription..."
                             user2Status.startsWith("Traduction") -> "⏳ Traduction..."
                             lastSpeaker == 2 && (user2SentText.isNotBlank() || user2Transcript.isNotBlank()) -> "🗣️ Phrase de départ"
                             lastSpeaker == 1 && (user2ReceivedText.isNotBlank() || user2Transcript.isNotBlank()) -> "✨ Traduction finale"
@@ -1363,7 +1413,7 @@ fun LiveConversationScreen(
                         }
                         val roleColor = when {
                             isUser2Listening -> liveGreen
-                            user2Status.startsWith("Traduction") -> primaryColor
+                            user2Status.startsWith("Transcription") || user2Status.startsWith("Traduction") -> primaryColor
                             lastSpeaker == 1 && user2ReceivedText.isNotBlank() -> primaryColor
                             else -> textSecondaryColor
                         }
@@ -1423,7 +1473,12 @@ fun LiveConversationScreen(
                             }
                         }
                     }
-                } else if (user2Status.startsWith("Traduction")) {
+                } else if (user2Status.startsWith("Transcription") || user2Status.startsWith("Traduction")) {
+                    val loadingLabel = if (user2Status.startsWith("Transcription")) {
+                        "Analyse et transcription de votre voix ($user2Lang)..."
+                    } else {
+                        "Traduction en cours vers $user2Lang..."
+                    }
                     Surface(
                         shape = RoundedCornerShape(12.dp),
                         color = if (isDark) primaryColor.copy(alpha = 0.14f) else primaryColor.copy(alpha = 0.08f),
@@ -1441,7 +1496,7 @@ fun LiveConversationScreen(
                                 color = primaryColor
                             )
                             Text(
-                                text = "Traduction en cours vers $user2Lang...",
+                                text = loadingLabel,
                                 style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.Medium),
                                 color = primaryColor
                             )

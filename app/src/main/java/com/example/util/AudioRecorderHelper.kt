@@ -3,6 +3,7 @@ package com.example.util
 import android.annotation.SuppressLint
 import android.content.Context
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
@@ -17,9 +18,8 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
 /**
- * Enregistreur audio résilient haute définition pour la reconnaissance vocale OpenAI Whisper (optimisé Mooré).
- * Tente d'abord MediaRecorder (MPEG-4 / AAC .m4a haute clarté 128 kbps), et bascule automatiquement
- * sur AudioRecord direct (PCM 16kHz .wav avec suppression de bruit et gain automatique) si requis.
+ * Enregistreur audio résilient haute définition pour la reconnaissance vocale multilingue.
+ * Priorise AudioRecord PCM 16kHz .wav sans latence de démarrage et bascule sur MediaRecorder si requis.
  */
 class AudioRecorderHelper(private val context: Context) {
 
@@ -36,6 +36,12 @@ class AudioRecorderHelper(private val context: Context) {
     @Volatile
     private var currentPcmAmplitude = 0
 
+    @Volatile
+    private var nonZeroSampleFrames = 0
+
+    @Volatile
+    private var peakObservedSample = 0
+
     companion object {
         private const val TAG = "AudioRecorderHelper"
         private const val SAMPLE_RATE = 16000
@@ -45,6 +51,16 @@ class AudioRecorderHelper(private val context: Context) {
     fun startRecording(): File? {
         stopRecordingInternal(deleteFile = true)
         startTimeMillis = System.currentTimeMillis()
+        currentPcmAmplitude = 0
+        nonZeroSampleFrames = 0
+        peakObservedSample = 0
+
+        try {
+            val am = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+            if (am != null && am.mode == AudioManager.MODE_IN_COMMUNICATION) {
+                am.mode = AudioManager.MODE_NORMAL
+            }
+        } catch (_: Exception) {}
 
         // 1. Priorité absolue : Enregistrement PCM WAV 16kHz sans perte avec DSP matériel (NoiseSuppressor + Gain Auto)
         // Aucun délai d'encodeur AAC au démarrage (ne coupe jamais la 1re syllabe "Ne y...") et fidélité maximale pour le Mooré
@@ -99,11 +115,12 @@ class AudioRecorderHelper(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     private fun startPcmWavRecording(): File? {
-        // Priorité à VOICE_RECOGNITION : courbe de fréquence plate dédiée à la dictée vocale haute précision
+        // Priorité à MIC (universel sur smartphones et émulateurs, avec meilleur routage matériel),
+        // puis VOICE_RECOGNITION et VOICE_COMMUNICATION en repli.
         val sources = listOf(
+            MediaRecorder.AudioSource.MIC,
             MediaRecorder.AudioSource.VOICE_RECOGNITION,
-            MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-            MediaRecorder.AudioSource.MIC
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION
         )
         val minBufSize = AudioRecord.getMinBufferSize(
             SAMPLE_RATE,
@@ -148,18 +165,15 @@ class AudioRecorderHelper(private val context: Context) {
     }
 
     private fun attachHardwareAudioEffects(audioSessionId: Int) {
-        // Note: NoiseSuppressor et AutomaticGainControl matériels sont désactivés afin de préserver
-        // 100 % des consonnes douces (s, f, p, t, k, ch) et la prononciation exacte de la personne.
         try {
-            if (AcousticEchoCanceler.isAvailable()) {
-                echoCanceler = AcousticEchoCanceler.create(audioSessionId)?.apply { enabled = true }
+            if (AutomaticGainControl.isAvailable()) {
+                automaticGainControl = AutomaticGainControl.create(audioSessionId)?.apply { enabled = true }
             }
         } catch (_: Exception) {}
     }
 
     private fun writeAudioDataToWav(record: AudioRecord, outputFile: File, bufferSize: Int) {
         // Trames ultra-courtes de 30 ms (480 échantillons à 16 kHz = 960 octets)
-        // Permet une détection de voix et de silence en temps réel (33 mises à jour/seconde, zéro latence)
         val frameShorts = 480
         val audioData = ShortArray(frameShorts)
         val fos = FileOutputStream(outputFile)
@@ -173,31 +187,47 @@ class AudioRecorderHelper(private val context: Context) {
             while (isRecording.get()) {
                 val readShorts = record.read(audioData, 0, frameShorts)
                 if (readShorts > 0) {
-                    var sumSquares = 0.0
+                    var sumBoostedSquares = 0.0
+                    var framePeak = 0
                     val frameBytes = ByteArray(readShorts * 2)
 
                     for (i in 0 until readShorts) {
                         val rawSample = audioData[i].toInt()
-                        sumSquares += (rawSample.toDouble() * rawSample.toDouble())
-                        // Pré-amplification vocale linéaire douce (x1.65) avec soft-knee :
-                        // Garantit une captation cristalline à 35-45 cm (mode appel vocal / dictée)
-                        // sans jamais saturer ni couper les consonnes sourdes (p, t, k, s, f, ch).
-                        val amplified = (rawSample * 33) / 20
+                        if (rawSample != 0) {
+                            val absRaw = kotlin.math.abs(rawSample)
+                            if (absRaw > peakObservedSample) {
+                                peakObservedSample = absRaw
+                            }
+                        }
+                        // Pré-amplification vocale linéaire (x2.2) avec soft-knee pour micros discrets
+                        val amplified = (rawSample * 11) / 5
                         val boosted = when {
                             amplified > 24000 -> 24000 + ((amplified - 24000) / 3).coerceAtMost(8767)
                             amplified < -24000 -> -24000 + ((amplified + 24000) / 3).coerceAtLeast(-8768)
                             else -> amplified
                         }.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                        val absBoosted = kotlin.math.abs(boosted)
+                        if (absBoosted > framePeak) {
+                            framePeak = absBoosted
+                        }
+                        sumBoostedSquares += (boosted.toDouble() * boosted.toDouble())
                         frameBytes[i * 2] = (boosted and 0xFF).toByte()
                         frameBytes[i * 2 + 1] = ((boosted shr 8) and 0xFF).toByte()
                     }
 
-                    val rms = kotlin.math.sqrt(sumSquares / readShorts).toInt()
-                    currentPcmAmplitude = rms.coerceAtMost(32767)
+                    val boostedRms = kotlin.math.sqrt(sumBoostedSquares / readShorts).toInt()
+                    val combinedLevel = maxOf(boostedRms, framePeak / 3)
+                    if (framePeak > 0) {
+                        nonZeroSampleFrames++
+                    }
+                    currentPcmAmplitude = combinedLevel.coerceAtMost(32767)
 
                     // Écriture directe dès la milliseconde 0 pour ne jamais couper le début de la parole
                     fos.write(frameBytes)
                     totalAudioLen += frameBytes.size
+                } else if (readShorts < 0) {
+                    Log.w(TAG, "AudioRecord.read erreur: $readShorts")
+                    break
                 }
             }
         } catch (e: Exception) {
@@ -220,6 +250,10 @@ class AudioRecorderHelper(private val context: Context) {
             }
         }
         return currentPcmAmplitude
+    }
+
+    fun hadNonZeroAudio(): Boolean {
+        return mediaRecorder != null || (nonZeroSampleFrames > 0 && peakObservedSample > 0)
     }
 
     fun stopRecording(): File? {
@@ -245,7 +279,7 @@ class AudioRecorderHelper(private val context: Context) {
         // Attend que le thread d'écriture ferme le flux et mette à jour l'en-tête WAV (taille réelle)
         // AVANT de libérer AudioRecord et de retourner le fichier à Whisper
         try {
-            recordingThread?.join(500)
+            recordingThread?.join(900)
         } catch (_: Exception) {}
         recordingThread = null
 

@@ -251,7 +251,16 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 pending?.invoke()
             } catch (_: Exception) {
                 isReady = false
+                isGlobalTtsSpeaking = false
+                pendingSpeech = null
             }
+        } else {
+            isReady = false
+            isGlobalTtsSpeaking = false
+            pendingSpeech = null
+            val callback = activeOnErrorCallback
+            activeOnErrorCallback = null
+            mainHandler.post { callback?.invoke() }
         }
     }
 
@@ -711,6 +720,15 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                     releaseStreamAudioTrack(localTrack)
                     if (startedStreamingTrack) {
                         abandonPlaybackAudioFocus()
+                        if (isNeuralPlaying || isGlobalTtsSpeaking) {
+                            isNeuralPlaying = false
+                            isGlobalTtsSpeaking = false
+                            _ttsSoundLevel.value = 0f
+                            lastGlobalTtsEndTimeMs = System.currentTimeMillis()
+                        }
+                    } else {
+                        isNeuralPlaying = false
+                        _ttsSoundLevel.value = 0f
                     }
                 }
             }
@@ -922,6 +940,9 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         rate: Float
     ) {
         if (!isReady) {
+            // Ne jamais laisser isGlobalTtsSpeaking bloqué à true si le moteur TTS local n'est pas encore prêt
+            isGlobalTtsSpeaking = false
+            _ttsSoundLevel.value = 0f
             pendingSpeech = {
                 speakWithLocalAndroidTts(spokenText, langCode, rate)
             }
@@ -1520,6 +1541,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             isGlobalTtsSpeaking = false
             _ttsSoundLevel.value = 0f
             isNeuralPlaying = false
+            pendingSpeech = null
             speechJob?.cancel()
             speechJob = null
             activeOnDoneCallback = null

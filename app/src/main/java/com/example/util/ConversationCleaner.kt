@@ -48,11 +48,11 @@ object ConversationCleaner {
         if (rawText.isBlank()) return ""
 
         var result = rawText.trim()
-        val isLocalLang = sourceLang.contains("moor", ignoreCase = true) ||
-            sourceLang.contains("dioula", ignoreCase = true) ||
-            sourceLang.contains("jula", ignoreCase = true) ||
-            sourceLang.contains("haoussa", ignoreCase = true) ||
-            sourceLang.contains("hausa", ignoreCase = true)
+        val lowerLang = sourceLang.trim().lowercase(Locale.ROOT)
+        val isLocalLang = lowerLang == "mos" || lowerLang == "dyu" || lowerLang == "ha" ||
+            lowerLang.contains("moor") || lowerLang.contains("mòor") ||
+            lowerLang.contains("dioula") || lowerLang.contains("jula") ||
+            lowerLang.contains("haoussa") || lowerLang.contains("hausa")
 
         if (!isLocalLang) {
             // 1. Suppression des tics d'hésitation uniquement pour les langues non locales

@@ -961,7 +961,10 @@ fun TranslationScreen(
                 viewModel = viewModel,
                 sourceLanguage = sourceLang,
                 targetLanguage = targetLang,
-                onDismiss = { showVoiceModal = false },
+                onDismiss = {
+                    showVoiceModal = false
+                    viewModel.closeVoiceAssistantModal()
+                },
                 onTextReady = { text, autoTranslate ->
                     viewModel.setSourceText(text)
                     if (autoTranslate) {

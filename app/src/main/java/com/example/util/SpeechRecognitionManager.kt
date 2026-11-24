@@ -56,7 +56,9 @@ class SpeechRecognitionManager(private val context: Context) {
 
     private var activeOnResult: ((String) -> Unit)? = null
     private var activeOnError: ((String) -> Unit)? = null
+    private var pendingStopCallback: ((String) -> Unit)? = null
     private var activeLanguage: String = "Français"
+    private var isContinuousSession: Boolean = false
     @Volatile
     private var hasDetectedSpeechInSession: Boolean = false
     @Volatile
@@ -91,8 +93,11 @@ class SpeechRecognitionManager(private val context: Context) {
 
     private fun isAfricanLanguage(lang: String): Boolean {
         val l = lang.trim().lowercase(Locale.ROOT)
-        return l.contains("moor") || l.contains("dioul") || l.contains("dyul") ||
-                l.contains("fulf") || l.contains("gulm") || l.contains("bambara")
+        return l == "mos" || l == "dyu" || l == "ha" ||
+            l.contains("moor") || l.contains("mòor") ||
+            l.contains("dioul") || l.contains("jula") || l.contains("dyul") ||
+            l.contains("haoussa") || l.contains("hausa") ||
+            l.contains("fulf") || l.contains("gulm") || l.contains("bambara")
     }
 
     private fun getLanguageTag(lang: String): String {
@@ -127,9 +132,7 @@ class SpeechRecognitionManager(private val context: Context) {
             onError("Haut-parleur actif")
             return
         }
-        // En mode manuel (appui explicite de l'utilisateur sur le bouton micro), on coupe d'abord
-        // toute voix TTS en cours pour qu'elle ne soit jamais enregistrée par le microphone
-        if (!continuousMode && TtsManager.isAnyTtsSpeakingOrCoolingDown(0L)) {
+        if (!continuousMode) {
             TtsManager.stopAllActiveTts()
         }
 
@@ -137,13 +140,14 @@ class SpeechRecognitionManager(private val context: Context) {
         activeOnResult = onResult
         activeOnError = onError
         activeLanguage = language
+        isContinuousSession = continuousMode
         hasDetectedSpeechInSession = false
         maxSpeechAmpInSession = 0
         _partialText.value = ""
         _soundLevel.value = 0f
         _state.value = State.Listening
 
-        // Capture directe PCM 16kHz sans perte + transcription Google Gemini (comprend Français + Mooré sans délai ni échec natif)
+        // Capture directe PCM 16kHz sans perte + transcription Google Gemini (multilingue dont Mooré, Dioula, Haoussa, Français)
         startWhisperRecognition(language)
     }
 
@@ -163,19 +167,20 @@ class SpeechRecognitionManager(private val context: Context) {
 
         amplitudeJob = scope.launch(Dispatchers.Default) {
             var speechDetected = false
-            var consecutiveVoiceFrames = 0
             var speechStartTime = 0L
             var lastSoundTime = System.currentTimeMillis()
             val recordingStart = lastSoundTime
-            var noiseFloor = 75f
+            var noiseFloor = 24f
             var peakSpeechAmp = 0
             var sampleFrameCount = 0
 
             while (isActive && _state.value is State.Listening) {
-                // Protection anti-écho globale : si SAM AI prend la parole sur le haut-parleur pendant
-                // que le micro écoute, on annule immédiatement l'enregistrement en cours pour ne jamais
-                // transcrire la voix de SAM AI comme une question de l'utilisateur
-                if (TtsManager.isGlobalTtsSpeaking) {
+                val now = System.currentTimeMillis()
+                val elapsedSinceStart = now - recordingStart
+
+                // Protection anti-écho globale : en écoute continue ou après démarrage stabilisé,
+                // si SAM AI prend la parole, on coupe pour éviter l'auto-capture
+                if (TtsManager.isGlobalTtsSpeaking && (isContinuousSession || elapsedSinceStart > 350L)) {
                     withContext(Dispatchers.Main) {
                         reset()
                     }
@@ -183,72 +188,72 @@ class SpeechRecognitionManager(private val context: Context) {
                 }
 
                 val amp = audioRecorder.getMaxAmplitude()
-                val normalized = (amp / 4000f).coerceIn(0f, 1f)
-                val now = System.currentTimeMillis()
-                val elapsedSinceStart = now - recordingStart
+                val normalized = (amp / 2600f).coerceIn(0f, 1f)
                 if (amp > 0) sampleFrameCount++
+                if (amp > maxSpeechAmpInSession) {
+                    maxSpeechAmpInSession = amp
+                }
 
-                val onsetThreshold = maxOf(95, (noiseFloor * 1.40f).toInt()).coerceAtMost(260)
+                val onsetThreshold = maxOf(26, (noiseFloor * 1.45f).toInt()).coerceAtMost(150)
 
-                // Calibration rapide du bruit ambiant de la pièce hors parole (jusqu'à 200 RMS)
-                if (!speechDetected && amp in 1..200) {
-                    noiseFloor = if (sampleFrameCount <= 2 && amp < 170) {
-                        amp.toFloat().coerceIn(45f, 160f)
+                // Calibration rapide du bruit ambiant de la pièce hors parole
+                if (!speechDetected && amp in 1..140) {
+                    noiseFloor = if (sampleFrameCount <= 2 && amp < 110) {
+                        amp.toFloat().coerceIn(12f, 95f)
                     } else if (amp < onsetThreshold) {
-                        ((noiseFloor * 0.90f) + (amp * 0.10f)).coerceIn(40f, 185f)
+                        ((noiseFloor * 0.88f) + (amp * 0.12f)).coerceIn(12f, 115f)
                     } else {
                         noiseFloor
                     }
                 }
 
                 val activeThreshold = if (speechDetected) {
-                    maxOf(85, (noiseFloor * 1.28f).toInt(), (peakSpeechAmp * 0.20f).toInt().coerceAtMost(360))
+                    maxOf(20, (noiseFloor * 1.25f).toInt(), (peakSpeechAmp * 0.15f).toInt().coerceAtMost(220))
                 } else {
                     onsetThreshold
                 }
 
                 if (amp >= activeThreshold) {
-                    consecutiveVoiceFrames++
                     if (amp > peakSpeechAmp) {
                         peakSpeechAmp = amp
-                        maxSpeechAmpInSession = amp
                     }
                     if (!speechDetected) {
                         speechDetected = true
                         hasDetectedSpeechInSession = true
-                        speechStartTime = now - 20L
+                        speechStartTime = now - 25L
                         lastSoundTime = now
                     } else {
                         lastSoundTime = now
                     }
                 } else {
-                    consecutiveVoiceFrames = 0
                     val silenceDuration = now - lastSoundTime
                     val voicedDuration = if (speechDetected) (lastSoundTime - speechStartTime) else 0L
                     val totalSpeechDuration = if (speechDetected) (now - speechStartTime) else 0L
 
-                    // Si un simple clic mécanique (< 45 ms) a déclenché speechDetected suivi de silence, on réarme l'écoute
-                    if (speechDetected && voicedDuration < 45L && silenceDuration >= 240L) {
+                    // Si un simple clic mécanique (< 35 ms) a déclenché speechDetected suivi de silence, on réarme l'écoute
+                    if (speechDetected && voicedDuration < 35L && silenceDuration >= 260L) {
                         speechDetected = false
                         peakSpeechAmp = 0
                     }
 
-                    // Si aucune parole n'a été détectée après 8.5s, on relance proprement le cycle d'écoute
-                    if (!speechDetected && elapsedSinceStart >= 8500L) {
+                    // Si aucune parole n'a été détectée après 12s, on informe l'utilisateur proprement
+                    if (!speechDetected && elapsedSinceStart >= 12000L) {
                         withContext(Dispatchers.Main) {
                             cancelSilenceRecording()
                         }
                         break
                     }
 
-                    // Détection naturelle de fin de phrase (900 ms de silence) : laisse l'utilisateur
-                    // articuler chaque syllabe et respirer entre les mots sans jamais le couper prématurément
-                    val requiredSilenceMs = 900L
-                    if ((speechDetected && silenceDuration >= requiredSilenceMs && voicedDuration >= 100L) ||
-                        (speechDetected && totalSpeechDuration >= 18000L)
+                    // Détection naturelle de fin de phrase : laisse plus d'aisance rythmique en Mooré/Dioula
+                    // tout en captant les réponses courtes ("Barka", "Awo", "Ayi", "N-ye").
+                    val isAfrican = isAfricanLanguage(language)
+                    val requiredSilenceMs = if (isAfrican) 1350L else 1150L
+                    val minVoicedMs = if (isAfrican) 50L else 80L
+                    if ((speechDetected && silenceDuration >= requiredSilenceMs && voicedDuration >= minVoicedMs) ||
+                        (speechDetected && totalSpeechDuration >= 20000L)
                     ) {
                         withContext(Dispatchers.Main) {
-                            stopListening()
+                            stopWhisperRecognition(onFinished = null, manualStop = false)
                         }
                         break
                     }
@@ -279,11 +284,13 @@ class SpeechRecognitionManager(private val context: Context) {
         _partialText.value = clean
         _soundLevel.value = 0f
         val resultCallback = activeOnResult
+        val stopCb = pendingStopCallback
         activeOnResult = null
-        if (onFinished != null) {
-            onFinished.invoke(clean)
-        } else {
-            resultCallback?.invoke(clean)
+        pendingStopCallback = null
+        when {
+            onFinished != null -> onFinished.invoke(clean)
+            stopCb != null -> stopCb.invoke(clean)
+            else -> resultCallback?.invoke(clean)
         }
     }
 
@@ -294,6 +301,7 @@ class SpeechRecognitionManager(private val context: Context) {
         when (val currentState = _state.value) {
             is State.Processing -> {
                 if (onFinished != null) {
+                    pendingStopCallback = onFinished
                     activeOnResult = onFinished
                 }
                 return
@@ -320,23 +328,29 @@ class SpeechRecognitionManager(private val context: Context) {
                 deliverSuccess(current, onFinished)
             }
         } else {
-            stopWhisperRecognition(onFinished)
+            stopWhisperRecognition(onFinished, manualStop = true)
         }
     }
 
-    private fun stopWhisperRecognition(onFinished: ((String) -> Unit)?) {
+    private fun stopWhisperRecognition(onFinished: ((String) -> Unit)?, manualStop: Boolean = true) {
         amplitudeJob?.cancel()
         amplitudeJob = null
         _soundLevel.value = 0f
 
-        val voiceDetected = hasDetectedSpeechInSession && maxSpeechAmpInSession >= 85
+        val hadNonZeroAudio = audioRecorder.hadNonZeroAudio()
+        val voiceDetected = (hasDetectedSpeechInSession && maxSpeechAmpInSession >= 20) ||
+            (manualStop && hadNonZeroAudio)
         val audioFile = audioRecorder.stopRecording()
 
-        if (!voiceDetected || audioFile == null || !audioFile.exists() || audioFile.length() < 400) {
+        if (!voiceDetected || audioFile == null || !audioFile.exists() || audioFile.length() < 4000L) {
             try {
                 audioFile?.delete()
             } catch (_: Exception) {}
-            val err = "Aucune parole détectée. Veuillez parler plus près du micro."
+            val err = if (!hadNonZeroAudio) {
+                "Aucun signal micro capté. Vérifiez le microphone de l'appareil."
+            } else {
+                "Aucune parole détectée. Parlez puis réessayez."
+            }
             _state.value = State.Error(err)
             _partialText.value = ""
             activeOnError?.invoke(err)
@@ -346,6 +360,7 @@ class SpeechRecognitionManager(private val context: Context) {
 
         _state.value = State.Processing
         if (onFinished != null) {
+            pendingStopCallback = onFinished
             activeOnResult = onFinished
         }
 
@@ -359,8 +374,10 @@ class SpeechRecognitionManager(private val context: Context) {
                     val err = "Aucune parole détectée."
                     _state.value = State.Error(err)
                     _partialText.value = ""
+                    val stopCb = pendingStopCallback
+                    pendingStopCallback = null
                     activeOnError?.invoke(err)
-                    onFinished?.invoke("")
+                    if (onFinished != null) onFinished.invoke("") else stopCb?.invoke("")
                 }
             }.onFailure { err ->
                 Log.e(TAG, "Erreur transcription audio Google Gemini: ${err.message}")
@@ -370,8 +387,10 @@ class SpeechRecognitionManager(private val context: Context) {
                     else -> err.localizedMessage ?: "Erreur de transcription audio."
                 }
                 _state.value = State.Error(errMsg)
+                val stopCb = pendingStopCallback
+                pendingStopCallback = null
                 activeOnError?.invoke(errMsg)
-                onFinished?.invoke("")
+                if (onFinished != null) onFinished.invoke("") else stopCb?.invoke("")
             }
         }
     }
@@ -389,6 +408,7 @@ class SpeechRecognitionManager(private val context: Context) {
         _state.value = State.Idle
         activeOnResult = null
         activeOnError = null
+        pendingStopCallback = null
     }
 
     fun resetState() {

@@ -85,35 +85,43 @@ object DictionaryLookupEngine {
         )
         val isFrenchSentence = lowerWords.count { it in frenchIndicatorWords } >= 2
 
-        // 3. Normalisation phonétique des salutations et expressions Mooré certifiées
+        // 3. Normalisation phonétique des salutations et expressions Mooré certifiées (y compris confusions ASR fréquentes)
         val greetingRules = listOf(
-            Regex("(?i)\\bnii+\\s*y?i+\\s*be+o+go+\\b") to "Nii yi beogo",
-            Regex("(?i)\\bni+\\s*yibe+o+go+\\b") to "Nii yi beogo",
-            Regex("(?i)\\bne+\\s*y?\\s*be+o+go+\\b") to "Nii yi beogo",
-            Regex("(?i)\\byi+\\s*be+o+g?\\s*ki+ba+r[eé]+\\b") to "Yibeo kibare",
-            Regex("(?i)\\bnii+\\s*za+br[eé]+\\b") to "Nii zabre",
-            Regex("(?i)\\bne+\\s*y?\\s*za+br[eé]+\\b") to "Nii zabre",
+            Regex("(?i)\\b(nii+|ne+|ni)\\s*y?i+\\s*(be+o+go+|bi+o+go+|bo+go+)\\b") to "Nii yi beogo",
+            Regex("(?i)\\b(n'?y?i+be+o+go+|ini\\s*be+o+go+)\\b") to "Nii yi beogo",
+            Regex("(?i)\\b(ne+|ni+)\\s*y?\\s*be+o+go+\\b") to "Nii yi beogo",
+            Regex("(?i)\\b(yi+\\s*be+o+g?\\s*ki+ba+r[eé]+|yibeo\\s*kibare)\\b") to "Yibeo kibare",
+            Regex("(?i)\\b(nii+|ne+|ni+)\\s*y?\\s*za+br[eé]+\\b") to "Nii zabre",
             Regex("(?i)\\bza+br[eé]?\\s*ki+ba+r[eé]+\\b") to "Zabre kibare",
-            Regex("(?i)\\b(nii+|ne+)\\s*y?\\s*(wi+ndga+|ouin+d?ga+|wi+nga+)\\b") to "Nii windga",
+            Regex("(?i)\\b(nii+|ne+|ni+)\\s*y?\\s*(wi+ndga+|ouin+d?ga+|wi+nga+)\\b") to "Nii windga",
             Regex("(?i)\\b(wi+ndga+|ouin+d?ga+)\\s*ki+ba+r[eé]+\\b") to "Windga kibare",
-            Regex("(?i)\\b(nii+|ne+)\\s*y?\\s*(yu+ngo+|you+ngo+)\\b") to "Niyungo",
+            Regex("(?i)\\b(nii+|ne+|ni+)\\s*y?\\s*(yu+ngo+|you+ngo+)\\b") to "Niyungo",
             Regex("(?i)\\bniyungo+\\b") to "Niyungo",
             Regex("(?i)\\b(yu+ngo+|you+ngo+)\\s*ki+ba+r[eé]+\\b") to "Yungo kibare",
             Regex("(?i)\\b(wi+nd|we+nd|ouè+nd[ae]?)\\s*(da+|na+)\\s*ga+n[ae]+g\\s*la+fi+\\b") to "Wind da ganeg laafi",
-            Regex("(?i)\\b(ne+w[oô]+g[oô]+|ne+\\s*y?\\s*wa+o+ngo+)\\b") to "Neewôgô",
+            Regex("(?i)\\b(ne+w[oô]+g[oô]+|ne+\\s*y?\\s*wa+o+ngo+|ne+\\s*y?\\s*wa+o+go+)\\b") to "Neewôgô",
             Regex("(?i)\\bya+\\s*s[oõ]+n?ma+\\b") to "Ya sonma",
-            Regex("(?i)\\bla+fi+\\s*be+m[eé]+\\b") to "Laafi beeme",
+            Regex("(?i)\\bla+fi+\\s*(be+m[eé]+|bémé)\\b") to "Laafi beeme",
+            Regex("(?i)\\bla+\\s*fi+\\s*ba+la+\\b") to "Laafi bala",
             Regex("(?i)\\bla+fi+\\s*ba+la+\\b") to "Laafi bala",
-            Regex("(?i)\\bki+ba+r[eé]+\\b") to "Kibaré",
+            Regex("(?i)\\bf[oô]\\s+la+fi+\\b") to "Fo laafi",
+            Regex("(?i)\\b(ki+ba+r[eé]+|qui\\s*barr[eé])\\b") to "Kibaré",
             Regex("(?i)\\bni+nda+r[eé]+\\b") to "Nindaaré",
             Regex("(?i)\\b(we+nd|wë+nd)[-\\s]*na+\\s*k[oôõ]+[-\\s]*d\\s*ni+nda+r[eé]+\\b") to "Wënd-na kô-d nindaare",
+            Regex("(?i)\\bba+rk\\s*w[ou]+sg[ou]+\\b") to "Bark wusgo",
             Regex("(?i)\\bba+rka+\\b") to "Barka",
+            Regex("(?i)\\bs[ou]+gri+\\b") to "Sugri",
+            Regex("(?i)\\bm['’\\s]*k[oô]s+a\\s+s[ou]+gri+\\b") to "M kosa sugri",
+            Regex("(?i)\\b(k[oõô][-\\s]*m\\s*k[oô]+m|kon\\s*m\\s*kom)\\b") to "Kõ-m koom",
             Regex("(?i)\\bz[oô]+m[-\\s]*k[oô]+m\\b") to "Zom-kom",
             Regex("(?i)\\bs[eêẽ]+n\\s+na+\\s+be+\\b") to "Sên na be",
             Regex("(?i)\\bru+nda+\\s+ki+ba+ya+\\b") to "Sên na be",
             Regex("(?i)\\bm['’\\s]*na+n?\\s*gou*n?sa+m\\b") to "M nan gounsam",
-            Regex("(?i)\\bm['’\\s]*da+ta+\\s*li+gdi+\\b") to "M data ligdi",
-            Regex("(?i)\\bm['’\\s]*de+bda+\\s*za+ki*n?\\s*(wa+n?|oua+n?)?\\b") to "M debda zakin wan"
+            Regex("(?i)\\bm['’\\s]*da+ta+\\s*li+g[ui]*di+\\b") to "M data ligdi",
+            Regex("(?i)\\bm['’\\s]*de+bda+\\s*ra+ga+\\b") to "M debda raagẽ",
+            Regex("(?i)\\bm['’\\s]*de+bda+\\s*za+ki*n?\\s*(wa+n?|oua+n?)?\\b") to "M debda zakin wan",
+            Regex("(?i)\\bm['’\\s]*(w[uʋo]+ma+m[eé]?|woumame)\\b") to "M wʋmame",
+            Regex("(?i)\\ba\\s+yaa?\\s+ligd\\s*a\\s*wa+na+\\b") to "A yaa ligd a wãna"
         )
         for ((pattern, replacement) in greetingRules) {
             s = s.replace(pattern, replacement)
@@ -126,6 +134,10 @@ object DictionaryLookupEngine {
                 Regex("(?i)\\bt[oõô]+ndo*\\b") to "Tond",
                 Regex("(?i)\\bm['’\\s]*ma+\\b") to "M'ma",
                 Regex("(?i)\\bm['’\\s]*ba+ba+\\b") to "M'baaba",
+                Regex("(?i)\\bn[-\\s]*y[eé]\\b") to "N-ye",
+                Regex("(?i)\\ba+yo+\\b") to "Ayo",
+                Regex("(?i)\\bli+g[ui]*di+\\b") to "Ligdi",
+                Regex("(?i)\\bk[oô]{2,}m\\b") to "Koom",
                 Regex("(?i)\\b(ni+n?[-\\s]*k[eéèêẽ]+ma+n?|ni+ki+[eéè]+ma+n?)\\b") to "Nikieman",
                 Regex("(?i)\\b(pou*g[-\\s]*ya+nga+|p[uʋ]+g[-\\s]*n?ya+nga+)\\b") to "Poug yaanga",
                 Regex("(?i)\\b(pou*g?k?[-\\s]*sa+da+|p[uʋ]+g[-\\s]*sa+dga+)\\b") to "Poug sada",
@@ -150,6 +162,63 @@ object DictionaryLookupEngine {
             for ((pattern, replacement) in vocabRules) {
                 s = s.replace(pattern, replacement)
             }
+        }
+        return s
+    }
+
+    /**
+     * Normalise les transcriptions ASR phonétiques ou allongées en Dioula / Jula
+     * (ex: "il ni sogoma" / "inisogoma" -> "I ni sogoma", "ini tché" / "initié" -> "I ni ce",
+     * "toro té" -> "Tɔɔrɔ tɛ", "n bi ta sougou la" -> "N bɛ taa sugu la").
+     */
+    fun normalizeDioulaAsrTranscript(input: String): String {
+        var s = cleanWhitespace(input)
+        if (s.isEmpty()) return s
+
+        // Réduction de voyelles/nasales répétées 3+ fois
+        s = s.replace(Regex("(?i)([aeéèêiîoôuùûɛɔ])\\1{2,}"), "$1$1")
+
+        val dioulaRules = listOf(
+            Regex("(?i)\\b(il?|y|a|ini|ani)\\s*n?i\\s*s[oɔ]g[oɔ]ma+\\b") to "I ni sogoma",
+            Regex("(?i)\\binisogoma\\b") to "I ni sogoma",
+            Regex("(?i)\\b(il?|y|a|ini|ani)\\s*n?i\\s*til[eéè]n?\\b") to "I ni tilen",
+            Regex("(?i)\\b(il?|y|a|ini|ani)\\s*n?i\\s*(w?o?u+la+|houla)\\b") to "I ni wula",
+            Regex("(?i)\\b(il?|y|a|ini|ani)\\s*n?i\\s*(su+|sou+)\\b") to "I ni su",
+            Regex("(?i)\\b(initi[eé]|il\\s+ni\\s+c['’]?est|(il?|y|a|ini|ani)\\s*n?i\\s*(tch?[eéè]|ce+)|anitie)\\b") to "I ni ce",
+            Regex("(?i)\\b(il?|y|a|ini|ani)\\s*n?i\\s*ce\\s*k[oɔ]s[eɛ]b[eɛ]\\b") to "I ni ce kosɛbɛ",
+            Regex("(?i)\\b(il?|y|a|ini|ani)\\s*n?i\\s*b+a+ra+\\b") to "I ni baara",
+            Regex("(?i)\\b(anibara|aw\\s*ni\\s*bara)\\b") to "Aw ni baara",
+            Regex("(?i)\\b(i|il|y)\\s*(ka+|a\\s*qu'?a)\\s*k[eɛ]n[eɛ]\\s*wa+\\b") to "I ka kɛnɛ wa ?",
+            Regex("(?i)\\bikakene\\s*wa\\b") to "I ka kɛnɛ wa ?",
+            Regex("(?i)\\b(aw|ao)\\s*ka+\\s*k[eɛ]n[eɛ]\\s*wa+\\b") to "Aw ka kɛnɛ wa ?",
+            Regex("(?i)\\b(t[oɔ]+r[oɔ]+)\\s*t[eɛé]+\\b") to "Tɔɔrɔ tɛ",
+            Regex("(?i)\\b([nm]|en|oum)\\s*ka+\\s*k[eɛ]n[eɛ]\\b") to "N ka kɛnɛ",
+            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]\\s*ta+\\s*(s[ou]+g[ou]+\\s*la+)\\b") to "N bɛ taa sugu la",
+            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]\\s*ta+\\s*(la+k[oɔ]+li+\\s*la+)\\b") to "N bɛ taa lakɔli la",
+            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]\\s*ta+\\s*(ba+ra+\\s*la+)\\b") to "N bɛ taa baara la",
+            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]\\s*ta+\\s*s[oɔ]+\\b") to "N bɛ taa so",
+            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]\\s*na+\\b") to "N bɛ na",
+            Regex("(?i)\\b(i|y)\\s*b[eɛi]\\s*ta+\\s*mi+n\\b") to "I bɛ taa min ?",
+            Regex("(?i)\\b(i|y)\\s*b[eɛi]\\s*m[ou]+n\\s*k[eɛé]\\b") to "I bɛ mun kɛ ?",
+            Regex("(?i)\\bk[oɔ]ng[oɔ]\\s*b[eɛ]\\s*[nm]\\s*na\\b") to "Kɔngɔ bɛ n na",
+            Regex("(?i)\\bmin+n[oɔ]g[oɔ]\\s*b[eɛ]\\s*[nm]\\s*na\\b") to "Minnɔgɔ bɛ n na",
+            Regex("(?i)\\b(d?ji+|dji)\\s*di+\\s*[nm]?\\s*ma+\\b") to "Ji di n ma",
+            Regex("(?i)\\bwari+\\s*di+\\s*[nm]?\\s*ma+\\b") to "Wari di n ma",
+            Regex("(?i)\\bd[ou]+m[ou]+ni+\\s*di+\\s*[nm]?\\s*ma+\\b") to "Dumuni di n ma",
+            Regex("(?i)\\ba\\s*s[oɔ]ng[oɔ]\\s*ye\\s*(d?j[oɔ]li+)\\s*ye\\b") to "A sɔngɔ ye joli ye ?",
+            Regex("(?i)\\byafa\\s*[nm]?\\s*ma+\\b") to "Yafa n ma",
+            Regex("(?i)\\bhak[eɛ]t[oɔ]\\b") to "Hakɛto",
+            Regex("(?i)\\bsabali+\\b") to "Sabali",
+            Regex("(?i)\\b(i|y)\\s*dans[eɛ]\\b") to "I dansɛ",
+            Regex("(?i)\\b(k['’]?an|kan)\\s*b[eɛ]n\\s*(sini|si+ni+)\\b") to "K'an bɛn sini",
+            Regex("(?i)\\b(k['’]?an|kan)\\s*b[eɛ]n\\s*(s[oɔ]+ni+)\\b") to "K'an bɛn sɔɔni",
+            Regex("(?i)\\b(k['’]?an|kan)\\s*b[eɛ]n\\b") to "K'an bɛn",
+            Regex("(?i)\\b(awo+|owo+|ɔwɔ+)\\b") to "Awo",
+            Regex("(?i)\\ba+yi+\\b") to "Ayi",
+            Regex("(?i)\\b[nm]\\s*d[eɛ]m[eɛ]\\b") to "N dɛmɛ"
+        )
+        for ((pattern, replacement) in dioulaRules) {
+            s = s.replace(pattern, replacement)
         }
         return s
     }
@@ -1042,13 +1111,21 @@ object DictionaryLookupEngine {
             }
         }
 
-        // 4. Dioula -> Français
+        // 4. Dioula -> Français (avec normalisation phonétique ASR)
         if (src.contains("dioula") || src.contains("jula")) {
             if (tgt.contains("franç") || tgt.contains("franc")) {
                 dioulaToFrenchMap[stripped]?.let { return it }
                 dioulaToFrenchMap[normStripped]?.let { return it }
+                val normalizedDioula = normalizeDioulaAsrTranscript(clean)
+                val normDioulaStripped = stripPunctuation(normalizedDioula).lowercase()
+                val normDioulaNoAccents = normalizeAccents(normDioulaStripped)
+                dioulaToFrenchMap[normDioulaStripped]?.let { return it }
+                dioulaToFrenchMap[normDioulaNoAccents]?.let { return it }
                 DioulaKnowledgeData.seedDioulaDatabase().firstOrNull {
-                    it.word.equals(clean, ignoreCase = true) || isCloseMatch(it.word, clean)
+                    it.word.equals(clean, ignoreCase = true) ||
+                        it.word.equals(normalizedDioula, ignoreCase = true) ||
+                        isCloseMatch(it.word, clean) ||
+                        isCloseMatch(it.word, normalizedDioula)
                 }?.let { return it.translation }
             }
         }

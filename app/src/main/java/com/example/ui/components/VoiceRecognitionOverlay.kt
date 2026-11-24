@@ -54,6 +54,7 @@ import kotlin.math.sin
 fun VoiceRecordingCapsuleBar(
     soundLevel: Float,
     isListening: Boolean,
+    isProcessing: Boolean = false,
     onCancel: () -> Unit,
     onStopOrPause: () -> Unit,
     onSubmit: () -> Unit,
@@ -116,23 +117,41 @@ fun VoiceRecordingCapsuleBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                // Bouton Arrêt / Pause [■]
+                // Bouton Arrêt [■] / Reprise [Mic] / Chargement
                 Surface(
-                    onClick = onStopOrPause,
+                    onClick = { if (!isProcessing) onStopOrPause() },
                     shape = CircleShape,
-                    color = Color(0xFFF1F3F5),
+                    color = if (isListening) Color(0xFFF1F3F5) else Color(0xFFE0F2FE),
                     modifier = Modifier
-                        .size(42.dp)
+                        .size(48.dp)
                         .testTag("btn_voice_stop")
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        // Carré noir Stop
-                        Box(
-                            modifier = Modifier
-                                .size(14.dp)
-                                .clip(RoundedCornerShape(3.dp))
-                                .background(Color(0xFF1E2022))
-                        )
+                        when {
+                            isProcessing -> {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(18.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Color(0xFF007AFF)
+                                )
+                            }
+                            isListening -> {
+                                Box(
+                                    modifier = Modifier
+                                        .size(14.dp)
+                                        .clip(RoundedCornerShape(3.dp))
+                                        .background(Color(0xFF1E2022))
+                                )
+                            }
+                            else -> {
+                                Icon(
+                                    imageVector = Icons.Default.Mic,
+                                    contentDescription = "Réécouter",
+                                    tint = Color(0xFF007AFF),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
                     }
                 }
 
@@ -297,21 +316,26 @@ fun VoiceRecognitionInteractiveOverlay(
     val partialText by speechManager.partialText.collectAsState()
 
     var recognizedText by remember { mutableStateOf("") }
-    var isAnalyzingAi by remember { mutableStateOf(false) }
+    var voiceError by remember { mutableStateOf<String?>(null) }
 
     val startListening = {
+        voiceError = null
         speechManager.startListening(
             language = sourceLanguage,
+            continuousMode = false,
             onResult = { result ->
                 val cleanImmediate = ConversationCleaner.cleanVoiceTranscript(result, sourceLanguage).ifBlank { result.trim() }
-                recognizedText = cleanImmediate
                 if (cleanImmediate.isNotBlank()) {
+                    recognizedText = cleanImmediate
+                    voiceError = null
                     onTextReady(cleanImmediate, true)
                     onDismiss()
+                } else {
+                    voiceError = "Aucune parole reconnue. Appuyez sur le micro pour réessayer."
                 }
             },
-            onError = { _ ->
-                // Gestion non-bloquante
+            onError = { err ->
+                voiceError = err.ifBlank { "Aucune parole détectée. Appuyez sur le micro pour réessayer." }
             }
         )
     }
@@ -326,16 +350,20 @@ fun VoiceRecognitionInteractiveOverlay(
 
     DisposableEffect(Unit) {
         onDispose {
-            speechManager.stopListening()
+            speechManager.reset()
         }
     }
 
     val isListening = speechState is SpeechRecognitionManager.State.Listening
+    val isProcessing = speechState is SpeechRecognitionManager.State.Processing
+    val activeError = voiceError ?: (speechState as? SpeechRecognitionManager.State.Error)?.message
     val currentDisplayTranscript = when {
         recognizedText.isNotBlank() -> recognizedText
         partialText.isNotBlank() -> partialText
-        isListening -> "Parlez en $sourceLanguage..."
-        else -> "Écoute en pause"
+        isProcessing -> "Analyse et transcription de votre voix..."
+        isListening -> "Parlez maintenant en $sourceLanguage..."
+        activeError != null -> activeError
+        else -> "Appuyez sur le micro pour parler"
     }
 
     Column(
@@ -362,16 +390,32 @@ fun VoiceRecognitionInteractiveOverlay(
             ) {
                 Surface(
                     shape = CircleShape,
-                    color = if (isListening) Color(0xFFE0F2FE) else MaterialTheme.colorScheme.surfaceVariant,
+                    color = when {
+                        isListening -> Color(0xFFE0F2FE)
+                        activeError != null -> MaterialTheme.colorScheme.errorContainer
+                        else -> MaterialTheme.colorScheme.surfaceVariant
+                    },
                     modifier = Modifier.size(32.dp)
                 ) {
                     Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = Icons.Default.Mic,
-                            contentDescription = null,
-                            tint = if (isListening) Color(0xFF007AFF) else MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp)
-                        )
+                        if (isProcessing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = Color(0xFF007AFF)
+                            )
+                        } else {
+                            Icon(
+                                imageVector = if (activeError != null) Icons.Default.MicOff else Icons.Default.Mic,
+                                contentDescription = null,
+                                tint = when {
+                                    isListening -> Color(0xFF007AFF)
+                                    activeError != null -> MaterialTheme.colorScheme.error
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
                     }
                 }
 
@@ -379,16 +423,29 @@ fun VoiceRecognitionInteractiveOverlay(
 
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = if (isListening) "Reconnaissance vocale en direct ($sourceLanguage)" else "Transcription",
+                        text = when {
+                            isListening -> "Écoute en direct ($sourceLanguage)"
+                            isProcessing -> "Transcription vocale en cours..."
+                            activeError != null -> "Saisie vocale"
+                            else -> "Transcription"
+                        },
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (isListening) Color(0xFF007AFF) else MaterialTheme.colorScheme.onSurfaceVariant
+                        color = when {
+                            isListening || isProcessing -> Color(0xFF007AFF)
+                            activeError != null -> MaterialTheme.colorScheme.error
+                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                        }
                     )
                     Spacer(modifier = Modifier.height(2.dp))
                     Text(
                         text = currentDisplayTranscript,
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = if (recognizedText.isNotBlank() || partialText.isNotBlank()) FontWeight.SemiBold else FontWeight.Normal,
-                        color = MaterialTheme.colorScheme.onSurface,
+                        color = if (activeError != null && recognizedText.isBlank() && !isListening && !isProcessing) {
+                            MaterialTheme.colorScheme.error
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
                         maxLines = 3,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -396,10 +453,11 @@ fun VoiceRecognitionInteractiveOverlay(
             }
         }
 
-        // La capsule de contrôle conforme à l'image
+        // La capsule de contrôle
         VoiceRecordingCapsuleBar(
             soundLevel = soundLevel,
             isListening = isListening,
+            isProcessing = isProcessing,
             onCancel = {
                 speechManager.reset()
                 onDismiss()
@@ -407,22 +465,42 @@ fun VoiceRecognitionInteractiveOverlay(
             onStopOrPause = {
                 if (isListening) {
                     speechManager.stopListening { transcribed ->
-                        if (transcribed.isNotBlank()) {
-                            recognizedText = transcribed
+                        val clean = ConversationCleaner.cleanVoiceTranscript(transcribed, sourceLanguage).ifBlank { transcribed.trim() }
+                        if (clean.isNotBlank()) {
+                            recognizedText = clean
+                            voiceError = null
+                            onTextReady(clean, true)
+                            onDismiss()
+                        } else {
+                            voiceError = "Aucune parole reconnue. Appuyez sur le micro pour réessayer."
                         }
                     }
-                } else {
+                } else if (!isProcessing) {
                     startListening()
                 }
             },
             onSubmit = {
                 val currentText = recognizedText.ifBlank { partialText }
-                speechManager.stopListening { transcribed ->
-                    val finalText = transcribed.ifBlank { currentText }
-                    if (finalText.isNotBlank()) {
-                        onTextReady(finalText, true)
+                when {
+                    isListening || isProcessing -> {
+                        speechManager.stopListening { transcribed ->
+                            val raw = transcribed.ifBlank { currentText }
+                            val finalText = ConversationCleaner.cleanVoiceTranscript(raw, sourceLanguage).ifBlank { raw.trim() }
+                            if (finalText.isNotBlank()) {
+                                onTextReady(finalText, true)
+                                onDismiss()
+                            } else {
+                                voiceError = "Aucune parole détectée. Appuyez sur le micro et parlez."
+                            }
+                        }
                     }
-                    onDismiss()
+                    currentText.isNotBlank() -> {
+                        onTextReady(currentText, true)
+                        onDismiss()
+                    }
+                    else -> {
+                        startListening()
+                    }
                 }
             }
         )
