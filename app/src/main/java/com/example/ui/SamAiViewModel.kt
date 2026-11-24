@@ -2702,59 +2702,8 @@ class SamAiViewModel(
                 var liveSources = emptyList<com.example.data.local.WebSource>()
                 var isWebSearchNeeded = false
 
-                if (!isMooreVoice) {
-                    val searchDecision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
-                    isWebSearchNeeded = searchDecision.isSearchNeeded
-                    if (searchDecision.isSearchNeeded) {
-                        val baseCleanQuery = searchDecision.cleanSearchQuery.ifBlank { userText }
-                        val lastUserQuestions = currentHistory.filter { it.role == "user" }.takeLast(3).joinToString(" ") { it.content }
-                        val effectiveQuery = if (
-                            !baseCleanQuery.contains("burkina", ignoreCase = true) &&
-                            !baseCleanQuery.contains("faso", ignoreCase = true) &&
-                            !baseCleanQuery.contains("monde", ignoreCase = true) &&
-                            baseCleanQuery.length < 35
-                        ) {
-                            when {
-                                lastUserQuestions.contains("burkina", ignoreCase = true) || lastUserQuestions.contains("faso", ignoreCase = true) ->
-                                    "$baseCleanQuery Burkina Faso"
-                                lastUserQuestions.contains("monde", ignoreCase = true) || lastUserQuestions.contains("international", ignoreCase = true) ->
-                                    "$baseCleanQuery monde"
-                                else -> baseCleanQuery
-                            }
-                        } else {
-                            baseCleanQuery
-                        }
-
-                        val alreadyMentionedInChat = currentList
-                            .filter { it.sender != "user" && it.id != "welcome_msg" }
-                            .takeLast(6)
-                            .joinToString("\n") { it.text }
-
-                        if (isVoiceCall) {
-                            val fastNews = kotlinx.coroutines.withTimeoutOrNull(2000L) {
-                                liveNewsFeedService.fetchLiveNews(
-                                    query = effectiveQuery,
-                                    alreadyMentionedText = alreadyMentionedInChat
-                                )
-                            }
-                            if (fastNews != null && fastNews.hasNews) {
-                                liveContextSummary = fastNews.contextSummary
-                                liveSources = fastNews.sources
-                            }
-                        } else {
-                            val newsResult = kotlinx.coroutines.withTimeoutOrNull(2500L) {
-                                liveNewsFeedService.fetchLiveNews(
-                                    query = effectiveQuery,
-                                    alreadyMentionedText = alreadyMentionedInChat
-                                )
-                            }
-                            if (newsResult != null && newsResult.hasNews) {
-                                liveContextSummary = newsResult.contextSummary
-                                liveSources = newsResult.sources
-                            }
-                        }
-                    }
-                }
+                // Désactivation totale du pré-fetch réseau pour que l'IA réponde instantanément
+                isWebSearchNeeded = false
 
                 // Moteur IA 100 % Google via Firebase AI Logic (gemini-3.8-flash + Google Search Grounding + repli gemini-3.5-flash-lite)
                 var responseText = ""
@@ -2893,36 +2842,41 @@ class SamAiViewModel(
     fun recordRealtimeCallTurn(userQuestion: String, aiResponse: String) {
         val cleanUser = userQuestion.trim()
         val cleanAi = aiResponse.trim()
-        if (cleanUser.isBlank() || cleanAi.isBlank()) return
+        if (cleanAi.isBlank()) return
         val lowerUser = cleanUser.lowercase(java.util.Locale.ROOT)
-        if (lowerUser.contains("burkina faso, ouagadougou, bobo-dioulasso") ||
-            lowerUser.contains("bobo-dioulasso, abdoul mohamine")
-        ) {
-            return
-        }
+        val validUser = cleanUser.isNotBlank() &&
+            !lowerUser.contains("burkina faso, ouagadougou, bobo-dioulasso") &&
+            !lowerUser.contains("bobo-dioulasso, abdoul mohamine")
 
         val now = System.currentTimeMillis()
-        val userMsg = SamAiChatMessage(
-            sender = "user",
-            text = cleanUser,
-            timestamp = now,
-            language = null
-        )
-        val botMsg = SamAiChatMessage(
-            sender = "sam_ai",
-            text = cleanAi,
-            timestamp = now + 1L,
-            isError = false,
-            sources = emptyList(),
-            model = null,
-            language = null
-        )
         val baseList = if (_samAiChatMessages.value.size == 1 && _samAiChatMessages.value.first().id == "welcome_msg") {
             emptyList()
         } else {
             _samAiChatMessages.value
         }
-        _samAiChatMessages.value = baseList + userMsg + botMsg
+        val appended = mutableListOf<SamAiChatMessage>()
+        if (validUser) {
+            appended.add(
+                SamAiChatMessage(
+                    sender = "user",
+                    text = cleanUser,
+                    timestamp = now,
+                    language = null
+                )
+            )
+        }
+        appended.add(
+            SamAiChatMessage(
+                sender = "sam_ai",
+                text = cleanAi,
+                timestamp = now + 1L,
+                isError = false,
+                sources = emptyList(),
+                model = null,
+                language = null
+            )
+        )
+        _samAiChatMessages.value = baseList + appended
     }
 
     fun getGreeting(): String {

@@ -3,7 +3,9 @@ package com.example.util
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
+import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioTrack
 import android.media.MediaPlayer
 import android.media.audiofx.Visualizer
 import android.os.Build
@@ -25,10 +27,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -44,12 +50,15 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     private val appContext: Context = context.applicationContext
     private var tts: TextToSpeech? = null
     private var mediaPlayer: MediaPlayer? = null
+    @Volatile
+    private var activeAudioTrack: AudioTrack? = null
     private var audioVisualizer: Visualizer? = null
     private val audioManager by lazy {
         appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
     }
     private var audioFocusRequest: AudioFocusRequest? = null
     private var isReady = false
+    @Volatile
     private var isNeuralPlaying = false
     private var currentSpeechRate: Float = 1.0f
 
@@ -67,9 +76,15 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     companion object {
         // Modèles Google Gemini TTS officiels de dernière génération (voix masculine naturelle "Charon")
         private const val PRIMARY_TTS_MODEL = "gemini-3.8-flash-tts"
+        private const val FAST_LITE_TTS_MODEL = "gemini-3.8-flash-lite-tts"
         private const val FALLBACK_TTS_MODEL = "gemini-3.1-flash-tts-preview"
+        private const val LEGACY_TTS_MODEL = "gemini-2.5-flash-preview-tts"
         private const val UNIFIED_GOOGLE_MALE_VOICE = "Charon"
         private const val CACHE_PREFIX = "sam_tts_google_v6_"
+        private const val FIRST_CHUNK_TIMEOUT_MS = 5_000L
+
+        @Volatile
+        private var preferredWorkingTtsModel: String? = null
 
         private val activeInstances = java.util.Collections.synchronizedSet(
             java.util.Collections.newSetFromMap(java.util.WeakHashMap<TtsManager, Boolean>())
@@ -310,20 +325,20 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     private fun buildHumanVoiceDirectorPrompt(langCode: String, ttsInput: String): String {
         val styleDirection = when (langCode) {
-            "en" -> "Speak in a warm, relaxed everyday male English voice, like a real person talking face-to-face with a friend. Natural conversational rhythm."
-            "es" -> "Habla con una voz masculina cálida y natural en español, como una persona real conversando tranquilamente con un amigo."
-            "de" -> "Sprich mit einer warmen, natürlichen männlichen Stimme auf Deutsch, wie ein echter Mensch im ruhigen Gespräch."
-            "ar" -> "تحدث بصوت رجالي دافئ وطبيعي وواضح باللغة العربية مثل إنسان حقيقي يتحدث بهدوء مع صديق."
-            "it" -> "Parla con una voce maschile naturale, calda e rilassata in italiano, come in una vera conversazione tra amici."
-            "pt" -> "Fale com uma voz masculina natural, calorosa e descontraída em português, como em uma conversa tranquila."
-            "ru" -> "Говори тёплым, спокойным и естественным мужским голосом на русском языке, как живой человек в беседе."
-            "zh" -> "用温暖、自然、放松的男性日常普通话说话，就像真人和朋友面对面聊天一样自然流畅。"
-            "mos" -> "Lis exactement cette transcription phonétique en mooré à voix haute comme un locuteur burkinabè calme et chaleureux. Prononce chaque voyelle et syllabe clairement (ou, é, è, ô, an, on) avec un rythme humain détendu."
-            "dyu" -> "Lis exactement cette transcription phonétique en dioula à voix haute comme un locuteur ouest-africain calme et chaleureux. Prononce clairement chaque syllabe (ou, é, è, ô, gn, tch, dj)."
-            "ha" -> "Lis exactement cette transcription phonétique en haoussa à voix haute comme un locuteur ouest-africain calme et chaleureux. Prononce clairement chaque syllabe (ou, é, è, tch, ch, dj)."
-            else -> "Parle avec une voix masculine française posée, chaude, naturelle et humaine, comme dans une conversation authentique."
+            "en" -> "Warm natural male English voice:"
+            "es" -> "Voz masculina cálida y natural:"
+            "de" -> "Warme, natürliche männliche Stimme:"
+            "ar" -> "بصوت رجالي دافئ وطبيعي:"
+            "it" -> "Voce maschile calda e naturale:"
+            "pt" -> "Voz masculina calorosa e natural:"
+            "ru" -> "Тёплым, естественным мужским голосом:"
+            "zh" -> "用温暖自然的男性声音朗读："
+            "mos" -> "Lis cette phonétique mooré d'une voix masculine calme et naturelle :"
+            "dyu" -> "Lis cette phonétique dioula d'une voix masculine calme et naturelle :"
+            "ha" -> "Lis cette phonétique haoussa d'une voix masculine calme et naturelle :"
+            else -> "Voix masculine calme, chaleureuse et naturelle :"
         }
-        return "$styleDirection\n\n$ttsInput"
+        return "$styleDirection $ttsInput"
     }
 
     private fun computeNaturalSpeed(userRate: Float): Float {
@@ -340,11 +355,6 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             "$trimmed."
         }
     }
-
-    private data class NeuralAudioResult(
-        val wavOrAudioBytes: ByteArray,
-        val isPrimaryModel: Boolean
-    )
 
     private fun hasRiffWavHeader(bytes: ByteArray): Boolean {
         return bytes.size >= 12 &&
@@ -393,11 +403,100 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         return match?.groupValues?.getOrNull(1)?.toIntOrNull()?.coerceIn(8000, 48000) ?: 24000
     }
 
+    private fun isStreamablePcmOrWavMimeType(mimeType: String): Boolean {
+        val lower = mimeType.lowercase(Locale.ROOT)
+        return lower.isBlank() ||
+            lower.contains("pcm") ||
+            lower.contains("l16") ||
+            lower.contains("wav")
+    }
+
+    private fun createStreamingAudioTrack(sampleRate: Int, speed: Float): AudioTrack? {
+        return try {
+            val minBuffer = AudioTrack.getMinBufferSize(
+                sampleRate,
+                AudioFormat.CHANNEL_OUT_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            ).coerceAtLeast(4096)
+            val bufferSize = (minBuffer * 2).coerceAtLeast(8192)
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+            val format = AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(sampleRate)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                .build()
+            val track = AudioTrack.Builder()
+                .setAudioAttributes(attrs)
+                .setAudioFormat(format)
+                .setBufferSizeInBytes(bufferSize)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
+            if (track.state != AudioTrack.STATE_INITIALIZED) {
+                try { track.release() } catch (_: Exception) {}
+                return null
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && kotlin.math.abs(speed - 1.0f) > 0.03f) {
+                try {
+                    track.playbackParams = track.playbackParams.setSpeed(speed)
+                } catch (_: Exception) {}
+            }
+            track
+        } catch (e: Exception) {
+            Log.w("TtsManager", "Impossible de créer AudioTrack streaming: ${e.message}")
+            null
+        }
+    }
+
+    private fun updatePcmSoundLevel(pcmBytes: ByteArray, offset: Int, length: Int) {
+        if (length < 2) return
+        var sumSq = 0.0
+        val samples = length / 2
+        var i = offset
+        val limit = offset + length
+        while (i + 1 < limit) {
+            val low = pcmBytes[i].toInt() and 0xFF
+            val high = pcmBytes[i + 1].toInt()
+            val sample = (high shl 8) or low
+            sumSq += (sample * sample).toDouble()
+            i += 2
+        }
+        val rms = if (samples > 0) sqrt(sumSq / samples) else 0.0
+        val level = if (rms >= 45.0) {
+            val linear = ((rms - 45.0) / 1650.0).coerceIn(0.0, 1.0)
+            sqrt(linear).toFloat().coerceIn(0f, 1f)
+        } else {
+            0f
+        }
+        _ttsSoundLevel.value = level
+    }
+
+    private fun releaseStreamAudioTrack(track: AudioTrack?) {
+        if (track == null) return
+        if (activeAudioTrack === track) {
+            activeAudioTrack = null
+        }
+        try {
+            if (track.state == AudioTrack.STATE_INITIALIZED) {
+                track.pause()
+                track.flush()
+                track.stop()
+            }
+        } catch (_: Exception) {}
+        try {
+            track.release()
+        } catch (_: Exception) {}
+    }
+
     @OptIn(PublicPreviewAPI::class)
-    private suspend fun synthesizeNeuralBytes(
+    private suspend fun streamAndPlayNeuralVoice(
         spokenText: String,
-        langCode: String
-    ): NeuralAudioResult? = withContext(Dispatchers.IO) {
+        langCode: String,
+        naturalSpeed: Float,
+        cachedFile: File
+    ): Boolean = withContext(Dispatchers.IO) {
         val ttsInput = ensureNaturalSentenceEnding(spokenText).take(2200)
         val prompt = buildHumanVoiceDirectorPrompt(langCode, ttsInput)
         val bcp47 = toBcp47LanguageCode(langCode)
@@ -410,51 +509,322 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             )
         }
 
-        val models = listOf(
-            PRIMARY_TTS_MODEL to true,
-            FALLBACK_TTS_MODEL to false
+        val defaultOrder = listOf(
+            PRIMARY_TTS_MODEL,
+            FAST_LITE_TTS_MODEL,
+            FALLBACK_TTS_MODEL,
+            LEGACY_TTS_MODEL
         )
+        val candidateModels = preferredWorkingTtsModel?.let { pref ->
+            (listOf(pref) + defaultOrder).distinct()
+        } ?: defaultOrder
 
-        for ((modelName, isPrimary) in models) {
+        for (modelName in candidateModels) {
+            if (!isActive || !isGlobalTtsSpeaking) return@withContext false
+            var localTrack: AudioTrack? = null
+            var receivedFirstAudio = false
+            var startedStreamingTrack = false
+            var compressedFallbackStream: ByteArrayOutputStream? = null
+            val fullCacheStream = ByteArrayOutputStream()
+            var detectedMimeType = "audio/pcm;rate=24000"
+            var detectedSampleRate = 24000
+            var totalPcmBytesWritten = 0L
+            var pendingOddByte: Byte? = null
+
             try {
                 val model = firebaseAi.generativeModel(
                     modelName = modelName,
                     generationConfig = ttsConfig
                 )
-                val audioStream = ByteArrayOutputStream()
-                var detectedMimeType = "audio/pcm;rate=24000"
 
-                model.generateContentStream(prompt).collect { chunk ->
-                    val parts = chunk.candidates.firstOrNull()?.content?.parts.orEmpty()
-                    for (part in parts) {
-                        if (part is InlineDataPart) {
-                            if (part.mimeType.isNotBlank()) {
-                                detectedMimeType = part.mimeType
+                coroutineScope {
+                    val streamJob = launch {
+                        model.generateContentStream(prompt).collect { chunk ->
+                            if (!isActive || !isGlobalTtsSpeaking) {
+                                throw CancellationException("TTS stopped")
                             }
-                            audioStream.write(part.inlineData)
+                            val parts = chunk.candidates.firstOrNull()?.content?.parts.orEmpty()
+                            for (part in parts) {
+                                if (part is InlineDataPart && part.inlineData.isNotEmpty()) {
+                                    if (!receivedFirstAudio) {
+                                        receivedFirstAudio = true
+                                        if (part.mimeType.isNotBlank()) {
+                                            detectedMimeType = part.mimeType
+                                        }
+                                        detectedSampleRate = parseSampleRateFromMimeType(detectedMimeType)
+                                    }
+
+                                    val rawBytes = part.inlineData
+                                    fullCacheStream.write(rawBytes)
+
+                                    if (!startedStreamingTrack && compressedFallbackStream == null) {
+                                        val hasWavHeader = hasRiffWavHeader(rawBytes) && rawBytes.size >= 44
+                                        if (hasWavHeader) {
+                                            val wavSampleRate = ByteBuffer.wrap(rawBytes, 24, 4)
+                                                .order(ByteOrder.LITTLE_ENDIAN).int
+                                            if (wavSampleRate in 8000..48000) {
+                                                detectedSampleRate = wavSampleRate
+                                            }
+                                        }
+                                        if (isStreamablePcmOrWavMimeType(detectedMimeType)) {
+                                            val canPlay = withContext(Dispatchers.Main) {
+                                                if (!isGlobalTtsSpeaking) {
+                                                    false
+                                                } else {
+                                                    releaseMediaPlayer()
+                                                    requestPlaybackAudioFocus()
+                                                    isNeuralPlaying = true
+                                                    SpeechRecognitionManager.pauseAllActiveRecognizersForTts()
+                                                    true
+                                                }
+                                            }
+                                            if (!canPlay) {
+                                                throw CancellationException("TTS stopped before AudioTrack start")
+                                            }
+                                            val track = createStreamingAudioTrack(detectedSampleRate, naturalSpeed)
+                                            if (track != null) {
+                                                localTrack = track
+                                                activeAudioTrack = track
+                                                track.play()
+                                                startedStreamingTrack = true
+                                                mainHandler.post { activeOnStartCallback?.invoke() }
+                                            } else {
+                                                compressedFallbackStream = ByteArrayOutputStream()
+                                            }
+                                        } else {
+                                            compressedFallbackStream = ByteArrayOutputStream()
+                                        }
+                                    }
+
+                                    if (startedStreamingTrack && localTrack != null) {
+                                        val track = localTrack!!
+                                        val startOffset = if (totalPcmBytesWritten == 0L && hasRiffWavHeader(rawBytes) && rawBytes.size >= 44) 44 else 0
+                                        val payloadLen = rawBytes.size - startOffset
+                                        if (payloadLen > 0) {
+                                            val alignedBytes: ByteArray
+                                            val prevOdd = pendingOddByte
+                                            if (prevOdd != null) {
+                                                val combined = ByteArray(1 + payloadLen)
+                                                combined[0] = prevOdd
+                                                System.arraycopy(rawBytes, startOffset, combined, 1, payloadLen)
+                                                pendingOddByte = null
+                                                alignedBytes = combined
+                                            } else {
+                                                alignedBytes = if (startOffset == 0) rawBytes else rawBytes.copyOfRange(startOffset, rawBytes.size)
+                                            }
+
+                                            val evenLen = alignedBytes.size and 0x7FFFFFFE
+                                            if (alignedBytes.size % 2 != 0) {
+                                                pendingOddByte = alignedBytes[alignedBytes.size - 1]
+                                            }
+
+                                            if (evenLen > 0) {
+                                                var writtenOffset = 0
+                                                while (writtenOffset < evenLen && isActive && isNeuralPlaying) {
+                                                    val slice = minOf(2048, evenLen - writtenOffset)
+                                                    val written = track.write(alignedBytes, writtenOffset, slice)
+                                                    if (written <= 0) break
+                                                    updatePcmSoundLevel(alignedBytes, writtenOffset, written)
+                                                    totalPcmBytesWritten += written
+                                                    writtenOffset += written
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        compressedFallbackStream?.write(rawBytes)
+                                    }
+                                }
+                            }
                         }
                     }
+
+                    val watchdogJob = launch {
+                        delay(FIRST_CHUNK_TIMEOUT_MS)
+                        if (!receivedFirstAudio) {
+                            Log.w("TtsManager", "Timeout premier octet sur $modelName (${FIRST_CHUNK_TIMEOUT_MS}ms)")
+                            streamJob.cancel(CancellationException("FIRST_CHUNK_TIMEOUT"))
+                        }
+                    }
+
+                    streamJob.join()
+                    watchdogJob.cancel()
                 }
 
-                val rawAudio = audioStream.toByteArray()
-                if (rawAudio.size >= 200) {
-                    val playableBytes = when {
-                        hasRiffWavHeader(rawAudio) ||
-                            detectedMimeType.contains("wav", ignoreCase = true) && hasRiffWavHeader(rawAudio) -> rawAudio
-                        else -> wrapPcm24kMono16BitAsWav(
-                            pcmBytes = rawAudio,
-                            sampleRate = parseSampleRateFromMimeType(detectedMimeType)
-                        )
+                if (startedStreamingTrack && totalPcmBytesWritten > 0L && localTrack != null) {
+                    preferredWorkingTtsModel = modelName
+                    val allBytes = fullCacheStream.toByteArray()
+                    val wavBytes = if (hasRiffWavHeader(allBytes)) {
+                        allBytes
+                    } else {
+                        wrapPcm24kMono16BitAsWav(allBytes, detectedSampleRate)
                     }
-                    return@withContext NeuralAudioResult(playableBytes, isPrimaryModel = isPrimary)
+                    // Sauvegarde en cache en arrière-plan pour lecture instantanée future
+                    scope.launch(Dispatchers.IO) {
+                        try {
+                            FileOutputStream(cachedFile).use { it.write(wavBytes) }
+                        } catch (_: Exception) {}
+                    }
+
+                    // Attente précise de la fin de lecture dans le buffer matériel AudioTrack
+                    val track = localTrack!!
+                    val totalFrames = totalPcmBytesWritten / 2L
+                    val maxWaitMs = ((totalFrames * 1000L) / (detectedSampleRate * naturalSpeed)).toLong() + 1200L
+                    val waitStart = System.currentTimeMillis()
+                    while (isActive && isNeuralPlaying) {
+                        val playedFrames = try { track.playbackHeadPosition.toLong() } catch (_: Exception) { totalFrames }
+                        if (playedFrames >= totalFrames || (System.currentTimeMillis() - waitStart) > maxWaitMs) {
+                            break
+                        }
+                        delay(35L)
+                    }
+
+                    if (isNeuralPlaying) {
+                        isNeuralPlaying = false
+                        isGlobalTtsSpeaking = false
+                        _ttsSoundLevel.value = 0f
+                        lastGlobalTtsEndTimeMs = System.currentTimeMillis()
+                        val cb = activeOnDoneCallback
+                        activeOnDoneCallback = null
+                        mainHandler.post { cb?.invoke() }
+                    }
+                    return@withContext true
+                }
+
+                // Cas rare où l'audio reçu était compressé (non-PCM)
+                val compressedBytes = compressedFallbackStream?.toByteArray()
+                if (compressedBytes != null && compressedBytes.size >= 200) {
+                    preferredWorkingTtsModel = modelName
+                    val playableBytes = if (hasRiffWavHeader(compressedBytes)) {
+                        compressedBytes
+                    } else {
+                        wrapPcm24kMono16BitAsWav(compressedBytes, detectedSampleRate)
+                    }
+                    FileOutputStream(cachedFile).use { it.write(playableBytes) }
+                    return@withContext playAudioFileWithMediaPlayer(cachedFile, cachedFile, naturalSpeed, spokenText, langCode, naturalSpeed)
                 }
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Throwable) {
                 Log.w("TtsManager", "Google Gemini TTS $modelName indisponible: ${e.message}")
+            } finally {
+                withContext(NonCancellable) {
+                    releaseStreamAudioTrack(localTrack)
+                    if (startedStreamingTrack) {
+                        abandonPlaybackAudioFocus()
+                    }
+                }
+            }
+
+            // Si la lecture avait déjà commencé et a été coupée en cours, on ne relance pas un autre modèle
+            if (startedStreamingTrack) {
+                return@withContext true
             }
         }
-        null
+        false
+    }
+
+    private suspend fun playAudioFileWithMediaPlayer(
+        audioFileToPlay: File,
+        cachedFile: File,
+        naturalSpeed: Float,
+        spokenText: String,
+        langCode: String,
+        rawRate: Float
+    ): Boolean = withContext(Dispatchers.Main) {
+        try {
+            releaseMediaPlayer()
+            requestPlaybackAudioFocus()
+            isNeuralPlaying = true
+            mediaPlayer = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                )
+                setDataSource(audioFileToPlay.absolutePath)
+                setVolume(1.0f, 1.0f)
+                setOnPreparedListener { mp ->
+                    isGlobalTtsSpeaking = true
+                    SpeechRecognitionManager.pauseAllActiveRecognizersForTts()
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && kotlin.math.abs(naturalSpeed - 1.0f) > 0.03f) {
+                        try {
+                            mp.playbackParams = mp.playbackParams.setSpeed(naturalSpeed)
+                        } catch (_: Exception) {}
+                    }
+                    try {
+                        audioVisualizer = Visualizer(mp.audioSessionId).apply {
+                            captureSize = Visualizer.getCaptureSizeRange()[0]
+                            setDataCaptureListener(
+                                object : Visualizer.OnDataCaptureListener {
+                                    override fun onWaveFormDataCapture(
+                                        visualizer: Visualizer?,
+                                        waveform: ByteArray?,
+                                        samplingRate: Int
+                                    ) {
+                                        if (waveform != null && waveform.isNotEmpty() && isNeuralPlaying) {
+                                            var sumSq = 0.0
+                                            for (b in waveform) {
+                                                val centered = (b.toInt() and 0xFF) - 128
+                                                sumSq += (centered * centered).toDouble()
+                                            }
+                                            val rms = sqrt(sumSq / waveform.size)
+                                            val level = if (rms >= 2.8) {
+                                                val linear = ((rms - 2.8) / 28.0).coerceIn(0.0, 1.0)
+                                                sqrt(linear).toFloat().coerceIn(0f, 1f)
+                                            } else {
+                                                0f
+                                            }
+                                            _ttsSoundLevel.value = level
+                                        }
+                                    }
+
+                                    override fun onFftDataCapture(
+                                        visualizer: Visualizer?,
+                                        fft: ByteArray?,
+                                        samplingRate: Int
+                                    ) {}
+                                },
+                                Visualizer.getMaxCaptureRate(),
+                                true,
+                                false
+                            )
+                            enabled = true
+                        }
+                    } catch (_: Exception) {}
+                    activeOnStartCallback?.invoke()
+                    mp.start()
+                }
+                setOnCompletionListener {
+                    isNeuralPlaying = false
+                    isGlobalTtsSpeaking = false
+                    _ttsSoundLevel.value = 0f
+                    lastGlobalTtsEndTimeMs = System.currentTimeMillis()
+                    releaseMediaPlayer()
+                    val cb = activeOnDoneCallback
+                    activeOnDoneCallback = null
+                    cb?.invoke()
+                }
+                setOnErrorListener { _, what, extra ->
+                    Log.w("TtsManager", "MediaPlayer error ($what/$extra), bascule TTS local")
+                    isNeuralPlaying = false
+                    releaseMediaPlayer()
+                    if (audioFileToPlay == cachedFile) {
+                        cachedFile.delete()
+                    }
+                    speakWithLocalAndroidTts(spokenText, langCode, rawRate)
+                    true
+                }
+                prepareAsync()
+            }
+            true
+        } catch (e: Exception) {
+            Log.w("TtsManager", "MediaPlayer init exception: ${e.message}")
+            isNeuralPlaying = false
+            releaseMediaPlayer()
+            speakWithLocalAndroidTts(spokenText, langCode, rawRate)
+            true
+        }
     }
 
     private suspend fun trySpeakWithNeuralVoice(
@@ -465,120 +835,21 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         try {
             val naturalSpeed = computeNaturalSpeed(rate)
             val cachedFile = getCachedVoiceFile(spokenText, langCode, naturalSpeed)
-            val audioFileToPlay: File
 
             if (cachedFile.exists() && cachedFile.length() >= 200) {
-                audioFileToPlay = cachedFile
-            } else {
-                val result = withTimeoutOrNull(22000L) {
-                    synthesizeNeuralBytes(spokenText, langCode)
-                } ?: return@withContext false
-
-                if (result.isPrimaryModel) {
-                    FileOutputStream(cachedFile).use { it.write(result.wavOrAudioBytes) }
-                    audioFileToPlay = cachedFile
-                } else {
-                    val tempFallback = File(appContext.cacheDir, "tts_google_fallback_tmp.wav")
-                    FileOutputStream(tempFallback).use { it.write(result.wavOrAudioBytes) }
-                    audioFileToPlay = tempFallback
-                }
+                return@withContext playAudioFileWithMediaPlayer(
+                    audioFileToPlay = cachedFile,
+                    cachedFile = cachedFile,
+                    naturalSpeed = naturalSpeed,
+                    spokenText = spokenText,
+                    langCode = langCode,
+                    rawRate = rate
+                )
             }
 
-            withContext(Dispatchers.Main) {
-                try {
-                    releaseMediaPlayer()
-                    requestPlaybackAudioFocus()
-                    isNeuralPlaying = true
-                    mediaPlayer = MediaPlayer().apply {
-                        setAudioAttributes(
-                            AudioAttributes.Builder()
-                                .setUsage(AudioAttributes.USAGE_MEDIA)
-                                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                                .build()
-                        )
-                        setDataSource(audioFileToPlay.absolutePath)
-                        setVolume(1.0f, 1.0f)
-                        setOnPreparedListener { mp ->
-                            isGlobalTtsSpeaking = true
-                            SpeechRecognitionManager.pauseAllActiveRecognizersForTts()
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && kotlin.math.abs(naturalSpeed - 1.0f) > 0.03f) {
-                                try {
-                                    mp.playbackParams = mp.playbackParams.setSpeed(naturalSpeed)
-                                } catch (_: Exception) {}
-                            }
-                            try {
-                                audioVisualizer = Visualizer(mp.audioSessionId).apply {
-                                    captureSize = Visualizer.getCaptureSizeRange()[0]
-                                    setDataCaptureListener(
-                                        object : Visualizer.OnDataCaptureListener {
-                                            override fun onWaveFormDataCapture(
-                                                visualizer: Visualizer?,
-                                                waveform: ByteArray?,
-                                                samplingRate: Int
-                                            ) {
-                                                if (waveform != null && waveform.isNotEmpty() && isNeuralPlaying) {
-                                                    var sumSq = 0.0
-                                                    for (b in waveform) {
-                                                        val centered = (b.toInt() and 0xFF) - 128
-                                                        sumSq += (centered * centered).toDouble()
-                                                    }
-                                                    val rms = sqrt(sumSq / waveform.size)
-                                                    val level = if (rms >= 2.8) {
-                                                        val linear = ((rms - 2.8) / 28.0).coerceIn(0.0, 1.0)
-                                                        sqrt(linear).toFloat().coerceIn(0f, 1f)
-                                                    } else {
-                                                        0f
-                                                    }
-                                                    _ttsSoundLevel.value = level
-                                                }
-                                            }
-
-                                            override fun onFftDataCapture(
-                                                visualizer: Visualizer?,
-                                                fft: ByteArray?,
-                                                samplingRate: Int
-                                            ) {}
-                                        },
-                                        Visualizer.getMaxCaptureRate(),
-                                        true,
-                                        false
-                                    )
-                                    enabled = true
-                                }
-                            } catch (_: Exception) {}
-                            activeOnStartCallback?.invoke()
-                            mp.start()
-                        }
-                        setOnCompletionListener {
-                            isNeuralPlaying = false
-                            isGlobalTtsSpeaking = false
-                            _ttsSoundLevel.value = 0f
-                            lastGlobalTtsEndTimeMs = System.currentTimeMillis()
-                            releaseMediaPlayer()
-                            val cb = activeOnDoneCallback
-                            activeOnDoneCallback = null
-                            cb?.invoke()
-                        }
-                        setOnErrorListener { _, what, extra ->
-                            Log.w("TtsManager", "MediaPlayer error ($what/$extra), bascule TTS local")
-                            isNeuralPlaying = false
-                            releaseMediaPlayer()
-                            if (audioFileToPlay == cachedFile) {
-                                cachedFile.delete()
-                            }
-                            speakWithLocalAndroidTts(spokenText, langCode, rate)
-                            true
-                        }
-                        prepareAsync()
-                    }
-                } catch (e: Exception) {
-                    Log.w("TtsManager", "MediaPlayer init exception: ${e.message}")
-                    isNeuralPlaying = false
-                    releaseMediaPlayer()
-                    speakWithLocalAndroidTts(spokenText, langCode, rate)
-                }
-            }
-            return@withContext true
+            return@withContext withTimeoutOrNull(25_000L) {
+                streamAndPlayNeuralVoice(spokenText, langCode, naturalSpeed, cachedFile)
+            } ?: false
         } catch (ce: CancellationException) {
             throw ce
         } catch (e: Exception) {
@@ -1248,12 +1519,20 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             }
             isGlobalTtsSpeaking = false
             _ttsSoundLevel.value = 0f
+            isNeuralPlaying = false
             speechJob?.cancel()
             speechJob = null
-            isNeuralPlaying = false
             activeOnDoneCallback = null
             activeOnErrorCallback = null
             activeOnStartCallback = null
+            try {
+                activeAudioTrack?.let { t ->
+                    if (t.state == AudioTrack.STATE_INITIALIZED) {
+                        t.pause()
+                        t.flush()
+                    }
+                }
+            } catch (_: Exception) {}
             releaseMediaPlayer()
             tts?.stop()
         } catch (_: Exception) {}

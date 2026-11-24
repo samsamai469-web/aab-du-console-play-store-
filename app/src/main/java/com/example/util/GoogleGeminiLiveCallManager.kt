@@ -68,8 +68,8 @@ class GoogleGeminiLiveCallManager(
         private const val TAG = "GeminiLiveCall"
         private const val INPUT_SAMPLE_RATE = 16000
         private const val OUTPUT_SAMPLE_RATE = 24000
-        private const val LIVE_MODEL_PRIMARY = "gemini-3.8-live"
-        private const val LIVE_MODEL_SECONDARY = "gemini-3.1-flash-live-preview"
+        private const val LIVE_MODEL_PRIMARY = "gemini-3.1-flash-live-preview"
+        private const val LIVE_MODEL_SECONDARY = "gemini-3.5-flash-lite"
         private const val LIVE_MODEL_FALLBACK = "gemini-2.5-flash-native-audio-preview-12-2025"
         private const val LIVE_VOICE = "Charon"
 
@@ -195,10 +195,6 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         startPlaybackWorker()
 
         scope.launch(Dispatchers.IO) {
-            try {
-                liveNewsFeedService.fetchLiveNews("actualités")
-            } catch (_: Throwable) {}
-
             val liveHeadlines = LiveNewsFeedService.getInstantCachedSummary()
             val connected = connectLiveSession(liveHeadlines)
             if (!connected && isActiveCall.get()) {
@@ -292,6 +288,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             isResponseInProgress.set(false)
             stopAndFlushPlayback()
             currentAiTranscriptBuilder.clear()
+            _aiTranscript.value = ""
             _callState.value = VoiceCallState.USER_SPEAKING
             return
         }
@@ -331,7 +328,8 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
 
         if (msg.turnComplete) {
             isResponseInProgress.set(false)
-            val finalUser = currentUserTranscriptBuilder.toString().trim()
+            val rawUser = currentUserTranscriptBuilder.toString().trim()
+            val finalUser = if (rawUser.isNotBlank() && !isHallucinatedOrNoiseTranscript(rawUser)) rawUser else ""
             val finalAiRaw = currentAiTranscriptBuilder.toString().trim()
             val finalAi = if (finalAiRaw.isNotBlank()) sanitizeSamAiPersona(finalAiRaw) else ""
 
@@ -339,10 +337,12 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                 _aiTranscript.value = finalAi
             }
 
-            if (finalUser.isNotBlank() && finalAi.isNotBlank() && !isHallucinatedOrNoiseTranscript(finalUser)) {
-                mainHandler.post {
+            mainHandler.post {
+                if (finalAi.isNotBlank()) {
                     onTurnCompleted(finalUser, finalAi)
                 }
+                _userTranscript.value = ""
+                _aiTranscript.value = ""
             }
 
             currentUserTranscriptBuilder.clear()

@@ -16,6 +16,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -46,8 +47,10 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
@@ -57,6 +60,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -99,7 +104,13 @@ fun SamAiGeminiAssistantModal(
     var inputText by remember { mutableStateOf(initialQuestion ?: "") }
     var isListeningVoice by remember { mutableStateOf(false) }
     var showMooreVoiceDialog by remember { mutableStateOf(false) }
-    var showVoiceCallDialog by remember { mutableStateOf(false) }
+    var isVoiceCallActive by remember { mutableStateOf(false) }
+    var isVoiceCallMinimized by remember { mutableStateOf(false) }
+    var liveCallState by remember { mutableStateOf(VoiceCallState.CONNECTING) }
+    var isLiveMicMuted by remember { mutableStateOf(false) }
+    var isUsingFallbackRest by remember { mutableStateOf(false) }
+    var liveUserDraft by remember { mutableStateOf("") }
+    var liveAiDraft by remember { mutableStateOf("") }
     var showHistoryDialog by remember { mutableStateOf(false) }
 
     var dialogRootView by remember { mutableStateOf<android.view.View?>(null) }
@@ -120,10 +131,224 @@ fun SamAiGeminiAssistantModal(
         } catch (_: Exception) {}
     }
 
-    // Speech recognizer pour la dictée vocale
+    // Speech recognizer pour la dictée vocale et repli d'appel
     val speechManager = remember { SpeechRecognitionManager(context) }
     val speechState by speechManager.state.collectAsState()
     val partialTranscript by speechManager.partialText.collectAsState()
+    val fallbackSoundLevel by speechManager.soundLevel.collectAsState()
+    val ttsSoundLevel by ttsManager.ttsSoundLevel.collectAsState()
+
+    fun listenFallbackTurn() {
+        if (!isVoiceCallActive || isLiveMicMuted || !isUsingFallbackRest || ttsManager.isSpeaking() || TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) return
+        if (liveCallState == VoiceCallState.SAM_SPEAKING || liveCallState == VoiceCallState.THINKING) return
+        liveCallState = VoiceCallState.USER_SPEAKING
+        speechManager.startListening(
+            language = "Français",
+            continuousMode = true,
+            onResult = { recognizedText ->
+                val clean = recognizedText.trim()
+                if (clean.isNotBlank() && isVoiceCallActive) {
+                    speechManager.reset()
+                    liveUserDraft = ""
+                    liveAiDraft = ""
+                    liveCallState = VoiceCallState.THINKING
+
+                    viewModel.askSamAiGemini(
+                        userQuestion = clean,
+                        isMooreVoice = false,
+                        isVoiceCall = true,
+                        onReply = { botReply ->
+                            if (isVoiceCallActive) {
+                                speechManager.reset()
+                                liveCallState = VoiceCallState.SAM_SPEAKING
+                                ttsManager.speakWithCallback(
+                                    text = botReply,
+                                    language = "Français",
+                                    onStart = {
+                                        speechManager.reset()
+                                        liveCallState = VoiceCallState.SAM_SPEAKING
+                                    },
+                                    onDone = {
+                                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                            if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) {
+                                                speechManager.reset()
+                                                liveCallState = VoiceCallState.USER_SPEAKING
+                                                listenFallbackTurn()
+                                            }
+                                        }, 520L)
+                                    },
+                                    onError = {
+                                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                            if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) {
+                                                speechManager.reset()
+                                                liveCallState = VoiceCallState.USER_SPEAKING
+                                                listenFallbackTurn()
+                                            }
+                                        }, 520L)
+                                    }
+                                )
+                            }
+                        }
+                    )
+                } else if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking()) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L) && liveCallState == VoiceCallState.USER_SPEAKING) {
+                            listenFallbackTurn()
+                        }
+                    }, 200L)
+                }
+            },
+            onError = { _ ->
+                if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking()) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L) && liveCallState == VoiceCallState.USER_SPEAKING) {
+                            listenFallbackTurn()
+                        }
+                    }, 350L)
+                }
+            }
+        )
+    }
+
+    val startFallbackListening = rememberUpdatedState { listenFallbackTurn() }
+
+    val realtimeManager = remember {
+        com.example.util.GoogleGeminiLiveCallManager(
+            context = context,
+            onTurnCompleted = { userText, aiText ->
+                liveUserDraft = ""
+                liveAiDraft = ""
+                viewModel.recordRealtimeCallTurn(userText, aiText)
+            },
+            onFallbackRequired = { _ ->
+                if (isVoiceCallActive && !isUsingFallbackRest) {
+                    isUsingFallbackRest = true
+                    startFallbackListening.value()
+                }
+            }
+        )
+    }
+
+    val realtimeCallState by realtimeManager.callState.collectAsState()
+    val realtimeSoundLevel by realtimeManager.soundLevel.collectAsState()
+    val realtimeUserTranscript by realtimeManager.userTranscript.collectAsState()
+    val realtimeAiTranscript by realtimeManager.aiTranscript.collectAsState()
+
+    val activeLiveSoundLevel = if (isUsingFallbackRest) {
+        when (liveCallState) {
+            VoiceCallState.SAM_SPEAKING -> ttsSoundLevel
+            VoiceCallState.USER_SPEAKING -> fallbackSoundLevel
+            else -> 0f
+        }
+    } else {
+        when (liveCallState) {
+            VoiceCallState.SAM_SPEAKING, VoiceCallState.USER_SPEAKING -> realtimeSoundLevel
+            else -> 0f
+        }
+    }
+
+    LaunchedEffect(realtimeCallState, isUsingFallbackRest, isVoiceCallActive) {
+        if (isVoiceCallActive && !isUsingFallbackRest) {
+            liveCallState = realtimeCallState
+        }
+    }
+
+    LaunchedEffect(realtimeUserTranscript, isUsingFallbackRest, isVoiceCallActive) {
+        if (isVoiceCallActive && !isUsingFallbackRest) {
+            val cleanTranscript = realtimeUserTranscript.trim()
+            val lower = cleanTranscript.lowercase(Locale.ROOT)
+            if (cleanTranscript.isBlank() ||
+                lower.contains("burkina faso, ouagadougou, bobo-dioulasso") ||
+                lower.contains("bobo-dioulasso, abdoul mohamine")
+            ) {
+                liveUserDraft = ""
+            } else {
+                liveUserDraft = cleanTranscript
+            }
+        }
+    }
+
+    LaunchedEffect(realtimeAiTranscript, isUsingFallbackRest, isVoiceCallActive) {
+        if (isVoiceCallActive && !isUsingFallbackRest) {
+            liveAiDraft = realtimeAiTranscript.trim()
+        }
+    }
+
+    LaunchedEffect(partialTranscript, isUsingFallbackRest, isVoiceCallActive, liveCallState) {
+        if (isVoiceCallActive && isUsingFallbackRest && liveCallState == VoiceCallState.USER_SPEAKING) {
+            liveUserDraft = partialTranscript.trim()
+        }
+    }
+
+    val beginLiveVoiceCall = {
+        isListeningVoice = false
+        speechManager.reset()
+        ttsManager.stop()
+        hideKeyboard()
+        isUsingFallbackRest = false
+        isLiveMicMuted = false
+        liveUserDraft = ""
+        liveAiDraft = ""
+        liveCallState = VoiceCallState.CONNECTING
+        isVoiceCallMinimized = false
+        isVoiceCallActive = true
+        realtimeManager.startCall()
+    }
+
+    val hangUpLiveCall = {
+        isVoiceCallActive = false
+        isVoiceCallMinimized = false
+        isUsingFallbackRest = false
+        isLiveMicMuted = false
+        liveUserDraft = ""
+        liveAiDraft = ""
+        realtimeManager.stopCall()
+        speechManager.reset()
+        ttsManager.stop()
+    }
+
+    val toggleLiveMicMute = {
+        isLiveMicMuted = !isLiveMicMuted
+        if (isUsingFallbackRest) {
+            if (isLiveMicMuted) {
+                speechManager.stopListening()
+            } else if (liveCallState == VoiceCallState.USER_SPEAKING) {
+                startFallbackListening.value()
+            }
+        } else {
+            realtimeManager.setMuted(isLiveMicMuted)
+        }
+    }
+
+    val handleSaturnOrbTap = {
+        if (isUsingFallbackRest) {
+            when (liveCallState) {
+                VoiceCallState.USER_SPEAKING -> speechManager.stopListening()
+                VoiceCallState.SAM_SPEAKING -> {
+                    ttsManager.stop()
+                    speechManager.reset()
+                    startFallbackListening.value()
+                }
+                else -> {}
+            }
+        } else {
+            when (liveCallState) {
+                VoiceCallState.USER_SPEAKING -> realtimeManager.commitUserSpeechNow()
+                VoiceCallState.SAM_SPEAKING -> realtimeManager.interruptAiSpeech()
+                else -> {}
+            }
+        }
+    }
+
+    val liveCallPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            beginLiveVoiceCall()
+        } else {
+            Toast.makeText(context, "Permission micro requise pour l'appel", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -159,10 +384,13 @@ fun SamAiGeminiAssistantModal(
         }
     }
 
-    // Défilement fluide et naturel vers le nouveau message sans expulser brutalement l'ancienne conversation
-    LaunchedEffect(chatMessages.size) {
-        if (chatMessages.isNotEmpty()) {
-            val targetIndex = (chatMessages.size - 1).coerceAtLeast(0)
+    // Défilement fluide et naturel vers le nouveau message ou transcription vocale en direct
+    LaunchedEffect(chatMessages.size, liveUserDraft, liveAiDraft, isVoiceCallMinimized) {
+        val totalItems = chatMessages.size +
+            (if (liveUserDraft.isNotBlank()) 1 else 0) +
+            (if (liveAiDraft.isNotBlank()) 1 else 0)
+        if (totalItems > 0) {
+            val targetIndex = (totalItems - 1).coerceAtLeast(0)
             listState.animateScrollToItem(targetIndex)
         }
     }
@@ -174,9 +402,10 @@ fun SamAiGeminiAssistantModal(
     }
 
     // Dès que l'utilisateur quitte l'écran de Sam AI (fermeture, retour, bascule),
-    // toutes les discussions sont immédiatement et automatiquement supprimées sans rien enregistrer
+    // l'appel est coupé et toutes les discussions sont automatiquement supprimées sans rien enregistrer
     DisposableEffect(Unit) {
         onDispose {
+            hangUpLiveCall()
             viewModel.clearSamAiChat(deleteFromFirebase = true)
         }
     }
@@ -190,8 +419,13 @@ fun SamAiGeminiAssistantModal(
     }
 
     androidx.activity.compose.BackHandler(onBack = {
-        viewModel.clearSamAiChat(deleteFromFirebase = true)
-        onDismiss()
+        if (isVoiceCallActive && !isVoiceCallMinimized) {
+            isVoiceCallMinimized = true
+        } else {
+            hangUpLiveCall()
+            viewModel.clearSamAiChat(deleteFromFirebase = true)
+            onDismiss()
+        }
     })
 
     Box(
@@ -202,6 +436,7 @@ fun SamAiGeminiAssistantModal(
                 interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                 indication = null
             ) {
+                hangUpLiveCall()
                 viewModel.clearSamAiChat(deleteFromFirebase = true)
                 onDismiss()
             }
@@ -301,9 +536,10 @@ fun SamAiGeminiAssistantModal(
                                 )
                             }
 
-                            // Bouton fermer (efface tout en quittant)
+                            // Bouton fermer (coupe l'appel si actif et efface tout en quittant)
                             IconButton(
                                 onClick = {
+                                    hangUpLiveCall()
                                     viewModel.clearSamAiChat(deleteFromFirebase = true)
                                     onDismiss()
                                 },
@@ -322,9 +558,31 @@ fun SamAiGeminiAssistantModal(
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
+                // =========================================================================
+                // PLANÈTE SATURNE MINIMISÉE DANS LE CHAT (APPEL VOCAL ACTIF EN DIRECT)
+                // =========================================================================
+                AnimatedVisibility(
+                    visible = isVoiceCallActive && isVoiceCallMinimized,
+                    enter = expandVertically(spring(dampingRatio = 0.78f, stiffness = 420f)) + fadeIn(),
+                    exit = shrinkVertically(spring(dampingRatio = 0.85f, stiffness = 420f)) + fadeOut()
+                ) {
+                    SamAiMinimizedSaturnBar(
+                        soundLevel = activeLiveSoundLevel,
+                        callState = liveCallState,
+                        isMicMuted = isLiveMicMuted,
+                        onExpandToFullScreen = { isVoiceCallMinimized = false },
+                        onToggleMute = toggleLiveMicMute,
+                        onHangUp = hangUpLiveCall
+                    )
+                }
+
                 val hasUserAskedQuestion = remember(chatMessages) {
                     chatMessages.any { it.sender == "user" }
                 }
+                val showConversationList = hasUserAskedQuestion ||
+                    isVoiceCallActive ||
+                    liveUserDraft.isNotBlank() ||
+                    liveAiDraft.isNotBlank()
 
                 // =========================================================================
                 // ZONE CENTRALE (VIDE / ACCUEIL OU CONVERSATION ACTIVE) - STYLE CHATGPT
@@ -341,7 +599,7 @@ fun SamAiGeminiAssistantModal(
                             hideKeyboard()
                         }
                 ) {
-                    if (!hasUserAskedQuestion) {
+                    if (!showConversationList) {
                         // Espace épuré et propre en attente de la première question
                         Box(
                             modifier = Modifier.fillMaxSize(),
@@ -350,7 +608,7 @@ fun SamAiGeminiAssistantModal(
                             // Vide et propre : aucune écriture superflue au centre
                         }
                     } else {
-                        // Liste de discussion active
+                        // Liste de discussion active (incluant la parole et les réponses vocales en direct)
                         LazyColumn(
                             state = listState,
                             modifier = Modifier
@@ -378,9 +636,29 @@ fun SamAiGeminiAssistantModal(
                                 )
                             }
 
+                            // Parole de l'utilisateur en direct dans le chat pendant l'appel vocal
+                            if (liveUserDraft.isNotBlank()) {
+                                item(key = "live_user_transcript_bubble") {
+                                    LiveVoiceTranscriptBubble(
+                                        text = liveUserDraft,
+                                        isUser = true
+                                    )
+                                }
+                            }
+
+                            // Réponse de SAM AI en direct dans le chat pendant l'appel vocal
+                            if (liveAiDraft.isNotBlank()) {
+                                item(key = "live_ai_transcript_bubble") {
+                                    LiveVoiceTranscriptBubble(
+                                        text = liveAiDraft,
+                                        isUser = false
+                                    )
+                                }
+                            }
+
                             // Indicateur de chargement / réflexion IA
-                            if (isThinking) {
-                                item {
+                            if (isThinking || (isVoiceCallActive && liveCallState == VoiceCallState.THINKING && liveAiDraft.isBlank())) {
+                                item(key = "thinking_gemini_indicator") {
                                     ThinkingGeminiIndicator()
                                 }
                             }
@@ -466,10 +744,12 @@ fun SamAiGeminiAssistantModal(
                             verticalAlignment = Alignment.CenterVertically,
                             horizontalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                            // Bouton Dictée vocale
+                            // Bouton Dictée vocale (ou Mute/Unmute direct si un appel vocal Saturne est en cours)
                             IconButton(
                                 onClick = {
-                                    if (isListeningVoice) {
+                                    if (isVoiceCallActive) {
+                                        toggleLiveMicMute()
+                                    } else if (isListeningVoice) {
                                         isListeningVoice = false
                                         speechManager.stopListening { transcript ->
                                             if (transcript.isNotBlank()) {
@@ -512,10 +792,11 @@ fun SamAiGeminiAssistantModal(
                                 },
                                 modifier = Modifier.size(40.dp)
                             ) {
+                                val showMicMuted = if (isVoiceCallActive) isLiveMicMuted else isListeningVoice
                                 Icon(
-                                    if (isListeningVoice) Icons.Default.MicOff else Icons.Default.Mic,
-                                    contentDescription = "Dictée vocale",
-                                    tint = if (isListeningVoice) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    if (showMicMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                                    contentDescription = if (isVoiceCallActive) "Couper ou activer le micro" else "Dictée vocale",
+                                    tint = if (showMicMuted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier.size(22.dp)
                                 )
                             }
@@ -536,7 +817,7 @@ fun SamAiGeminiAssistantModal(
                                 onValueChange = { inputText = it },
                                 placeholder = {
                                     Text(
-                                        "Message SAM AI...",
+                                        if (isVoiceCallActive) "Parlez ou écrivez à SAM AI..." else "Message SAM AI...",
                                         style = MaterialTheme.typography.bodyMedium,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
                                     )
@@ -588,10 +869,19 @@ fun SamAiGeminiAssistantModal(
                             // Bouton Appel Vocal Saturne (cercle noir avec 5 barres d'ondes vocales ||I|| à côté du bouton d'envoi)
                             Surface(
                                 onClick = {
-                                    isListeningVoice = false
-                                    speechManager.reset()
-                                    hideKeyboard()
-                                    showVoiceCallDialog = true
+                                    if (isVoiceCallActive) {
+                                        isVoiceCallMinimized = false
+                                    } else {
+                                        val hasPermission = ContextCompat.checkSelfPermission(
+                                            context,
+                                            Manifest.permission.RECORD_AUDIO
+                                        ) == PackageManager.PERMISSION_GRANTED
+                                        if (hasPermission) {
+                                            beginLiveVoiceCall()
+                                        } else {
+                                            liveCallPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+                                        }
+                                    }
                                 },
                                 shape = CircleShape,
                                 color = Color(0xFF0F1115),
@@ -648,17 +938,27 @@ fun SamAiGeminiAssistantModal(
             )
         }
 
-        // Mode Appel Vocal Direct et Continu (Style appel téléphonique où deux personnes causent)
-        if (showVoiceCallDialog) {
-            SamAiVoiceCallDialog(
-                onDismiss = {
-                    speechManager.reset()
-                    ttsManager.stop()
-                    showVoiceCallDialog = false
+        // Mode Appel Vocal Direct Plein Écran (la planète Saturne centrée au milieu, glissable vers le bas dans le chat)
+        if (isVoiceCallActive && !isVoiceCallMinimized) {
+            SamAiVoiceCallFullScreenOverlay(
+                callState = liveCallState,
+                isMicMuted = isLiveMicMuted,
+                activeSoundLevel = activeLiveSoundLevel,
+                onOrbTap = handleSaturnOrbTap,
+                onToggleMute = toggleLiveMicMute,
+                onInterruptOrSpeak = {
+                    if (isUsingFallbackRest) {
+                        ttsManager.stop()
+                        speechManager.reset()
+                        startFallbackListening.value()
+                    } else {
+                        realtimeManager.interruptAiSpeech()
+                    }
                 },
-                viewModel = viewModel,
-                speechManager = speechManager,
-                ttsManager = ttsManager
+                onMinimizeToChat = {
+                    isVoiceCallMinimized = true
+                },
+                onHangUp = hangUpLiveCall
             )
         }
     }
@@ -1837,245 +2137,33 @@ enum class VoiceCallState {
 }
 
 /**
- * Mode Appel Vocal Direct et Continu propulsé par Google Gemini Live (Firebase AI Logic).
- * L'utilisateur parle librement en Français, SAM AI écoute et répond en temps réel avec détection
- * vocale intégrée, Google Search en direct et interruption naturelle (barge-in) à tout moment.
+ * Écran d'appel vocal plein écran avec la planète Saturne parfaitement centrée au milieu.
+ * L'utilisateur peut toucher la planète et la faire glisser vers le bas pour l'intégrer dans le chat
+ * tout en gardant l'appel vocal actif en direct.
  */
 @Composable
-fun SamAiVoiceCallDialog(
-    onDismiss: () -> Unit,
-    viewModel: SamAiViewModel,
-    speechManager: SpeechRecognitionManager,
-    ttsManager: TtsManager
+fun SamAiVoiceCallFullScreenOverlay(
+    callState: VoiceCallState,
+    isMicMuted: Boolean,
+    activeSoundLevel: Float,
+    onOrbTap: () -> Unit,
+    onToggleMute: () -> Unit,
+    onInterruptOrSpeak: () -> Unit,
+    onMinimizeToChat: () -> Unit,
+    onHangUp: () -> Unit
 ) {
-    val context = LocalContext.current
-    var callState by remember { mutableStateOf(VoiceCallState.USER_SPEAKING) }
-    var isCallActive by remember { mutableStateOf(true) }
-    var isMicMuted by remember { mutableStateOf(false) }
-    var callDurationSeconds by remember { mutableIntStateOf(0) }
-    var isUsingFallbackRest by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val dragOffsetY = remember { Animatable(0f) }
+    val dragThresholdPx = remember(density) { with(density) { 88.dp.toPx() } }
+    val maxVisualDragPx = remember(density) { with(density) { 260.dp.toPx() } }
 
-    var lastUserSentence by remember { mutableStateOf("") }
-    var lastAiSentence by remember { mutableStateOf("") }
-    var lastDetectedLang by remember { mutableStateOf("Français") }
-
-    val fallbackSoundLevel by speechManager.soundLevel.collectAsState()
-    val fallbackPartialTranscript by speechManager.partialText.collectAsState()
-
-    // Boucle de secours (avec Google Gemini TTS voix humaine "Charon") uniquement si la session Live est indisponible
-    fun listenFallbackTurn() {
-        if (!isCallActive || isMicMuted || !isUsingFallbackRest || ttsManager.isSpeaking() || TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) return
-        if (callState == VoiceCallState.SAM_SPEAKING || callState == VoiceCallState.THINKING) return
-        callState = VoiceCallState.USER_SPEAKING
-        speechManager.startListening(
-            language = "Français",
-            continuousMode = true,
-            onResult = { recognizedText ->
-                val clean = recognizedText.trim()
-                if (clean.isNotBlank() && isCallActive) {
-                    // Coupe immédiatement le microphone dès que la question de l'utilisateur est captée
-                    // pour que SAM AI ne ré-entende jamais sa propre voix en haut-parleur
-                    speechManager.reset()
-                    lastUserSentence = clean
-                    lastAiSentence = ""
-                    callState = VoiceCallState.THINKING
-                    lastDetectedLang = "Français"
-
-                    viewModel.askSamAiGemini(
-                        userQuestion = clean,
-                        isMooreVoice = false,
-                        isVoiceCall = true,
-                        onReply = { botReply ->
-                            if (isCallActive) {
-                                speechManager.reset()
-                                lastAiSentence = botReply
-                                callState = VoiceCallState.SAM_SPEAKING
-                                ttsManager.speakWithCallback(
-                                    text = botReply,
-                                    language = "Français",
-                                    onStart = {
-                                        speechManager.reset()
-                                        callState = VoiceCallState.SAM_SPEAKING
-                                    },
-                                    onDone = {
-                                        // Garde acoustique de 520 ms après la fin du haut-parleur avant de rouvrir le micro
-                                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                            if (isCallActive && !isMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) {
-                                                speechManager.reset()
-                                                callState = VoiceCallState.USER_SPEAKING
-                                                listenFallbackTurn()
-                                            }
-                                        }, 520L)
-                                    },
-                                    onError = {
-                                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                            if (isCallActive && !isMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) {
-                                                speechManager.reset()
-                                                callState = VoiceCallState.USER_SPEAKING
-                                                listenFallbackTurn()
-                                            }
-                                        }, 520L)
-                                    }
-                                )
-                            }
-                        }
-                    )
-                } else if (isCallActive && !isMicMuted && !ttsManager.isSpeaking()) {
-                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                        if (isCallActive && !isMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L) && callState == VoiceCallState.USER_SPEAKING) {
-                            listenFallbackTurn()
-                        }
-                    }, 200L)
-                }
-            },
-            onError = { _ ->
-                if (isCallActive && !isMicMuted && !ttsManager.isSpeaking()) {
-                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                        if (isCallActive && !isMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L) && callState == VoiceCallState.USER_SPEAKING) {
-                            listenFallbackTurn()
-                        }
-                    }, 350L)
-                }
-            }
-        )
-    }
-
-    val startFallbackListening = rememberUpdatedState { listenFallbackTurn() }
-
-    val realtimeManager = remember {
-        com.example.util.GoogleGeminiLiveCallManager(
-            context = context,
-            onTurnCompleted = { userText, aiText ->
-                viewModel.recordRealtimeCallTurn(userText, aiText)
-            },
-            onFallbackRequired = { _ ->
-                if (isCallActive && !isUsingFallbackRest) {
-                    isUsingFallbackRest = true
-                    startFallbackListening.value()
-                }
-            }
-        )
-    }
-
-    val realtimeCallState by realtimeManager.callState.collectAsState()
-    val realtimeSoundLevel by realtimeManager.soundLevel.collectAsState()
-    val realtimeUserTranscript by realtimeManager.userTranscript.collectAsState()
-    val realtimeAiTranscript by realtimeManager.aiTranscript.collectAsState()
-    val ttsSoundLevel by ttsManager.ttsSoundLevel.collectAsState()
-
-    val activeSoundLevel = if (isUsingFallbackRest) {
-        when (callState) {
-            VoiceCallState.SAM_SPEAKING -> ttsSoundLevel
-            VoiceCallState.USER_SPEAKING -> fallbackSoundLevel
-            else -> 0f
-        }
-    } else {
-        when (callState) {
-            VoiceCallState.SAM_SPEAKING, VoiceCallState.USER_SPEAKING -> realtimeSoundLevel
-            else -> 0f
-        }
-    }
-
-    // Synchronisation de l'état et des transcriptions en direct depuis Google Gemini Live
-    LaunchedEffect(realtimeCallState, isUsingFallbackRest) {
-        if (!isUsingFallbackRest) {
-            callState = realtimeCallState
-        }
-    }
-
-    LaunchedEffect(realtimeUserTranscript, isUsingFallbackRest) {
-        if (!isUsingFallbackRest) {
-            val cleanTranscript = realtimeUserTranscript.trim()
-            val lower = cleanTranscript.lowercase(Locale.ROOT)
-            if (cleanTranscript.isBlank() ||
-                lower.contains("burkina faso, ouagadougou, bobo-dioulasso") ||
-                lower.contains("bobo-dioulasso, abdoul mohamine")
-            ) {
-                if (cleanTranscript.isBlank() && realtimeAiTranscript.isBlank()) {
-                    lastUserSentence = ""
-                    lastAiSentence = ""
-                }
-            } else {
-                lastUserSentence = cleanTranscript
-                if (realtimeAiTranscript.isBlank()) {
-                    lastAiSentence = ""
-                }
-            }
-        }
-    }
-
-    LaunchedEffect(realtimeAiTranscript, isUsingFallbackRest) {
-        if (!isUsingFallbackRest) {
-            lastAiSentence = realtimeAiTranscript.trim()
-        }
-    }
-
-    // Chronomètre d'appel (00:00)
-    LaunchedEffect(isCallActive) {
-        while (isCallActive) {
-            kotlinx.coroutines.delay(1000L)
-            callDurationSeconds++
-        }
-    }
-
-    // Réception en temps réel des mots prononcés en mode fallback
-    LaunchedEffect(fallbackPartialTranscript, isUsingFallbackRest) {
-        if (isUsingFallbackRest && fallbackPartialTranscript.isNotBlank() && callState == VoiceCallState.USER_SPEAKING) {
-            lastUserSentence = fallbackPartialTranscript
-            lastAiSentence = ""
-        }
-    }
-
-    val hangUpCall = {
-        isCallActive = false
-        realtimeManager.stopCall()
-        speechManager.reset()
-        ttsManager.stop()
-        onDismiss()
-    }
-
-    // Gestion de la permission microphone
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            speechManager.reset()
-            ttsManager.stop()
-            realtimeManager.startCall()
-        } else {
-            Toast.makeText(context, "Permission micro requise pour l'appel", Toast.LENGTH_SHORT).show()
-            hangUpCall()
-        }
-    }
-
-    // Démarrage instantané de Google Gemini Live avec capture microphone dès 0 ms
-    LaunchedEffect(Unit) {
-        val hasPermission = ContextCompat.checkSelfPermission(
-            context,
-            Manifest.permission.RECORD_AUDIO
-        ) == PackageManager.PERMISSION_GRANTED
-
-        if (hasPermission) {
-            speechManager.reset()
-            ttsManager.stop()
-            realtimeManager.startCall()
-        } else {
-            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-        }
-    }
-
-    // Nettoyage impératif à la destruction
-    DisposableEffect(Unit) {
-        onDispose {
-            isCallActive = false
-            realtimeManager.stopCall()
-            speechManager.reset()
-            ttsManager.stop()
-        }
-    }
+    val dragProgress = (dragOffsetY.value / dragThresholdPx).coerceIn(0f, 1.5f)
+    val backdropAlpha = (1f - (dragProgress * 0.28f)).coerceIn(0.60f, 1f)
+    val orbDragScale = (1f - (dragProgress * 0.18f)).coerceIn(0.72f, 1f)
 
     Dialog(
-        onDismissRequest = { hangUpCall() },
+        onDismissRequest = { onMinimizeToChat() },
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             dismissOnBackPress = true,
@@ -2084,179 +2172,84 @@ fun SamAiVoiceCallDialog(
     ) {
         Surface(
             modifier = Modifier.fillMaxSize(),
-            color = Color(0xFF101216) // Fond sombre immersif style appel téléphonique moderne
+            color = Color(0xFF101216).copy(alpha = backdropAlpha)
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
                     .systemBarsPadding()
                     .padding(horizontal = 20.dp, vertical = 16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.SpaceBetween
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // ==========================================
-                // 1. EN-TÊTE DE L'APPEL
+                // ZONE CENTRALE : PLANÈTE SATURNE AU MILIEU DE L'ÉCRAN
+                // (glissement vers le bas pour descendre dans le chat)
                 // ==========================================
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxWidth().padding(top = 16.dp)
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxWidth(),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Surface(
-                        shape = RoundedCornerShape(20.dp),
-                        color = Color(0xFF1E222B),
-                        border = BorderStroke(1.dp, Color(0xFF009639).copy(alpha = 0.5f))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("🇫🇷", fontSize = 14.sp)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Appel Google Live • Français",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = Color.White
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(14.dp))
-
-                    Text(
-                        text = "SAM AI",
-                        style = MaterialTheme.typography.headlineMedium,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Color.White
-                    )
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    val minutes = callDurationSeconds / 60
-                    val seconds = callDurationSeconds % 60
-                    Text(
-                        text = String.format("%02d:%02d", minutes, seconds),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = Color.White.copy(alpha = 0.7f),
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-
-                // ==========================================
-                // 2. PLANÈTE SATURNE AUDIO-RÉACTIVE ET STATUT
-                // ==========================================
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    AudioReactiveSaturnOrb(
-                        rawSoundLevel = activeSoundLevel,
-                        callState = callState,
-                        onClick = {
-                            if (isUsingFallbackRest) {
-                                when (callState) {
-                                    VoiceCallState.USER_SPEAKING -> {
-                                        speechManager.stopListening()
-                                    }
-                                    VoiceCallState.SAM_SPEAKING -> {
-                                        ttsManager.stop()
-                                        speechManager.reset()
-                                        startFallbackListening.value()
-                                    }
-                                    else -> {}
-                                }
-                            } else {
-                                when (callState) {
-                                    VoiceCallState.USER_SPEAKING -> {
-                                        realtimeManager.commitUserSpeechNow()
-                                    }
-                                    VoiceCallState.SAM_SPEAKING -> {
-                                        realtimeManager.interruptAiSpeech()
-                                    }
-                                    else -> {}
-                                }
+                    Box(
+                        modifier = Modifier
+                            .graphicsLayer {
+                                translationY = dragOffsetY.value
+                                scaleX = orbDragScale
+                                scaleY = orbDragScale
                             }
-                        }
-                    )
-
-                    Spacer(modifier = Modifier.height(18.dp))
-
-                    // Libellé de statut conversationnel
-                    Surface(
-                        shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFF1E222B)
+                            .pointerInput(dragThresholdPx) {
+                                detectVerticalDragGestures(
+                                    onDragEnd = {
+                                        scope.launch {
+                                            if (dragOffsetY.value >= dragThresholdPx) {
+                                                dragOffsetY.snapTo(0f)
+                                                onMinimizeToChat()
+                                            } else {
+                                                dragOffsetY.animateTo(
+                                                    targetValue = 0f,
+                                                    animationSpec = spring(
+                                                        dampingRatio = 0.72f,
+                                                        stiffness = 460f
+                                                    )
+                                                )
+                                            }
+                                        }
+                                    },
+                                    onDragCancel = {
+                                        scope.launch {
+                                            dragOffsetY.animateTo(
+                                                targetValue = 0f,
+                                                animationSpec = spring(
+                                                    dampingRatio = 0.72f,
+                                                    stiffness = 460f
+                                                )
+                                            )
+                                        }
+                                    },
+                                    onVerticalDrag = { _, dragAmount ->
+                                        scope.launch {
+                                            val next = (dragOffsetY.value + dragAmount).coerceIn(0f, maxVisualDragPx)
+                                            dragOffsetY.snapTo(next)
+                                        }
+                                    }
+                                )
+                            }
+                            .testTag("saturn_draggable_container"),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            text = when (callState) {
-                                VoiceCallState.SAM_SPEAKING -> if (lastDetectedLang == "mooré") "🔊 SAM AI vous répond en Mooré..." else "🔊 SAM AI vous répond en direct..."
-                                VoiceCallState.USER_SPEAKING -> "🎙️ À vous de parler, SAM AI écoute..."
-                                VoiceCallState.THINKING -> "⚡ Réponse instantanée..."
-                                VoiceCallState.CONNECTING -> "Connexion Google Live en cours..."
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = when (callState) {
-                                VoiceCallState.SAM_SPEAKING -> Color(0xFF009639)
-                                VoiceCallState.USER_SPEAKING -> Color(0xFF64B5F6)
-                                VoiceCallState.THINKING -> Color(0xFFFFB300)
-                                else -> Color.White
-                            },
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                        AudioReactiveSaturnOrb(
+                            rawSoundLevel = activeSoundLevel,
+                            callState = callState,
+                            orbSize = 186.dp,
+                            imageSize = 156.dp,
+                            onClick = onOrbTap
                         )
                     }
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    // ==========================================
-                    // 3. SOUS-TITRES EN DIRECT (Dialogue affiché)
-                    // ==========================================
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 90.dp, max = 150.dp),
-                        shape = RoundedCornerShape(18.dp),
-                        color = Color(0xFF181B22),
-                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f))
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .padding(14.dp)
-                                .verticalScroll(rememberScrollState()),
-                            verticalArrangement = Arrangement.Center
-                        ) {
-                            if (lastUserSentence.isNotBlank()) {
-                                Text(
-                                    text = "Vous : « $lastUserSentence »",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color(0xFF90CAF9),
-                                    fontWeight = FontWeight.SemiBold
-                                )
-                                Spacer(modifier = Modifier.height(6.dp))
-                            }
-                            if (lastAiSentence.isNotBlank()) {
-                                Text(
-                                    text = "SAM AI : « $lastAiSentence »",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Medium
-                                )
-                            }
-                            if (lastUserSentence.isBlank() && lastAiSentence.isBlank()) {
-                                Text(
-                                    text = "Parlez naturellement comme dans un appel téléphonique.",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = Color.White.copy(alpha = 0.5f),
-                                    textAlign = TextAlign.Center,
-                                    modifier = Modifier.fillMaxWidth()
-                                )
-                            }
-                        }
-                    }
                 }
 
                 // ==========================================
-                // 4. COMMANDES DE L'APPEL (En bas)
+                // COMMANDES DE L'APPEL (En bas)
                 // ==========================================
                 Row(
                     modifier = Modifier
@@ -2267,21 +2260,12 @@ fun SamAiVoiceCallDialog(
                 ) {
                     // Bouton Couper/Activer le micro (Mute)
                     Surface(
-                        onClick = {
-                            isMicMuted = !isMicMuted
-                            if (isUsingFallbackRest) {
-                                if (isMicMuted) {
-                                    speechManager.stopListening()
-                                } else if (callState == VoiceCallState.USER_SPEAKING) {
-                                    startFallbackListening.value()
-                                }
-                            } else {
-                                realtimeManager.setMuted(isMicMuted)
-                            }
-                        },
+                        onClick = onToggleMute,
                         shape = CircleShape,
                         color = if (isMicMuted) Color(0xFFD32F2F) else Color(0xFF262C38),
-                        modifier = Modifier.size(56.dp)
+                        modifier = Modifier
+                            .size(56.dp)
+                            .testTag("btn_call_mute")
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
@@ -2293,9 +2277,9 @@ fun SamAiVoiceCallDialog(
                         }
                     }
 
-                    // Grand Bouton Rouge de Fin d'appel 🔴
+                    // Grand Bouton Rouge de Fin d'appel avec une Croix (X)
                     Surface(
-                        onClick = { hangUpCall() },
+                        onClick = onHangUp,
                         shape = CircleShape,
                         color = Color(0xFFE53935),
                         modifier = Modifier
@@ -2305,8 +2289,8 @@ fun SamAiVoiceCallDialog(
                     ) {
                         Box(contentAlignment = Alignment.Center) {
                             Icon(
-                                Icons.Default.CallEnd,
-                                contentDescription = "Raccrocher",
+                                Icons.Default.Close,
+                                contentDescription = "Fermer l'appel",
                                 tint = Color.White,
                                 modifier = Modifier.size(36.dp)
                             )
@@ -2315,22 +2299,14 @@ fun SamAiVoiceCallDialog(
 
                     // Bouton Interrompre / Reprendre la parole
                     Surface(
-                        onClick = {
-                            if (isUsingFallbackRest) {
-                                ttsManager.stop()
-                                speechManager.reset()
-                                startFallbackListening.value()
-                            } else {
-                                realtimeManager.interruptAiSpeech()
-                            }
-                        },
+                        onClick = onInterruptOrSpeak,
                         shape = CircleShape,
                         color = Color(0xFF262C38),
-                        modifier = Modifier.size(56.dp)
+                        modifier = Modifier
+                            .size(56.dp)
+                            .testTag("btn_call_interrupt")
                     ) {
-                        Box(
-                            contentAlignment = Alignment.Center
-                        ) {
+                        Box(contentAlignment = Alignment.Center) {
                             Icon(
                                 Icons.Default.RecordVoiceOver,
                                 contentDescription = "Parler",
@@ -2339,6 +2315,248 @@ fun SamAiVoiceCallDialog(
                             )
                         }
                     }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Barre compacte intégrant la planète Saturne audio-réactive directement dans le chat
+ * lorsque l'utilisateur fait descendre la planète. L'appel reste actif en direct.
+ */
+@Composable
+fun SamAiMinimizedSaturnBar(
+    soundLevel: Float,
+    callState: VoiceCallState,
+    isMicMuted: Boolean,
+    onExpandToFullScreen: () -> Unit,
+    onToggleMute: () -> Unit,
+    onHangUp: () -> Unit
+) {
+    val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
+    val expandSwipeThresholdPx = remember(density) { with(density) { 42.dp.toPx() } }
+    var cumulativeUpDrag by remember { mutableFloatStateOf(0f) }
+
+    val statusText = when {
+        isMicMuted -> "Micro coupé • Touchez Saturne pour agrandir"
+        callState == VoiceCallState.SAM_SPEAKING -> "SAM AI vous répond en direct..."
+        callState == VoiceCallState.THINKING -> "SAM AI réfléchit..."
+        callState == VoiceCallState.CONNECTING -> "Connexion vocale..."
+        else -> "Parlez librement • SAM AI vous écoute"
+    }
+
+    val borderColor = when {
+        isMicMuted -> Color(0xFFD32F2F).copy(alpha = 0.55f)
+        callState == VoiceCallState.SAM_SPEAKING -> Color(0xFFFFB300).copy(alpha = 0.65f)
+        callState == VoiceCallState.USER_SPEAKING -> Color(0xFF009639).copy(alpha = 0.65f)
+        else -> Color.White.copy(alpha = 0.16f)
+    }
+
+    Surface(
+        onClick = onExpandToFullScreen,
+        shape = RoundedCornerShape(24.dp),
+        color = Color(0xFF101216),
+        border = BorderStroke(1.dp, borderColor),
+        shadowElevation = 4.dp,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .pointerInput(expandSwipeThresholdPx) {
+                detectVerticalDragGestures(
+                    onDragStart = { cumulativeUpDrag = 0f },
+                    onDragEnd = {
+                        if (cumulativeUpDrag <= -expandSwipeThresholdPx) {
+                            scope.launch { onExpandToFullScreen() }
+                        }
+                        cumulativeUpDrag = 0f
+                    },
+                    onDragCancel = { cumulativeUpDrag = 0f },
+                    onVerticalDrag = { _, dragAmount ->
+                        cumulativeUpDrag += dragAmount
+                    }
+                )
+            }
+            .testTag("saturn_minimized_in_chat_bar")
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            // Planète Saturne compacte et audio-réactive dans le chat
+            AudioReactiveSaturnOrb(
+                rawSoundLevel = soundLevel,
+                callState = callState,
+                orbSize = 48.dp,
+                imageSize = 42.dp,
+                onClick = onExpandToFullScreen
+            )
+
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(1.dp)
+            ) {
+                Text(
+                    text = "SAM AI • En direct",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = statusText,
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                    color = Color.White.copy(alpha = 0.74f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            // Bouton Micro Mute/Unmute (cible tactile >= 48dp)
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clickable(onClick = onToggleMute)
+                    .testTag("btn_mini_call_mute"),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = if (isMicMuted) Color(0xFFD32F2F) else Color(0xFF262C38),
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            if (isMicMuted) Icons.Default.MicOff else Icons.Default.Mic,
+                            contentDescription = "Micro",
+                            tint = Color.White,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+                }
+            }
+
+            // Bouton Rouge X pour raccrocher l'appel depuis le chat (cible tactile >= 48dp)
+            Box(
+                modifier = Modifier
+                    .size(48.dp)
+                    .clickable(onClick = onHangUp)
+                    .testTag("btn_mini_call_hang_up"),
+                contentAlignment = Alignment.Center
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = Color(0xFFE53935),
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Raccrocher l'appel",
+                            tint = Color.White,
+                            modifier = Modifier.size(19.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Bulle de transcription vocale en temps réel dans le chat (utilisateur ou réponse SAM AI en direct)
+ */
+@Composable
+fun LiveVoiceTranscriptBubble(
+    text: String,
+    isUser: Boolean
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.Top
+    ) {
+        if (!isUser) {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .background(Color(0xFF1E88E5))
+                    .padding(2.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.AutoAwesome,
+                    contentDescription = null,
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+        }
+
+        Column(
+            modifier = Modifier.widthIn(max = 310.dp),
+            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
+        ) {
+            Surface(
+                shape = RoundedCornerShape(
+                    topStart = 18.dp,
+                    topEnd = 18.dp,
+                    bottomStart = if (isUser) 18.dp else 4.dp,
+                    bottomEnd = if (isUser) 4.dp else 18.dp
+                ),
+                color = if (isUser) {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.90f)
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHigh
+                },
+                border = BorderStroke(
+                    1.dp,
+                    if (isUser) MaterialTheme.colorScheme.primary else Color(0xFF1E88E5).copy(alpha = 0.45f)
+                ),
+                shadowElevation = 2.dp
+            ) {
+                Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(7.dp)
+                                .clip(CircleShape)
+                                .background(if (isUser) Color(0xFFA5D6A7) else Color(0xFF4CAF50))
+                        )
+                        Text(
+                            text = if (isUser) "Vous parlez en direct..." else "SAM AI répond en direct...",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            fontWeight = FontWeight.Bold,
+                            color = if (isUser) {
+                                MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.88f)
+                            } else {
+                                Color(0xFF1E88E5)
+                            }
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = text,
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            lineHeight = 20.sp,
+                            fontSize = 14.sp
+                        ),
+                        color = if (isUser) {
+                            MaterialTheme.colorScheme.onPrimary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        }
+                    )
                 }
             }
         }
@@ -2355,38 +2573,41 @@ fun SamAiVoiceCallDialog(
 fun AudioReactiveSaturnOrb(
     rawSoundLevel: Float,
     callState: VoiceCallState,
+    orbSize: Dp = 186.dp,
+    imageSize: Dp = 156.dp,
     onClick: () -> Unit
 ) {
+    val sizeRatio = (orbSize / 186.dp).coerceIn(0.2f, 1.5f)
     val isVoiceActiveState = callState == VoiceCallState.USER_SPEAKING || callState == VoiceCallState.SAM_SPEAKING
     val targetAudioLevel = if (isVoiceActiveState) rawSoundLevel.coerceIn(0f, 1f) else 0f
 
-    // Attaque instantanée dès que la voix retentit, et retour progressif et doux au repos dans le silence
+    // Attaque réactive douce dès que la voix retentit, et retour progressif au repos dans le silence
     val smoothedVolume by animateFloatAsState(
         targetValue = targetAudioLevel,
         animationSpec = if (targetAudioLevel > 0.015f) {
             spring(
-                dampingRatio = 0.58f,
-                stiffness = 920f
+                dampingRatio = 0.72f,
+                stiffness = 620f
             )
         } else {
             spring(
-                dampingRatio = 0.88f,
-                stiffness = 120f
+                dampingRatio = 0.90f,
+                stiffness = 110f
             )
         },
         label = "saturnSmoothedAudioVolume"
     )
 
-    // États dynamiques pilotés UNIQUEMENT par l'énergie vocale réelle et le rythme des syllabes
+    // États dynamiques pilotés uniquement par l'énergie vocale réelle et le rythme des syllabes
     var audioDrivenPhase by remember { mutableFloatStateOf(0f) }
-    var rhythmicRotationDeg by remember { mutableFloatStateOf(0f) }
+    var axialRockDeg by remember { mutableFloatStateOf(0f) }
     var syllableEnvelope by remember { mutableFloatStateOf(0f) }
     val currentSmoothedVolume by rememberUpdatedState(smoothedVolume)
     val currentRawLevel by rememberUpdatedState(targetAudioLevel)
 
     val isAnimatingOrReturningToRest = smoothedVolume > 0.002f ||
         syllableEnvelope > 0.002f ||
-        abs(rhythmicRotationDeg) > 0.15f
+        abs(axialRockDeg) > 0.08f
 
     LaunchedEffect(isAnimatingOrReturningToRest) {
         if (isAnimatingOrReturningToRest) {
@@ -2395,7 +2616,7 @@ fun AudioReactiveSaturnOrb(
             while (
                 currentSmoothedVolume > 0.002f ||
                 syllableEnvelope > 0.002f ||
-                abs(rhythmicRotationDeg) > 0.15f
+                abs(axialRockDeg) > 0.08f
             ) {
                 withFrameNanos { frameNanos ->
                     val dtSec = if (lastFrameNanos == 0L) {
@@ -2408,34 +2629,31 @@ fun AudioReactiveSaturnOrb(
                     val vol = currentSmoothedVolume
                     val raw = currentRawLevel
 
-                    // Détection instantanée des attaques syllabiques (rythme de la voix)
+                    // Détection fluide des attaques syllabiques sans saccades
                     val syllableRise = (raw - previousRawLevel).coerceAtLeast(0f)
                     previousRawLevel = raw
-                    syllableEnvelope = (syllableEnvelope * (1f - (dtSec * 8.5f).coerceIn(0f, 0.45f)) + syllableRise * 1.65f)
+                    syllableEnvelope = (syllableEnvelope * (1f - (dtSec * 8.0f).coerceIn(0f, 0.42f)) + syllableRise * 1.15f)
                         .coerceIn(0f, 1f)
 
                     if (vol > 0.006f) {
-                        // 1. La phase harmonique avance strictement selon l'intensité vocale
-                        audioDrivenPhase += dtSec * (4.2f + vol * 24.0f + syllableEnvelope * 14.0f)
+                        // La phase harmonique avance selon l'intensité vocale
+                        audioDrivenPhase += dtSec * (2.6f + vol * 9.5f + syllableEnvelope * 5.0f)
                         if (audioDrivenPhase > 6283.185f) {
                             audioDrivenPhase -= 6283.185f
                         }
 
-                        // 2. Saturne tourne au rythme exact de la voix (vitesse angulaire liée au volume et aux syllabes)
-                        val angularVelocityDegPerSec = (vol * 185f) + (syllableEnvelope * 260f)
-                        var nextRot = (rhythmicRotationDeg + dtSec * angularVelocityDegPerSec) % 360f
-                        if (nextRot > 180f) nextRot -= 360f
-                        if (nextRot < -180f) nextRot += 360f
-                        rhythmicRotationDeg = nextRot
+                        // Légère inclinaison naturelle de l'axe (jamais de rotation à 360° irréaliste)
+                        val targetRock = sin(audioDrivenPhase * 0.85f) * (vol * 2.8f + syllableEnvelope * 1.4f)
+                        axialRockDeg += (targetRock - axialRockDeg) * (dtSec * 7.5f).coerceIn(0.05f, 0.35f)
                     } else {
-                        // Lorsqu'il n'y a aucun son : Saturne ralentit et revient progressivement à sa position de repos (0°)
-                        syllableEnvelope *= (1f - (dtSec * 10f).coerceIn(0f, 0.5f))
+                        // Retour progressif et naturel à l'équilibre dans le silence
+                        syllableEnvelope *= (1f - (dtSec * 9f).coerceIn(0f, 0.45f))
                         if (syllableEnvelope < 0.002f) syllableEnvelope = 0f
 
-                        val returnStep = (dtSec * 4.5f).coerceIn(0.02f, 0.25f)
-                        rhythmicRotationDeg *= (1f - returnStep)
-                        if (abs(rhythmicRotationDeg) <= 0.15f) {
-                            rhythmicRotationDeg = 0f
+                        val returnStep = (dtSec * 4.0f).coerceIn(0.02f, 0.22f)
+                        axialRockDeg *= (1f - returnStep)
+                        if (abs(axialRockDeg) <= 0.08f) {
+                            axialRockDeg = 0f
                         }
                     }
                 }
@@ -2443,27 +2661,21 @@ fun AudioReactiveSaturnOrb(
         }
     }
 
-    // 1. Vibration légère des anneaux et mouvement fluide 3D de la planète pilotés par le volume réel
-    val ringVibrationDeg = (sin(audioDrivenPhase * 3.2f) * smoothedVolume * 4.8f) +
-        (cos(audioDrivenPhase * 1.9f) * syllableEnvelope * 6.2f)
-    val ringRippleX = sin(audioDrivenPhase * 3.4f) * (smoothedVolume * 0.038f + syllableEnvelope * 0.024f)
-    val ringRippleY = cos(audioDrivenPhase * 3.4f) * (smoothedVolume * 0.028f + syllableEnvelope * 0.018f)
+    // Mouvement planétaire 3D réaliste et mesuré (respiration douce, flottement en apesanteur, inclinaison 3D)
+    val planetScale = 1f + (smoothedVolume * 0.085f) + (syllableEnvelope * 0.030f)
+    val fluidOffsetX = cos(audioDrivenPhase * 0.65f) * smoothedVolume * 3.2f * sizeRatio
+    val fluidOffsetY = sin(audioDrivenPhase * 0.82f) * smoothedVolume * 4.5f * sizeRatio
+    val gyroTiltX = sin(audioDrivenPhase * 0.95f) * (smoothedVolume * 6.0f + syllableEnvelope * 2.2f)
+    val gyroTiltY = cos(audioDrivenPhase * 0.80f) * (smoothedVolume * 8.0f + syllableEnvelope * 3.0f)
+    val totalPlanetRotationZ = axialRockDeg
 
-    val planetScaleX = 1f + (smoothedVolume * 0.25f) + (syllableEnvelope * 0.09f) + ringRippleX
-    val planetScaleY = 1f + (smoothedVolume * 0.23f) + (syllableEnvelope * 0.09f) - ringRippleY
-    val fluidOffsetX = cos(audioDrivenPhase * 0.72f) * smoothedVolume * 10.5f
-    val fluidOffsetY = sin(audioDrivenPhase * 0.92f) * smoothedVolume * 14.5f
-    val gyroTiltX = sin(audioDrivenPhase * 1.15f) * (smoothedVolume * 13.5f + syllableEnvelope * 6.0f)
-    val gyroTiltY = cos(audioDrivenPhase * 0.95f) * (smoothedVolume * 13.5f + syllableEnvelope * 6.0f)
-    val totalPlanetRotationZ = rhythmicRotationDeg + ringVibrationDeg
-
-    // 2. Luminosité dynamique qui augmente selon le volume sonore et les pulsations syllabiques
-    val effectiveLuminosity = (smoothedVolume + syllableEnvelope * 0.35f).coerceIn(0f, 1f)
+    // Éclairage solaire subtil sur les bandes nuageuses et les anneaux selon l'intensité vocale
+    val effectiveLuminosity = (smoothedVolume * 0.75f + syllableEnvelope * 0.25f).coerceIn(0f, 1f)
     val colorMatrix = remember(effectiveLuminosity) {
-        val gain = 1f + (effectiveLuminosity * 0.48f)
-        val rBoost = effectiveLuminosity * 44f
-        val gBoost = effectiveLuminosity * 32f
-        val bBoost = effectiveLuminosity * 14f
+        val gain = 1f + (effectiveLuminosity * 0.20f)
+        val rBoost = effectiveLuminosity * 14f
+        val gBoost = effectiveLuminosity * 10f
+        val bBoost = effectiveLuminosity * 4f
         ColorMatrix(
             floatArrayOf(
                 gain, 0f, 0f, 0f, rBoost,
@@ -2476,8 +2688,7 @@ fun AudioReactiveSaturnOrb(
 
     Box(
         modifier = Modifier
-            .size(250.dp)
-            .clip(CircleShape)
+            .size(orbSize)
             .clickable(
                 interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
                 indication = null,
@@ -2486,83 +2697,18 @@ fun AudioReactiveSaturnOrb(
             .testTag("saturn_voice_call_orb"),
         contentAlignment = Alignment.Center
     ) {
-        // Halo lumineux spatial et onde des anneaux tournant au rythme de la voix
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val centerOffset = Offset(size.width / 2f, size.height / 2f)
-            val baseRadius = size.minDimension * 0.36f
-            val dynamicRadius = baseRadius * (1f + effectiveLuminosity * 0.65f)
-
-            val coreGlowAlpha = (0.14f + effectiveLuminosity * 0.68f).coerceIn(0f, 0.90f)
-            val outerCoronaAlpha = (0.05f + effectiveLuminosity * 0.45f).coerceIn(0f, 0.68f)
-
-            val accentColor = when (callState) {
-                VoiceCallState.SAM_SPEAKING -> Color(0xFFFFD54F)
-                VoiceCallState.USER_SPEAKING -> Color(0xFFFFCA28)
-                VoiceCallState.THINKING -> Color(0xFFFFB300)
-                else -> Color(0xFFFFB74D)
-            }
-
-            // Couronne lumineuse externe réactive au volume
-            drawCircle(
-                brush = Brush.radialGradient(
-                    colors = listOf(
-                        accentColor.copy(alpha = coreGlowAlpha),
-                        Color(0xFFFF8F00).copy(alpha = outerCoronaAlpha),
-                        Color.Transparent
-                    ),
-                    center = Offset(
-                        centerOffset.x + fluidOffsetX * 0.5f,
-                        centerOffset.y + fluidOffsetY * 0.5f
-                    ),
-                    radius = dynamicRadius * 1.40f
-                ),
-                radius = dynamicRadius * 1.40f,
-                center = Offset(
-                    centerOffset.x + fluidOffsetX * 0.5f,
-                    centerOffset.y + fluidOffsetY * 0.5f
-                )
-            )
-
-            // Onde lumineuse elliptique alignée sur la rotation rythmique des anneaux de Saturne
-            if (effectiveLuminosity > 0.01f) {
-                rotate(
-                    degrees = -27f + totalPlanetRotationZ,
-                    pivot = centerOffset
-                ) {
-                    val ovalW = size.width * (0.76f + effectiveLuminosity * 0.22f)
-                    val ovalH = size.height * (0.22f + effectiveLuminosity * 0.09f)
-                    drawOval(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                Color(0xFFFFECB3).copy(alpha = (effectiveLuminosity * 0.60f).coerceIn(0f, 0.75f)),
-                                Color(0xFFFFB300).copy(alpha = (effectiveLuminosity * 0.32f).coerceIn(0f, 0.48f)),
-                                Color.Transparent
-                            ),
-                            center = centerOffset,
-                            radius = ovalW * 0.55f
-                        ),
-                        topLeft = Offset(
-                            centerOffset.x - ovalW / 2f,
-                            centerOffset.y - ovalH / 2f
-                        ),
-                        size = Size(ovalW, ovalH)
-                    )
-                }
-            }
-        }
-
-        // Image de Saturne fournie par l'utilisateur animée par le GPU Android (60 FPS)
+        // Image de Saturne animée par le GPU sans rognage des anneaux ni déformation artificielle
         Image(
             painter = painterResource(id = R.drawable.saturn_voice_planet),
             contentDescription = "Planète Saturne Audio-Réactive",
             contentScale = ContentScale.Fit,
             colorFilter = ColorFilter.colorMatrix(colorMatrix),
             modifier = Modifier
-                .size(216.dp)
+                .size(imageSize)
                 .graphicsLayer {
-                    cameraDistance = 14f * density
-                    scaleX = planetScaleX
-                    scaleY = planetScaleY
+                    cameraDistance = 24f * density
+                    scaleX = planetScale
+                    scaleY = planetScale
                     rotationZ = totalPlanetRotationZ
                     rotationX = gyroTiltX
                     rotationY = gyroTiltY
