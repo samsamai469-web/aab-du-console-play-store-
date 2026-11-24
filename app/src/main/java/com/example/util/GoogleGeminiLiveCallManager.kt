@@ -34,6 +34,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,8 +53,8 @@ import kotlin.math.sqrt
 /**
  * Gestionnaire officiel d'appel vocal temps réel propulsé à 100 % par Google Gemini Live
  * via Firebase AI Logic (LiveSession bidirectionnel Audio-to-Audio + Google Search Grounding).
- * - Modèle principal : gemini-3.8-live (dernier modèle phare vocal bidirectionnel Google)
- * - Replis automatiques : gemini-3.1-flash-live-preview -> gemini-2.5-flash-native-audio-preview-12-2025
+ * - Modèle principal : gemini-3.1-flash-live-preview (vocal bidirectionnel Google en direct)
+ * - Repli automatique : gemini-2.5-flash-native-audio-preview-12-2025
  * - Capture microphone PCM 16-bit 16 kHz mono -> session.sendAudioRealtime(...)
  * - Restitution AudioTrack PCM 16-bit 24 kHz mono + calcul RMS temps réel pour l'orbe Saturne
  * - Verrouillé en Français avec l'identité officielle de SAM AI.
@@ -69,7 +70,6 @@ class GoogleGeminiLiveCallManager(
         private const val INPUT_SAMPLE_RATE = 16000
         private const val OUTPUT_SAMPLE_RATE = 24000
         private const val LIVE_MODEL_PRIMARY = "gemini-3.1-flash-live-preview"
-        private const val LIVE_MODEL_SECONDARY = "gemini-3.5-flash-lite"
         private const val LIVE_MODEL_FALLBACK = "gemini-2.5-flash-native-audio-preview-12-2025"
         private const val LIVE_VOICE = "Charon"
 
@@ -224,7 +224,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             outputAudioTranscription = AudioTranscriptionConfig()
         }
 
-        val modelsToTry = listOf(LIVE_MODEL_PRIMARY, LIVE_MODEL_SECONDARY, LIVE_MODEL_FALLBACK)
+        val modelsToTry = listOf(LIVE_MODEL_PRIMARY, LIVE_MODEL_FALLBACK)
         for (modelName in modelsToTry) {
             if (!isActiveCall.get()) return false
             try {
@@ -235,7 +235,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                     systemInstruction = sysContent,
                     tools = listOf(Tool.googleSearch())
                 )
-                val session = withTimeout(12_000L) {
+                val session = withTimeout(5_500L) {
                     liveModel.connect()
                 }
                 if (!isActiveCall.get()) {
@@ -251,6 +251,8 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                 startReceivingLoop(session)
                 startMicrophoneStreaming(session)
                 return true
+            } catch (tce: TimeoutCancellationException) {
+                Log.w(TAG, "Timeout connexion Live sur $modelName (5.5s)")
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Throwable) {

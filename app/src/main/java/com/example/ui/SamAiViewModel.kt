@@ -2698,12 +2698,14 @@ class SamAiViewModel(
                     }
                 }
 
-                var liveContextSummary = ""
-                var liveSources = emptyList<com.example.data.local.WebSource>()
-                var isWebSearchNeeded = false
-
-                // Désactivation totale du pré-fetch réseau pour que l'IA réponde instantanément
-                isWebSearchNeeded = false
+                val searchDecision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
+                val isWebSearchNeeded = searchDecision.isSearchNeeded
+                val liveContextSummary = if (isWebSearchNeeded) {
+                    com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(userText)
+                } else {
+                    ""
+                }
+                val liveSources = emptyList<com.example.data.local.WebSource>()
 
                 // Moteur IA 100 % Google via Firebase AI Logic (gemini-3.8-flash + Google Search Grounding + repli gemini-3.5-flash-lite)
                 var responseText = ""
@@ -2764,7 +2766,11 @@ class SamAiViewModel(
                         enableSearch = isWebSearchNeeded || liveSources.isNotEmpty(),
                         temperature = if (isWebSearchNeeded || liveContextSummary.isNotBlank()) 0.4 else 0.25,
                         maxOutputTokens = if (isVoiceCall) 450 else 3000,
-                        preferredModel = com.example.data.repository.AiRepository.DEFAULT_GEMINI_MODEL
+                        preferredModel = if (isVoiceCall) {
+                            com.example.data.repository.AiRepository.LITE_GEMINI_MODEL
+                        } else {
+                            com.example.data.repository.AiRepository.DEFAULT_GEMINI_MODEL
+                        }
                     )
                     if (geminiResult.success && geminiResult.text.isNotBlank()) {
                         responseText = sanitizeSamAiFallbackBranding(geminiResult.text)
@@ -2950,34 +2956,18 @@ class SamAiViewModel(
             }
 
             val candidate = output.translatedText.trim()
-            // Vérifie si la traduction est valide et différente du texte source quand les langues sont différentes
             val areLanguagesDifferent = !sourceLang.equals(targetLang, ignoreCase = true)
-            val isCandidateValid = candidate.isNotBlank() && 
-                    (!areLanguagesDifferent || !candidate.equals(sanitized, ignoreCase = true)) &&
-                    !candidate.contains("non disponible hors-ligne")
+            val isCandidateValid = candidate.isNotBlank() &&
+                (!areLanguagesDifferent || !candidate.equals(sanitized, ignoreCase = true)) &&
+                !candidate.contains("non disponible hors-ligne")
 
             if (isCandidateValid) {
                 candidate
             } else {
-                // Secours direct par le moteur IA
-                val direct = aiRepository.translateDirectly(sanitized, sourceLang, targetLang, "")
-                if (direct.isNotBlank() && (!areLanguagesDifferent || !direct.equals(sanitized, ignoreCase = true)) && !direct.contains("non disponible hors-ligne")) {
-                    direct
-                } else {
-                    candidate.ifBlank { sanitized }
-                }
+                candidate.ifBlank { sanitized }
             }
-        } catch (e: Exception) {
-            try {
-                val direct = aiRepository.translateDirectly(sanitized, sourceLang, targetLang, "")
-                if (direct.isNotBlank() && !direct.contains("non disponible hors-ligne")) {
-                    direct
-                } else {
-                    sanitized
-                }
-            } catch (_: Exception) {
-                sanitized
-            }
+        } catch (_: Exception) {
+            sanitized
         }
     }
 

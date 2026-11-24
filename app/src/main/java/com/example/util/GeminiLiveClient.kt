@@ -26,6 +26,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
@@ -42,8 +43,8 @@ import kotlin.math.sqrt
  * Architecture :
  * 1. Capture microphone PCM 16kHz Little-Endian, calcul RMS pour affichage de niveau sonore VAD.
  * 2. Modèles officiels Google Gemini Live :
- *    - Principal : gemini-3.8-live (dernier modèle phare audio-to-audio en direct)
- *    - Replis automatiques : gemini-3.1-flash-live-preview -> gemini-2.5-flash-native-audio-preview-12-2025
+ *    - Principal : gemini-3.1-flash-live-preview (modèle audio-to-audio en direct)
+ *    - Repli automatique : gemini-2.5-flash-native-audio-preview-12-2025
  * 3. Connexion sécurisée via Firebase AI Logic + App Check (aucune clé API requise côté client).
  * 4. Bascule transparente et temps réel sur le moteur vocal adaptatif (SpeechRecognitionManager + Gemini Audio)
  *    pour une compatibilité 100% sans interruption (Français, Anglais, Mooré, Dioula, Haoussa).
@@ -57,11 +58,11 @@ class GeminiLiveClient(
     enum class LiveMode(val displayName: String, val modelId: String) {
         CONTROLLED_TRANSLATION(
             displayName = "Mode 1 — Traduction contrôlée",
-            modelId = "gemini-3.8-live"
+            modelId = "gemini-3.1-flash-live-preview"
         ),
         INSTANT_INTERPRETER(
             displayName = "Mode 2 — Interprète instantané",
-            modelId = "gemini-3.8-live"
+            modelId = "gemini-3.1-flash-live-preview"
         )
     }
 
@@ -107,8 +108,11 @@ class GeminiLiveClient(
     val statusMessage = _statusMessage.asStateFlow()
 
     private var audioRecord: AudioRecord? = null
+    private var connectJob: Job? = null
     private var recordingJob: Job? = null
     private var receiveJob: Job? = null
+    private var fallbackPartialJob: Job? = null
+    private var fallbackSoundJob: Job? = null
     private var liveSession: LiveSession? = null
     private val isRecording = AtomicBoolean(false)
     private val isSetupComplete = AtomicBoolean(false)
@@ -214,7 +218,8 @@ class GeminiLiveClient(
         LiveTranslateLogger.logWebSocket("Connexion Firebase AI LiveSession")
         isSetupComplete.set(false)
 
-        coroutineScope.launch(Dispatchers.IO) {
+        connectJob?.cancel()
+        connectJob = coroutineScope.launch(Dispatchers.IO) {
             val systemPrompt = """
                 Tu es l'interprète vocal instantané Google Gemini Live.
                 Ta mission : Traduire instantanément et fidèlement la parole de $activeSourceLang vers $activeTargetLang.
@@ -240,11 +245,13 @@ class GeminiLiveClient(
                         generationConfig = config,
                         systemInstruction = content { text(systemPrompt) }
                     )
-                    connectedSession = withTimeout(10_000L) {
+                    connectedSession = withTimeout(5_500L) {
                         liveModel.connect()
                     }
                     LiveTranslateLogger.logWebSocket("LiveSession connectée ($modelId)")
                     break
+                } catch (tce: TimeoutCancellationException) {
+                    LiveTranslateLogger.logError("Timeout LiveSession ($modelId) : bascule automatique")
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (e: Throwable) {
@@ -444,7 +451,8 @@ class GeminiLiveClient(
                 }
             )
 
-            coroutineScope.launch {
+            fallbackPartialJob?.cancel()
+            fallbackPartialJob = coroutineScope.launch {
                 speechRecognitionManager.partialText.collect { partial ->
                     if (partial.isNotBlank()) {
                         _interimTranscript.value = partial
@@ -453,7 +461,8 @@ class GeminiLiveClient(
                 }
             }
 
-            coroutineScope.launch {
+            fallbackSoundJob?.cancel()
+            fallbackSoundJob = coroutineScope.launch {
                 speechRecognitionManager.soundLevel.collect { lvl ->
                     _soundLevel.value = lvl
                 }
@@ -463,7 +472,13 @@ class GeminiLiveClient(
 
     fun pauseLiveStream() {
         isRecording.set(false)
+        connectJob?.cancel()
+        connectJob = null
         recordingJob?.cancel()
+        fallbackPartialJob?.cancel()
+        fallbackPartialJob = null
+        fallbackSoundJob?.cancel()
+        fallbackSoundJob = null
         audioRecord?.stop()
         speechRecognitionManager.pauseListening()
         _soundLevel.value = 0f
@@ -498,10 +513,16 @@ class GeminiLiveClient(
         isRecording.set(false)
         isSetupComplete.set(false)
 
+        connectJob?.cancel()
+        connectJob = null
         recordingJob?.cancel()
         recordingJob = null
         receiveJob?.cancel()
         receiveJob = null
+        fallbackPartialJob?.cancel()
+        fallbackPartialJob = null
+        fallbackSoundJob?.cancel()
+        fallbackSoundJob = null
 
         val sessionToClose = liveSession
         liveSession = null

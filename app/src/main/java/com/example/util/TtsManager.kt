@@ -74,14 +74,11 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     }
 
     companion object {
-        // Modèles Google Gemini TTS officiels de dernière génération (voix masculine naturelle "Charon")
-        private const val PRIMARY_TTS_MODEL = "gemini-3.8-flash-tts"
-        private const val FAST_LITE_TTS_MODEL = "gemini-3.8-flash-lite-tts"
-        private const val FALLBACK_TTS_MODEL = "gemini-3.1-flash-tts-preview"
-        private const val LEGACY_TTS_MODEL = "gemini-2.5-flash-preview-tts"
+        // Modèles Google Gemini TTS officiels supportés par Firebase AI Logic (voix masculine naturelle "Charon")
+        private const val PRIMARY_TTS_MODEL = "gemini-3.1-flash-tts-preview"
         private const val UNIFIED_GOOGLE_MALE_VOICE = "Charon"
-        private const val CACHE_PREFIX = "sam_tts_google_v6_"
-        private const val FIRST_CHUNK_TIMEOUT_MS = 5_000L
+        private const val CACHE_PREFIX = "sam_tts_google_v7_"
+        private const val FIRST_CHUNK_TIMEOUT_MS = 2_200L
 
         @Volatile
         private var preferredWorkingTtsModel: String? = null
@@ -518,15 +515,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             )
         }
 
-        val defaultOrder = listOf(
-            PRIMARY_TTS_MODEL,
-            FAST_LITE_TTS_MODEL,
-            FALLBACK_TTS_MODEL,
-            LEGACY_TTS_MODEL
-        )
-        val candidateModels = preferredWorkingTtsModel?.let { pref ->
-            (listOf(pref) + defaultOrder).distinct()
-        } ?: defaultOrder
+        val candidateModels = listOf(PRIMARY_TTS_MODEL)
 
         for (modelName in candidateModels) {
             if (!isActive || !isGlobalTtsSpeaking) return@withContext false
@@ -865,7 +854,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 )
             }
 
-            return@withContext withTimeoutOrNull(25_000L) {
+            return@withContext withTimeoutOrNull(8_000L) {
                 streamAndPlayNeuralVoice(spokenText, langCode, naturalSpeed, cachedFile)
             } ?: false
         } catch (ce: CancellationException) {

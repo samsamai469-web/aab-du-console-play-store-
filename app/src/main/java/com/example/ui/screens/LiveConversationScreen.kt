@@ -143,6 +143,7 @@ fun LiveConversationScreen(
     var lastSpeaker by remember { mutableIntStateOf(1) } // 1 = Abdoul (User 1), 2 = Aminata (User 2)
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var turnsList by remember { mutableStateOf<List<LiveConversationTurn>>(emptyList()) }
+    var conversationEpoch by remember { mutableIntStateOf(0) }
 
     // Menus et modales
     var showTopMenu by remember { mutableStateOf(false) }
@@ -315,6 +316,7 @@ fun LiveConversationScreen(
 
     // Réinitialisation complète et instantanée de la conversation
     fun resetConversation() {
+        conversationEpoch++
         user1SpeechManager.reset()
         user2SpeechManager.reset()
         ttsManager.stop()
@@ -355,6 +357,7 @@ fun LiveConversationScreen(
         user1Status = "Prêt"
         user2Status = "Traduction..."
 
+        val requestEpoch = conversationEpoch
         coroutineScope.launch {
             try {
                 LiveTranslateLogger.logTranslation(user1Lang, user2Lang, "User 1: \"$clean\"")
@@ -363,6 +366,7 @@ fun LiveConversationScreen(
                     sourceLang = user1Lang,
                     targetLang = user2Lang
                 )
+                if (requestEpoch != conversationEpoch) return@launch
                 val translated = ConversationCleaner.polishTranslatedText(rawTranslated).ifBlank { rawTranslated.trim() }
 
                 if (translated.isNotBlank()) {
@@ -397,7 +401,10 @@ fun LiveConversationScreen(
                     user1Status = "Prêt"
                     user2Status = "Prêt"
                 }
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                throw ce
             } catch (e: Exception) {
+                if (requestEpoch != conversationEpoch) return@launch
                 user1Status = "Erreur"
                 user2Status = "Erreur"
                 errorMessage = "Erreur: ${e.message}"
@@ -428,6 +435,7 @@ fun LiveConversationScreen(
         user2Status = "Prêt"
         user1Status = "Traduction..."
 
+        val requestEpoch = conversationEpoch
         coroutineScope.launch {
             try {
                 LiveTranslateLogger.logTranslation(user2Lang, user1Lang, "User 2: \"$clean\"")
@@ -436,6 +444,7 @@ fun LiveConversationScreen(
                     sourceLang = user2Lang,
                     targetLang = user1Lang
                 )
+                if (requestEpoch != conversationEpoch) return@launch
                 val translated = ConversationCleaner.polishTranslatedText(rawTranslated).ifBlank { rawTranslated.trim() }
 
                 if (translated.isNotBlank()) {
@@ -470,7 +479,10 @@ fun LiveConversationScreen(
                     user1Status = "Prêt"
                     user2Status = "Prêt"
                 }
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                throw ce
             } catch (e: Exception) {
+                if (requestEpoch != conversationEpoch) return@launch
                 user1Status = "Erreur"
                 user2Status = "Erreur"
                 errorMessage = "Erreur: ${e.message}"
@@ -628,6 +640,7 @@ fun LiveConversationScreen(
 
     // Inversion des langues (⇄)
     fun onSwapLanguages() {
+        conversationEpoch++
         val tempLang = user1Lang
         user1Lang = user2Lang
         user2Lang = tempLang
@@ -671,6 +684,7 @@ fun LiveConversationScreen(
             user1Status = "Prêt"
             user2Status = "Traduction..."
 
+            val requestEpoch = conversationEpoch
             coroutineScope.launch {
                 try {
                     LiveTranslateLogger.logTranslation(user1Lang, user2Lang, "Texte Abdoul: \"$text\"")
@@ -679,6 +693,7 @@ fun LiveConversationScreen(
                         sourceLang = user1Lang,
                         targetLang = user2Lang
                     )
+                    if (requestEpoch != conversationEpoch) return@launch
                     val translated = ConversationCleaner.polishTranslatedText(rawTranslated).ifBlank { rawTranslated.trim() }
                     if (translated.isNotBlank()) {
                         user2ReceivedText = translated
@@ -692,7 +707,8 @@ fun LiveConversationScreen(
                             translatedText = translated,
                             timestamp = System.currentTimeMillis()
                         )
-                        turnsList = listOf(turn) + turnsList
+                        LiveConversationHistoryManager.saveTurn(context, turn)
+                        turnsList = LiveConversationHistoryManager.getHistory(context)
                         viewModel.saveLiveConversationTurn(turn)
 
                         ttsManager.speakWithCallback(
@@ -708,7 +724,10 @@ fun LiveConversationScreen(
                         user2Transcript = "Traduction indisponible"
                         user2Status = "Prêt"
                     }
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    throw ce
                 } catch (e: Exception) {
+                    if (requestEpoch != conversationEpoch) return@launch
                     user2Status = "Erreur"
                     errorMessage = e.message
                 }
@@ -725,6 +744,7 @@ fun LiveConversationScreen(
             user2Status = "Prêt"
             user1Status = "Traduction..."
 
+            val requestEpoch = conversationEpoch
             coroutineScope.launch {
                 try {
                     LiveTranslateLogger.logTranslation(user2Lang, user1Lang, "Texte Aminata: \"$text\"")
@@ -733,6 +753,7 @@ fun LiveConversationScreen(
                         sourceLang = user2Lang,
                         targetLang = user1Lang
                     )
+                    if (requestEpoch != conversationEpoch) return@launch
                     val translated = ConversationCleaner.polishTranslatedText(rawTranslated).ifBlank { rawTranslated.trim() }
                     if (translated.isNotBlank()) {
                         user1ReceivedText = translated
@@ -746,7 +767,8 @@ fun LiveConversationScreen(
                             translatedText = translated,
                             timestamp = System.currentTimeMillis()
                         )
-                        turnsList = listOf(turn) + turnsList
+                        LiveConversationHistoryManager.saveTurn(context, turn)
+                        turnsList = LiveConversationHistoryManager.getHistory(context)
                         viewModel.saveLiveConversationTurn(turn)
 
                         ttsManager.speakWithCallback(
@@ -762,7 +784,10 @@ fun LiveConversationScreen(
                         user1Transcript = "Traduction indisponible"
                         user1Status = "Prêt"
                     }
+                } catch (ce: kotlinx.coroutines.CancellationException) {
+                    throw ce
                 } catch (e: Exception) {
+                    if (requestEpoch != conversationEpoch) return@launch
                     user1Status = "Erreur"
                     errorMessage = e.message
                 }
@@ -1105,6 +1130,7 @@ fun LiveConversationScreen(
                 if (isUser1Listening) {
                     // Boîte active pendant que l'utilisateur 1 parle
                     Surface(
+                        onClick = { onUser1MicClicked() },
                         shape = RoundedCornerShape(12.dp),
                         color = liveGreenLight,
                         border = BorderStroke(1.dp, liveGreen.copy(alpha = 0.4f)),
@@ -1112,25 +1138,36 @@ fun LiveConversationScreen(
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
                             Row(
+                                modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Surface(
-                                    shape = RoundedCornerShape(4.dp),
-                                    color = liveGreen,
-                                    modifier = Modifier.size(width = 30.dp, height = 20.dp)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Text(
-                                            text = getLangCode(user1Lang),
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
-                                            color = Color.White
-                                        )
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = liveGreen,
+                                        modifier = Modifier.size(width = 30.dp, height = 20.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text(
+                                                text = getLangCode(user1Lang),
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                                                color = Color.White
+                                            )
+                                        }
                                     }
+                                    Text(
+                                        text = "Écoute (${formatTimer(user1Seconds)}) • Parlez maintenant",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = liveGreen
+                                    )
                                 }
                                 Text(
-                                    text = "Écoute en cours... Parlez maintenant",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                    text = "Terminer",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                     color = liveGreen
                                 )
                             }
@@ -1433,6 +1470,7 @@ fun LiveConversationScreen(
                 if (isUser2Listening) {
                     // Boîte active pendant que l'utilisateur 2 parle
                     Surface(
+                        onClick = { onUser2MicClicked() },
                         shape = RoundedCornerShape(12.dp),
                         color = liveGreenLight,
                         border = BorderStroke(1.dp, liveGreen.copy(alpha = 0.4f)),
@@ -1440,25 +1478,36 @@ fun LiveConversationScreen(
                     ) {
                         Column(modifier = Modifier.padding(12.dp)) {
                             Row(
+                                modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                horizontalArrangement = Arrangement.SpaceBetween
                             ) {
-                                Surface(
-                                    shape = RoundedCornerShape(4.dp),
-                                    color = liveGreen,
-                                    modifier = Modifier.size(width = 30.dp, height = 20.dp)
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Box(contentAlignment = Alignment.Center) {
-                                        Text(
-                                            text = getLangCode(user2Lang),
-                                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
-                                            color = Color.White
-                                        )
+                                    Surface(
+                                        shape = RoundedCornerShape(4.dp),
+                                        color = liveGreen,
+                                        modifier = Modifier.size(width = 30.dp, height = 20.dp)
+                                    ) {
+                                        Box(contentAlignment = Alignment.Center) {
+                                            Text(
+                                                text = getLangCode(user2Lang),
+                                                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold, fontSize = 10.sp),
+                                                color = Color.White
+                                            )
+                                        }
                                     }
+                                    Text(
+                                        text = "Écoute (${formatTimer(user2Seconds)}) • Parlez maintenant",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                        color = liveGreen
+                                    )
                                 }
                                 Text(
-                                    text = "Écoute en cours... Parlez maintenant",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                                    text = "Terminer",
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
                                     color = liveGreen
                                 )
                             }

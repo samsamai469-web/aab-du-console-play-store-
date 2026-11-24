@@ -31,7 +31,8 @@ class OpenAiWhisperService(@Suppress("UNUSED_PARAMETER") context: Context) {
         private const val TAG = "GoogleSpeechTranscribe"
         private const val PRIMARY_TRANSCRIBE_MODEL = "gemini-3.8-flash"
         private const val FALLBACK_TRANSCRIBE_MODEL = "gemini-3.5-flash-lite"
-        private const val TRANSCRIBE_TIMEOUT_MS = 35_000L
+        private const val FAST_TRANSCRIBE_TIMEOUT_MS = 6_500L
+        private const val AFRICAN_TRANSCRIBE_TIMEOUT_MS = 8_000L
 
         fun isLikelyMooreUtterance(text: String): Boolean = false
 
@@ -122,22 +123,34 @@ class OpenAiWhisperService(@Suppress("UNUSED_PARAMETER") context: Context) {
                     "S'il n'y a vraiment aucune parole humaine audible, renvoie uniquement une chaîne vide."
         }
 
+        val modelsToTry = if (isMooreHint || isDioulaHint) {
+            listOf(
+                PRIMARY_TRANSCRIBE_MODEL to AFRICAN_TRANSCRIBE_TIMEOUT_MS,
+                FALLBACK_TRANSCRIBE_MODEL to FAST_TRANSCRIBE_TIMEOUT_MS
+            )
+        } else {
+            listOf(
+                FALLBACK_TRANSCRIBE_MODEL to FAST_TRANSCRIBE_TIMEOUT_MS,
+                PRIMARY_TRANSCRIBE_MODEL to AFRICAN_TRANSCRIBE_TIMEOUT_MS
+            )
+        }
+
         var lastError: Throwable? = null
-        for (modelId in listOf(PRIMARY_TRANSCRIBE_MODEL, FALLBACK_TRANSCRIBE_MODEL)) {
+        for ((modelId, timeoutMs) in modelsToTry) {
             try {
                 val model = firebaseAi.generativeModel(
                     modelName = modelId,
                     systemInstruction = content { text(systemGuideText) },
                     generationConfig = generationConfig {
                         temperature = 0.0f
-                        maxOutputTokens = 512
+                        maxOutputTokens = 256
                     }
                 )
                 val promptContent = content {
                     part(InlineDataPart(audioBytes, mimeType))
                     text(instruction)
                 }
-                val response = withTimeout(TRANSCRIBE_TIMEOUT_MS) {
+                val response = withTimeout(timeoutMs) {
                     model.generateContent(promptContent)
                 }
                 val rawText = response.text.orEmpty()

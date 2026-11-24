@@ -147,7 +147,7 @@ fun SamAiGeminiAssistantModal(
             continuousMode = true,
             onResult = { recognizedText ->
                 val clean = recognizedText.trim()
-                if (clean.isNotBlank() && isVoiceCallActive) {
+                if (clean.isNotBlank() && isVoiceCallActive && !isLiveMicMuted) {
                     speechManager.reset()
                     liveUserDraft = ""
                     liveAiDraft = ""
@@ -311,7 +311,7 @@ fun SamAiGeminiAssistantModal(
         isLiveMicMuted = !isLiveMicMuted
         if (isUsingFallbackRest) {
             if (isLiveMicMuted) {
-                speechManager.stopListening()
+                speechManager.reset()
             } else if (liveCallState == VoiceCallState.USER_SPEAKING) {
                 startFallbackListening.value()
             }
@@ -320,15 +320,26 @@ fun SamAiGeminiAssistantModal(
         }
     }
 
+    fun interruptAndResumeFallbackListening() {
+        ttsManager.stop()
+        speechManager.reset()
+        if (!isVoiceCallActive || isLiveMicMuted || !isUsingFallbackRest) return
+        liveCallState = VoiceCallState.USER_SPEAKING
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            if (isVoiceCallActive && !isLiveMicMuted && isUsingFallbackRest &&
+                !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L) &&
+                liveCallState == VoiceCallState.USER_SPEAKING
+            ) {
+                listenFallbackTurn()
+            }
+        }, 520L)
+    }
+
     val handleSaturnOrbTap = {
         if (isUsingFallbackRest) {
             when (liveCallState) {
                 VoiceCallState.USER_SPEAKING -> speechManager.stopListening()
-                VoiceCallState.SAM_SPEAKING -> {
-                    ttsManager.stop()
-                    speechManager.reset()
-                    startFallbackListening.value()
-                }
+                VoiceCallState.SAM_SPEAKING -> interruptAndResumeFallbackListening()
                 else -> {}
             }
         } else {
@@ -359,10 +370,10 @@ fun SamAiGeminiAssistantModal(
             speechManager.startListening(
                 language = "Français",
                 onResult = { transcript ->
+                    isListeningVoice = false
+                    speechManager.reset()
                     if (transcript.isNotBlank()) {
                         inputText = transcript
-                        isListeningVoice = false
-                        speechManager.reset()
                         hideKeyboard()
                         viewModel.askSamAiGemini(userQuestion = transcript)
                         inputText = ""
@@ -718,6 +729,7 @@ fun SamAiGeminiAssistantModal(
                                         onClick = {
                                             isListeningVoice = false
                                             speechManager.stopListening { transcript ->
+                                                speechManager.reset()
                                                 if (transcript.isNotBlank()) {
                                                     inputText = transcript
                                                     hideKeyboard()
@@ -752,6 +764,7 @@ fun SamAiGeminiAssistantModal(
                                     } else if (isListeningVoice) {
                                         isListeningVoice = false
                                         speechManager.stopListening { transcript ->
+                                            speechManager.reset()
                                             if (transcript.isNotBlank()) {
                                                 inputText = transcript
                                                 hideKeyboard()
@@ -771,10 +784,10 @@ fun SamAiGeminiAssistantModal(
                                             speechManager.startListening(
                                                 language = "Français",
                                                 onResult = { transcript ->
+                                                    isListeningVoice = false
+                                                    speechManager.reset()
                                                     if (transcript.isNotBlank()) {
                                                         inputText = transcript
-                                                        isListeningVoice = false
-                                                        speechManager.reset()
                                                         hideKeyboard()
                                                         viewModel.askSamAiGemini(userQuestion = transcript)
                                                         inputText = ""
@@ -948,11 +961,13 @@ fun SamAiGeminiAssistantModal(
                 onToggleMute = toggleLiveMicMute,
                 onInterruptOrSpeak = {
                     if (isUsingFallbackRest) {
-                        ttsManager.stop()
-                        speechManager.reset()
-                        startFallbackListening.value()
+                        interruptAndResumeFallbackListening()
                     } else {
-                        realtimeManager.interruptAiSpeech()
+                        if (liveCallState == VoiceCallState.USER_SPEAKING) {
+                            realtimeManager.commitUserSpeechNow()
+                        } else {
+                            realtimeManager.interruptAiSpeech()
+                        }
                     }
                 },
                 onMinimizeToChat = {

@@ -171,6 +171,7 @@ class TranslationRepository(
         var isLocal = false
         var badge = "SAM AI ⚡"
         var breakdown = emptyList<String>()
+        var localLexiconHint = ""
 
         // =========================================================================
         // CAS 1 : MOORÉ & DIOULA — LE DICTIONNAIRE LOCAL PREND LE RELAIS EN PRIORITÉ
@@ -190,10 +191,14 @@ class TranslationRepository(
                     targetLang = effectiveTargetLang
                 )
 
-                if (localAssembly != null && localAssembly.translatedText.isNotBlank() &&
-                    !localAssembly.translatedText.equals(cleanText, ignoreCase = true)
-                ) {
-                    translated = localAssembly.translatedText.trim()
+                val isHighCoverageLocal = localAssembly != null &&
+                    localAssembly.translatedText.isNotBlank() &&
+                    !localAssembly.translatedText.equals(cleanText, ignoreCase = true) &&
+                    (localAssembly.totalSegments <= 2 && localAssembly.matchedCount == localAssembly.totalSegments ||
+                        localAssembly.matchedCount * 4 >= localAssembly.totalSegments * 3)
+
+                if (isHighCoverageLocal) {
+                    translated = localAssembly!!.translatedText.trim()
                     breakdown = localAssembly.breakdown
                     badge = "📖 Dictionnaire Local ($localLangLabel)"
                     isLocal = true
@@ -203,6 +208,8 @@ class TranslationRepository(
                     badge = "📖 Dictionnaire Local ($localLangLabel)"
                     isLocal = true
                     MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, true)
+                } else if (localAssembly != null && localAssembly.breakdown.isNotEmpty()) {
+                    localLexiconHint = localAssembly.breakdown.joinToString("; ")
                 }
             }
             // B. Paire Autre Langue (ex: Anglais, Arabe, Haoussa, Espagnol) -> Mooré ou Dioula
@@ -268,7 +275,7 @@ class TranslationRepository(
         // =========================================================================
         if (translated.isBlank() || translated.equals(cleanText, ignoreCase = true)) {
             try {
-                val onlineResult = aiFallback(cleanText, effectiveSourceLang, effectiveTargetLang, "")
+                val onlineResult = aiFallback(cleanText, effectiveSourceLang, effectiveTargetLang, localLexiconHint)
                 if (onlineResult.isNotBlank() && !onlineResult.equals(cleanText, ignoreCase = true)) {
                     translated = onlineResult.trim()
                     badge = "SAM AI ⚡"

@@ -164,15 +164,14 @@ class AudioRecorderHelper(private val context: Context) {
         return null
     }
 
-    private fun attachHardwareAudioEffects(audioSessionId: Int) {
-        try {
-            if (AutomaticGainControl.isAvailable()) {
-                automaticGainControl = AutomaticGainControl.create(audioSessionId)?.apply { enabled = true }
-            }
-        } catch (_: Exception) {}
+    private fun attachHardwareAudioEffects(@Suppress("UNUSED_PARAMETER") audioSessionId: Int) {
+        // Ne pas activer AutomaticGainControl : sous Android, l'AGC amplifie fortement le bruit de fond
+        // dès que l'utilisateur s'arrête de parler, ce qui empêche la détection de fin de phrase et
+        // sature les consonnes du Mooré et du Dioula. On préfère une capture PCM linéaire propre
+        // suivie d'une normalisation intelligente après enregistrement.
     }
 
-    private fun writeAudioDataToWav(record: AudioRecord, outputFile: File, bufferSize: Int) {
+    private fun writeAudioDataToWav(record: AudioRecord, outputFile: File, @Suppress("UNUSED_PARAMETER") bufferSize: Int) {
         // Trames ultra-courtes de 30 ms (480 échantillons à 16 kHz = 960 octets)
         val frameShorts = 480
         val audioData = ShortArray(frameShorts)
@@ -187,40 +186,29 @@ class AudioRecorderHelper(private val context: Context) {
             while (isRecording.get()) {
                 val readShorts = record.read(audioData, 0, frameShorts)
                 if (readShorts > 0) {
-                    var sumBoostedSquares = 0.0
+                    var sumSquares = 0.0
                     var framePeak = 0
                     val frameBytes = ByteArray(readShorts * 2)
 
                     for (i in 0 until readShorts) {
                         val rawSample = audioData[i].toInt()
-                        if (rawSample != 0) {
-                            val absRaw = kotlin.math.abs(rawSample)
-                            if (absRaw > peakObservedSample) {
-                                peakObservedSample = absRaw
-                            }
+                        val absRaw = kotlin.math.abs(rawSample)
+                        if (absRaw > peakObservedSample) {
+                            peakObservedSample = absRaw
                         }
-                        // Pré-amplification vocale linéaire (x2.2) avec soft-knee pour micros discrets
-                        val amplified = (rawSample * 11) / 5
-                        val boosted = when {
-                            amplified > 24000 -> 24000 + ((amplified - 24000) / 3).coerceAtMost(8767)
-                            amplified < -24000 -> -24000 + ((amplified + 24000) / 3).coerceAtLeast(-8768)
-                            else -> amplified
-                        }.coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
-                        val absBoosted = kotlin.math.abs(boosted)
-                        if (absBoosted > framePeak) {
-                            framePeak = absBoosted
+                        if (absRaw > framePeak) {
+                            framePeak = absRaw
                         }
-                        sumBoostedSquares += (boosted.toDouble() * boosted.toDouble())
-                        frameBytes[i * 2] = (boosted and 0xFF).toByte()
-                        frameBytes[i * 2 + 1] = ((boosted shr 8) and 0xFF).toByte()
+                        sumSquares += (rawSample.toDouble() * rawSample.toDouble())
+                        frameBytes[i * 2] = (rawSample and 0xFF).toByte()
+                        frameBytes[i * 2 + 1] = ((rawSample shr 8) and 0xFF).toByte()
                     }
 
-                    val boostedRms = kotlin.math.sqrt(sumBoostedSquares / readShorts).toInt()
-                    val combinedLevel = maxOf(boostedRms, framePeak / 3)
+                    val rawRms = kotlin.math.sqrt(sumSquares / readShorts).toInt()
                     if (framePeak > 0) {
                         nonZeroSampleFrames++
                     }
-                    currentPcmAmplitude = combinedLevel.coerceAtMost(32767)
+                    currentPcmAmplitude = rawRms.coerceAtMost(32767)
 
                     // Écriture directe dès la milliseconde 0 pour ne jamais couper le début de la parole
                     fos.write(frameBytes)
@@ -277,7 +265,7 @@ class AudioRecorderHelper(private val context: Context) {
         } catch (_: Exception) {}
 
         // Attend que le thread d'écriture ferme le flux et mette à jour l'en-tête WAV (taille réelle)
-        // AVANT de libérer AudioRecord et de retourner le fichier à Whisper
+        // AVANT de libérer AudioRecord et de retourner le fichier à la transcription
         try {
             recordingThread?.join(900)
         } catch (_: Exception) {}
@@ -295,7 +283,109 @@ class AudioRecorderHelper(private val context: Context) {
         } catch (_: Exception) {}
         audioRecord = null
 
-        return activeAudioFile
+        val outFile = activeAudioFile
+        if (outFile != null && outFile.exists() && outFile.name.endsWith(".wav", ignoreCase = true)) {
+            trimSilenceAndNormalizeWav(outFile)
+        }
+        return outFile
+    }
+
+    /**
+     * Supprime le silence excessif au début/à la fin tout en conservant 280 ms de marge autour de la voix,
+     * et normalise proprement les voix faibles sans saturer les consonnes.
+     * Réduit la taille envoyée à Gemini et améliore fortement la détection des prononciations.
+     */
+    private fun trimSilenceAndNormalizeWav(wavFile: File) {
+        try {
+            val totalLen = wavFile.length()
+            if (totalLen <= 44L + 3200L) return
+            val allBytes = wavFile.readBytes()
+            val pcmLen = allBytes.size - 44
+            val totalSamples = pcmLen / 2
+            if (totalSamples < 1600) return
+
+            val samples = ShortArray(totalSamples)
+            for (i in 0 until totalSamples) {
+                val lo = allBytes[44 + i * 2].toInt() and 0xFF
+                val hi = allBytes[44 + i * 2 + 1].toInt()
+                samples[i] = ((hi shl 8) or lo).toShort()
+            }
+
+            // Fenêtres de 20 ms (320 échantillons à 16 kHz)
+            val winSize = 320
+            val winCount = totalSamples / winSize
+            if (winCount < 4) return
+
+            val winRms = DoubleArray(winCount)
+            for (w in 0 until winCount) {
+                var sumSq = 0.0
+                val start = w * winSize
+                for (j in 0 until winSize) {
+                    val v = samples[start + j].toDouble()
+                    sumSq += v * v
+                }
+                winRms[w] = kotlin.math.sqrt(sumSq / winSize)
+            }
+
+            val sortedRms = winRms.sorted()
+            val noiseFloorRms = sortedRms[(winCount * 0.20).toInt().coerceIn(0, winCount - 1)]
+            val speechGateRms = maxOf(22.0, noiseFloorRms * 1.65, noiseFloorRms + 14.0)
+
+            var firstActive = -1
+            var lastActive = -1
+            for (w in 0 until winCount) {
+                if (winRms[w] >= speechGateRms) {
+                    if (firstActive == -1) firstActive = w
+                    lastActive = w
+                }
+            }
+
+            val marginWindows = 14 // 280 ms de marge avant & après pour préserver toutes les syllabes
+            val keepStartSample = if (firstActive != -1) {
+                ((firstActive - marginWindows).coerceAtLeast(0)) * winSize
+            } else {
+                0
+            }
+            val keepEndSample = if (lastActive != -1) {
+                (((lastActive + marginWindows + 1).coerceAtMost(winCount)) * winSize).coerceAtMost(totalSamples)
+            } else {
+                totalSamples
+            }
+
+            if (keepEndSample - keepStartSample < 1600) return
+
+            var slicePeak = 0
+            for (i in keepStartSample until keepEndSample) {
+                val a = kotlin.math.abs(samples[i].toInt())
+                if (a > slicePeak) slicePeak = a
+            }
+
+            val gain = if (slicePeak in 40..11500) {
+                minOf(7.0f, 18000f / slicePeak.toFloat())
+            } else {
+                1.0f
+            }
+
+            val trimmedSamples = keepEndSample - keepStartSample
+            val newPcmBytes = ByteArray(trimmedSamples * 2)
+            for (idx in 0 until trimmedSamples) {
+                val orig = samples[keepStartSample + idx].toInt()
+                val scaled = if (gain > 1.05f) {
+                    (orig * gain).toInt().coerceIn(Short.MIN_VALUE.toInt(), Short.MAX_VALUE.toInt())
+                } else {
+                    orig
+                }
+                newPcmBytes[idx * 2] = (scaled and 0xFF).toByte()
+                newPcmBytes[idx * 2 + 1] = ((scaled shr 8) and 0xFF).toByte()
+            }
+
+            FileOutputStream(wavFile).use { fos ->
+                writeWavHeader(fos, newPcmBytes.size.toLong(), newPcmBytes.size.toLong() + 36L, SAMPLE_RATE, 1, 16)
+                fos.write(newPcmBytes)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "trimSilenceAndNormalizeWav ignoré: ${e.message}")
+        }
     }
 
     private fun stopRecordingInternal(deleteFile: Boolean) {
