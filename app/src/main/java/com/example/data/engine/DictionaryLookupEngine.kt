@@ -65,11 +65,10 @@ object DictionaryLookupEngine {
         var s = cleanWhitespace(input)
         if (s.isEmpty()) return s
 
-        // 1. Réduction des consonnes nasales ou labiales allongées (mmm -> m, nnn -> n)
-        s = s.replace(Regex("(?i)m{3,}"), "m")
-            .replace(Regex("(?i)n{3,}"), "n")
+        // 1. Réduction de TOUTES les consonnes répétées 3+ fois (ex: "Baaaarkkk" -> "Baark", "Mmmaaa" -> "Mma")
+        s = s.replace(Regex("(?i)([bcdfghjklmnpqrstvwxz])\\1{2,}"), "$1")
 
-        // 2. Réduction des voyelles allongées de 3+ répétitions vers 2 ou 1
+        // 2. Réduction des voyelles allongées de 3+ répétitions vers 2
         s = s.replace(Regex("(?i)([aeéèêiîoôuùûãẽĩõũʋɩɛ])\\1{2,}"), "$1$1")
 
         // Si la phrase est clairement une question ou une phrase en Français (au moins 2 mots français courants),
@@ -85,7 +84,7 @@ object DictionaryLookupEngine {
         )
         val isFrenchSentence = lowerWords.count { it in frenchIndicatorWords } >= 2
 
-        // 3. Normalisation phonétique des salutations et expressions Mooré certifiées (y compris confusions ASR fréquentes)
+        // 3. Normalisation phonétique des salutations et expressions Mooré certifiées (y compris confusions ASR et prolongations)
         val greetingRules = listOf(
             Regex("(?i)\\b(nii+|ne+|ni)\\s*y?i+\\s*(be+o+go+|bi+o+go+|bo+go+)\\b") to "Nii yi beogo",
             Regex("(?i)\\b(n'?y?i+be+o+go+|ini\\s*be+o+go+)\\b") to "Nii yi beogo",
@@ -103,16 +102,18 @@ object DictionaryLookupEngine {
             Regex("(?i)\\bya+\\s*s[oõ]+n?ma+\\b") to "Ya sonma",
             Regex("(?i)\\bla+fi+\\s*(be+m[eé]+|bémé)\\b") to "Laafi beeme",
             Regex("(?i)\\bla+\\s*fi+\\s*ba+la+\\b") to "Laafi bala",
-            Regex("(?i)\\bla+fi+\\s*ba+la+\\b") to "Laafi bala",
-            Regex("(?i)\\bf[oô]\\s+la+fi+\\b") to "Fo laafi",
+            Regex("(?i)\\bma+m\\s+la+fi+\\b") to "Mam laafi bala",
+            Regex("(?i)\\bla+f[i]+\\b") to "Laafi",
+            Regex("(?i)\\bf[oô]+\\s+la+fi+\\b") to "Fo laafi",
             Regex("(?i)\\b(ki+ba+r[eé]+|qui\\s*barr[eé])\\b") to "Kibaré",
             Regex("(?i)\\bni+nda+r[eé]+\\b") to "Nindaaré",
             Regex("(?i)\\b(we+nd|wë+nd)[-\\s]*na+\\s*k[oôõ]+[-\\s]*d\\s*ni+nda+r[eé]+\\b") to "Wënd-na kô-d nindaare",
-            Regex("(?i)\\bba+rk\\s*w[ou]+sg[ou]+\\b") to "Bark wusgo",
+            Regex("(?i)\\bba+rk[a]*\\s*w[ou]+sg[ou]+\\b") to "Bark wusgo",
+            Regex("(?i)\\bw[ou]+sg[ou]+\\b") to "Wusgo",
             Regex("(?i)\\bba+rka+\\b") to "Barka",
             Regex("(?i)\\bs[ou]+gri+\\b") to "Sugri",
-            Regex("(?i)\\bm['’\\s]*k[oô]s+a\\s+s[ou]+gri+\\b") to "M kosa sugri",
-            Regex("(?i)\\b(k[oõô][-\\s]*m\\s*k[oô]+m|kon\\s*m\\s*kom)\\b") to "Kõ-m koom",
+            Regex("(?i)\\bm['’\\s]*k[oô]+s+a+\\s+s[ou]+gri+\\b") to "M kosa sugri",
+            Regex("(?i)\\b(k[oõô]+[-\\s]*m\\s*k[oô]+m|kon\\s*m\\s*kom)\\b") to "Kõ-m koom",
             Regex("(?i)\\bz[oô]+m[-\\s]*k[oô]+m\\b") to "Zom-kom",
             Regex("(?i)\\bs[eêẽ]+n\\s+na+\\s+be+\\b") to "Sên na be",
             Regex("(?i)\\bru+nda+\\s+ki+ba+ya+\\b") to "Sên na be",
@@ -134,7 +135,7 @@ object DictionaryLookupEngine {
                 Regex("(?i)\\bt[oõô]+ndo*\\b") to "Tond",
                 Regex("(?i)\\bm['’\\s]*ma+\\b") to "M'ma",
                 Regex("(?i)\\bm['’\\s]*ba+ba+\\b") to "M'baaba",
-                Regex("(?i)\\bn[-\\s]*y[eé]\\b") to "N-ye",
+                Regex("(?i)\\bn[-\\s]*y[eé]+\\b") to "N-ye",
                 Regex("(?i)\\ba+yo+\\b") to "Ayo",
                 Regex("(?i)\\bli+g[ui]*di+\\b") to "Ligdi",
                 Regex("(?i)\\bk[oô]{2,}m\\b") to "Koom",
@@ -162,6 +163,14 @@ object DictionaryLookupEngine {
             for ((pattern, replacement) in vocabRules) {
                 s = s.replace(pattern, replacement)
             }
+            // Normalisation lexicale de tout mot contenant des voyelles allongées si présent dans le dictionnaire Mooré
+            s = s.split(Regex("\\s+")).joinToString(" ") { tok ->
+                if (Regex("(?i)([aeéèêiîoôuùûɛɔʋɩ])\\1").containsMatchIn(tok)) {
+                    canonicalizeLocalWordIfMatched(tok, isMoore = true)
+                } else {
+                    tok
+                }
+            }
         }
         return s
     }
@@ -175,50 +184,60 @@ object DictionaryLookupEngine {
         var s = cleanWhitespace(input)
         if (s.isEmpty()) return s
 
-        // Réduction de voyelles/nasales répétées 3+ fois
+        // Réduction de consonnes et voyelles/nasales répétées 3+ fois
+        s = s.replace(Regex("(?i)([bcdfghjklmnpqrstvwxzɛɔɲŋ])\\1{2,}"), "$1")
         s = s.replace(Regex("(?i)([aeéèêiîoôuùûɛɔ])\\1{2,}"), "$1$1")
 
         val dioulaRules = listOf(
-            Regex("(?i)\\b(il?|y|a|ini|ani)\\s*n?i\\s*s[oɔ]g[oɔ]ma+\\b") to "I ni sogoma",
-            Regex("(?i)\\binisogoma\\b") to "I ni sogoma",
-            Regex("(?i)\\b(il?|y|a|ini|ani)\\s*n?i\\s*til[eéè]n?\\b") to "I ni tilen",
-            Regex("(?i)\\b(il?|y|a|ini|ani)\\s*n?i\\s*(w?o?u+la+|houla)\\b") to "I ni wula",
-            Regex("(?i)\\b(il?|y|a|ini|ani)\\s*n?i\\s*(su+|sou+)\\b") to "I ni su",
-            Regex("(?i)\\b(initi[eé]|il\\s+ni\\s+c['’]?est|(il?|y|a|ini|ani)\\s*n?i\\s*(tch?[eéè]|ce+)|anitie)\\b") to "I ni ce",
-            Regex("(?i)\\b(il?|y|a|ini|ani)\\s*n?i\\s*ce\\s*k[oɔ]s[eɛ]b[eɛ]\\b") to "I ni ce kosɛbɛ",
-            Regex("(?i)\\b(il?|y|a|ini|ani)\\s*n?i\\s*b+a+ra+\\b") to "I ni baara",
-            Regex("(?i)\\b(anibara|aw\\s*ni\\s*bara)\\b") to "Aw ni baara",
-            Regex("(?i)\\b(i|il|y)\\s*(ka+|a\\s*qu'?a)\\s*k[eɛ]n[eɛ]\\s*wa+\\b") to "I ka kɛnɛ wa ?",
-            Regex("(?i)\\bikakene\\s*wa\\b") to "I ka kɛnɛ wa ?",
-            Regex("(?i)\\b(aw|ao)\\s*ka+\\s*k[eɛ]n[eɛ]\\s*wa+\\b") to "Aw ka kɛnɛ wa ?",
+            Regex("(?i)\\b(?:i+|il+|y+|a|ini|ani)\\s*n?i+\\s*s[oɔ]+g[oɔ]+ma+\\b") to "I ni sogoma",
+            Regex("(?i)\\binisogoma+\\b") to "I ni sogoma",
+            Regex("(?i)\\b(?:i+|il+|y+|a|ini|ani)\\s*n?i+\\s*til[eéè]+n?\\b") to "I ni tilen",
+            Regex("(?i)\\b(?:i+|il+|y+|a|ini|ani)\\s*n?i+\\s*(w?o?u+la+|houla+)\\b") to "I ni wula",
+            Regex("(?i)\\b(?:i+|il+|y+|a|ini|ani)\\s*n?i+\\s*(su+|sou+)\\b") to "I ni su",
+            Regex("(?i)\\b(initi[eé]|il\\s+ni\\s+c['’]?est|(?:i+|il+|y+|a|ini|ani)\\s*n?i+\\s*(tch?[eéè]+|ce+)|anitie+)\\b") to "I ni ce",
+            Regex("(?i)\\b(?:i+|il+|y+|a|ini|ani)\\s*n?i+\\s*ce+\\s*k[oɔ]+s[eɛ]+b[eɛ]+\\b") to "I ni ce kosɛbɛ",
+            Regex("(?i)\\b(?:i+|il+|y+|a|ini|ani)\\s*n?i+\\s*b+a+ra+\\b") to "I ni baara",
+            Regex("(?i)\\b(anibara+|aw\\s*ni+\\s*ba+ra+)\\b") to "Aw ni baara",
+            Regex("(?i)\\b(i+|il|y+)\\s*(ka+|a\\s*qu'?a)\\s*k[eɛ]+n[eɛ]+\\s*wa+\\b") to "I ka kɛnɛ wa ?",
+            Regex("(?i)\\bikakene+\\s*wa+\\b") to "I ka kɛnɛ wa ?",
+            Regex("(?i)\\b(aw|ao+)\\s*ka+\\s*k[eɛ]+n[eɛ]+\\s*wa+\\b") to "Aw ka kɛnɛ wa ?",
             Regex("(?i)\\b(t[oɔ]+r[oɔ]+)\\s*t[eɛé]+\\b") to "Tɔɔrɔ tɛ",
-            Regex("(?i)\\b([nm]|en|oum)\\s*ka+\\s*k[eɛ]n[eɛ]\\b") to "N ka kɛnɛ",
-            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]\\s*ta+\\s*(s[ou]+g[ou]+\\s*la+)\\b") to "N bɛ taa sugu la",
-            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]\\s*ta+\\s*(la+k[oɔ]+li+\\s*la+)\\b") to "N bɛ taa lakɔli la",
-            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]\\s*ta+\\s*(ba+ra+\\s*la+)\\b") to "N bɛ taa baara la",
-            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]\\s*ta+\\s*s[oɔ]+\\b") to "N bɛ taa so",
-            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]\\s*na+\\b") to "N bɛ na",
-            Regex("(?i)\\b(i|y)\\s*b[eɛi]\\s*ta+\\s*mi+n\\b") to "I bɛ taa min ?",
-            Regex("(?i)\\b(i|y)\\s*b[eɛi]\\s*m[ou]+n\\s*k[eɛé]\\b") to "I bɛ mun kɛ ?",
-            Regex("(?i)\\bk[oɔ]ng[oɔ]\\s*b[eɛ]\\s*[nm]\\s*na\\b") to "Kɔngɔ bɛ n na",
-            Regex("(?i)\\bmin+n[oɔ]g[oɔ]\\s*b[eɛ]\\s*[nm]\\s*na\\b") to "Minnɔgɔ bɛ n na",
-            Regex("(?i)\\b(d?ji+|dji)\\s*di+\\s*[nm]?\\s*ma+\\b") to "Ji di n ma",
+            Regex("(?i)\\b([nm]|en|oum)\\s*ka+\\s*k[eɛ]+n[eɛ]+\\b") to "N ka kɛnɛ",
+            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]+\\s*ta+\\s*(s[ou]+g[ou]+\\s*la+)\\b") to "N bɛ taa sugu la",
+            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]+\\s*ta+\\s*(la+k[oɔ]+li+\\s*la+)\\b") to "N bɛ taa lakɔli la",
+            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]+\\s*ta+\\s*(ba+ra+\\s*la+)\\b") to "N bɛ taa baara la",
+            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]+\\s*ta+\\s*s[oɔ]+\\b") to "N bɛ taa so",
+            Regex("(?i)\\b([nm]|en)\\s*b[eɛi]+\\s*na+\\b") to "N bɛ na",
+            Regex("(?i)\\b(i+|y+)\\s*b[eɛi]+\\s*ta+\\s*mi+n\\b") to "I bɛ taa min ?",
+            Regex("(?i)\\b(i+|y+)\\s*b[eɛi]+\\s*m[ou]+n\\s*k[eɛé]+\\b") to "I bɛ mun kɛ ?",
+            Regex("(?i)\\bk[oɔ]+ng[oɔ]+\\s*b[eɛ]+\\s*[nm]\\s*na+\\b") to "Kɔngɔ bɛ n na",
+            Regex("(?i)\\bmin+n[oɔ]+g[oɔ]+\\s*b[eɛ]+\\s*[nm]\\s*na+\\b") to "Minnɔgɔ bɛ n na",
+            Regex("(?i)\\b(d?ji+|dji+)\\s*di+\\s*[nm]?\\s*ma+\\b") to "Ji di n ma",
             Regex("(?i)\\bwari+\\s*di+\\s*[nm]?\\s*ma+\\b") to "Wari di n ma",
             Regex("(?i)\\bd[ou]+m[ou]+ni+\\s*di+\\s*[nm]?\\s*ma+\\b") to "Dumuni di n ma",
-            Regex("(?i)\\ba\\s*s[oɔ]ng[oɔ]\\s*ye\\s*(d?j[oɔ]li+)\\s*ye\\b") to "A sɔngɔ ye joli ye ?",
-            Regex("(?i)\\byafa\\s*[nm]?\\s*ma+\\b") to "Yafa n ma",
-            Regex("(?i)\\bhak[eɛ]t[oɔ]\\b") to "Hakɛto",
+            Regex("(?i)\\ba\\s*s[oɔ]+ng[oɔ]+\\s*ye\\s*(d?j[oɔ]+li+)\\s*ye\\b") to "A sɔngɔ ye joli ye ?",
+            Regex("(?i)\\byafa+\\s*[nm]?\\s*ma+\\b") to "Yafa n ma",
+            Regex("(?i)\\bhak[eɛ]+t[oɔ]+\\b") to "Hakɛto",
             Regex("(?i)\\bsabali+\\b") to "Sabali",
-            Regex("(?i)\\b(i|y)\\s*dans[eɛ]\\b") to "I dansɛ",
-            Regex("(?i)\\b(k['’]?an|kan)\\s*b[eɛ]n\\s*(sini|si+ni+)\\b") to "K'an bɛn sini",
-            Regex("(?i)\\b(k['’]?an|kan)\\s*b[eɛ]n\\s*(s[oɔ]+ni+)\\b") to "K'an bɛn sɔɔni",
-            Regex("(?i)\\b(k['’]?an|kan)\\s*b[eɛ]n\\b") to "K'an bɛn",
+            Regex("(?i)\\b(i+|y+)\\s*dans[eɛ]+\\b") to "I dansɛ",
+            Regex("(?i)\\b(k['’]?an|kan)\\s*b[eɛ]+n\\s*(sini+|si+ni+)\\b") to "K'an bɛn sini",
+            Regex("(?i)\\b(k['’]?an|kan)\\s*b[eɛ]+n\\s*(s[oɔ]+ni+)\\b") to "K'an bɛn sɔɔni",
+            Regex("(?i)\\b(k['’]?an|kan)\\s*b[eɛ]+n\\b") to "K'an bɛn",
             Regex("(?i)\\b(awo+|owo+|ɔwɔ+)\\b") to "Awo",
             Regex("(?i)\\ba+yi+\\b") to "Ayi",
-            Regex("(?i)\\b[nm]\\s*d[eɛ]m[eɛ]\\b") to "N dɛmɛ"
+            Regex("(?i)\\b[nm]\\s*d[eɛ]+m[eɛ]+\\b") to "N dɛmɛ",
+            Regex("(?i)\\bk[oɔ]+s[eɛ]+b[eɛ]+\\b") to "kosɛbɛ",
+            Regex("(?i)\\bd[oɔ]+ni+\\s+d[oɔ]+ni+\\b") to "dɔɔni dɔɔni"
         )
         for ((pattern, replacement) in dioulaRules) {
             s = s.replace(pattern, replacement)
+        }
+        s = s.split(Regex("\\s+")).joinToString(" ") { tok ->
+            if (Regex("(?i)([aeéèêiîoôuùûɛɔ])\\1").containsMatchIn(tok)) {
+                canonicalizeLocalWordIfMatched(tok, isMoore = false)
+            } else {
+                tok
+            }
         }
         return s
     }
@@ -1047,6 +1066,221 @@ object DictionaryLookupEngine {
         map
     }
 
+    private val mooreCollapsedVowelMap by lazy {
+        val map = mutableMapOf<String, String>()
+        mooreToFrenchMap.keys.forEach { key ->
+            val cleanKey = key.trim()
+            if (cleanKey.length >= 3 && !cleanKey.contains(" ")) {
+                val collapsed = normalizeAccents(cleanKey).replace(Regex("([aeiou])\\1+"), "$1")
+                if (collapsed.length >= 3 && !map.containsKey(collapsed)) {
+                    map[collapsed] = cleanKey
+                }
+            }
+        }
+        map
+    }
+
+    private val dioulaCollapsedVowelMap by lazy {
+        val map = mutableMapOf<String, String>()
+        dioulaToFrenchMap.keys.forEach { key ->
+            val cleanKey = key.trim()
+            if (cleanKey.length >= 3 && !cleanKey.contains(" ")) {
+                val collapsed = normalizeAccents(cleanKey).replace(Regex("([aeiou])\\1+"), "$1")
+                if (collapsed.length >= 3 && !map.containsKey(collapsed)) {
+                    map[collapsed] = cleanKey
+                }
+            }
+        }
+        map
+    }
+
+    private fun canonicalizeLocalWordIfMatched(token: String, isMoore: Boolean): String {
+        val prefix = token.takeWhile { !it.isLetter() }
+        val suffix = token.takeLastWhile { !it.isLetter() }
+        val core = token.substring(prefix.length, (token.length - suffix.length).coerceAtLeast(prefix.length))
+        if (core.length < 3) return token
+        val norm = normalizeAccents(core.lowercase())
+        val map = if (isMoore) mooreToFrenchMap else dioulaToFrenchMap
+        if (map.containsKey(core.lowercase()) || map.containsKey(norm)) return token
+        val collapsed = norm.replace(Regex("([aeiou])\\1+"), "$1")
+        val canonical = (if (isMoore) mooreCollapsedVowelMap else dioulaCollapsedVowelMap)[collapsed] ?: return token
+        val restored = if (core.firstOrNull()?.isUpperCase() == true) {
+            canonical.replaceFirstChar { it.titlecase() }
+        } else {
+            canonical
+        }
+        return "$prefix$restored$suffix"
+    }
+
+    private val commonForeignToFrenchMap by lazy {
+        mapOf(
+            // Anglais -> Français (expressions & vocabulaire courant pour pont local instantané vers Mooré/Dioula)
+            "hello" to "bonjour",
+            "hi" to "bonjour",
+            "good morning" to "bonjour",
+            "good afternoon" to "bonjour",
+            "good evening" to "bonsoir",
+            "good night" to "bonne nuit",
+            "how are you" to "comment ça va ?",
+            "how are you doing" to "comment ça va ?",
+            "i am fine" to "je vais bien",
+            "i'm fine" to "je vais bien",
+            "im fine" to "je vais bien",
+            "thank you" to "merci",
+            "thanks" to "merci",
+            "thank you very much" to "merci beaucoup",
+            "thanks a lot" to "merci beaucoup",
+            "please" to "s'il vous plaît",
+            "sorry" to "pardon",
+            "excuse me" to "pardon",
+            "yes" to "oui",
+            "no" to "non",
+            "okay" to "d'accord",
+            "ok" to "d'accord",
+            "goodbye" to "au revoir",
+            "bye" to "au revoir",
+            "see you tomorrow" to "à demain",
+            "see you soon" to "à bientôt",
+            "see you later" to "à bientôt",
+            "welcome" to "bienvenue",
+            "what is your name" to "comment tu t'appelles ?",
+            "my name is" to "je m'appelle",
+            "where are you going" to "où vas-tu ?",
+            "where are you" to "où es-tu ?",
+            "i am going home" to "je vais à la maison",
+            "i'm going home" to "je vais à la maison",
+            "i am going to the market" to "je vais au marché",
+            "i am going to school" to "je vais à l'école",
+            "i am going to work" to "je vais au travail",
+            "i am hungry" to "j'ai faim",
+            "i'm hungry" to "j'ai faim",
+            "i am thirsty" to "j'ai soif",
+            "i'm thirsty" to "j'ai soif",
+            "give me water" to "donne-moi de l'eau",
+            "give me some water" to "donne-moi de l'eau",
+            "give me money" to "donne-moi de l'argent",
+            "give me food" to "donne-moi à manger",
+            "how much" to "c'est combien ?",
+            "how much is it" to "c'est combien ?",
+            "i understand" to "je comprends",
+            "i do not understand" to "je ne comprends pas",
+            "i don't understand" to "je ne comprends pas",
+            "i know" to "je sais",
+            "i don't know" to "je ne sais pas",
+            "help me" to "aide-moi",
+            "speak slowly" to "parle lentement",
+            "repeat please" to "répète",
+            "water" to "eau",
+            "money" to "argent",
+            "food" to "nourriture",
+            "house" to "maison",
+            "home" to "maison",
+            "market" to "marché",
+            "school" to "école",
+            "work" to "travail",
+            "friend" to "ami",
+            "my friend" to "mon ami",
+            "brother" to "frère",
+            "my brother" to "mon frère",
+            "sister" to "sœur",
+            "my sister" to "ma sœur",
+            "father" to "père",
+            "mother" to "mère",
+            "child" to "enfant",
+            "man" to "homme",
+            "woman" to "femme",
+            "today" to "aujourd'hui",
+            "tomorrow" to "demain",
+            "yesterday" to "hier",
+            // Espagnol -> Français
+            "hola" to "bonjour",
+            "buenos dias" to "bonjour",
+            "buenos días" to "bonjour",
+            "buenas tardes" to "bonsoir",
+            "buenas noches" to "bonne nuit",
+            "como estas" to "comment ça va ?",
+            "cómo estás" to "comment ça va ?",
+            "estoy bien" to "je vais bien",
+            "gracias" to "merci",
+            "muchas gracias" to "merci beaucoup",
+            "por favor" to "s'il vous plaît",
+            "perdon" to "pardon",
+            "perdón" to "pardon",
+            "si" to "oui",
+            "sí" to "oui",
+            "adios" to "au revoir",
+            "adiós" to "au revoir",
+            "hasta manana" to "à demain",
+            "agua" to "eau",
+            "dinero" to "argent",
+            "comida" to "nourriture",
+            "casa" to "maison",
+            "mercado" to "marché",
+            "escuela" to "école",
+            "trabajo" to "travail",
+            "amigo" to "ami",
+            // Allemand -> Français
+            "hallo" to "bonjour",
+            "guten morgen" to "bonjour",
+            "guten tag" to "bonjour",
+            "guten abend" to "bonsoir",
+            "gute nacht" to "bonne nuit",
+            "wie geht es dir" to "comment ça va ?",
+            "mir geht es gut" to "je vais bien",
+            "danke" to "merci",
+            "danke schön" to "merci beaucoup",
+            "bitte" to "s'il vous plaît",
+            "entschuldigung" to "pardon",
+            "ja" to "oui",
+            "nein" to "non",
+            "auf wiedersehen" to "au revoir",
+            "tschüss" to "au revoir",
+            "wasser" to "eau",
+            "geld" to "argent",
+            "essen" to "nourriture",
+            "haus" to "maison",
+            "markt" to "marché",
+            "schule" to "école",
+            "arbeit" to "travail",
+            "freund" to "ami"
+        )
+    }
+
+    /**
+     * Pont local rapide pour convertir une expression courante (Anglais, Espagnol, Allemand, Haoussa)
+     * vers le Français à partir du dictionnaire embarqué avant d'assembler vers le Mooré ou le Dioula.
+     */
+    fun tryLocalForeignToFrenchPivot(input: String, sourceLang: String): String? {
+        val clean = cleanWhitespace(input)
+        if (clean.isBlank()) return null
+        val src = sourceLang.lowercase().trim()
+        if (src.contains("franç") || src.contains("franc")) return clean
+        if (src.contains("haoussa") || src.contains("hausa")) {
+            return translateDirect(clean, sourceLang, "Français")
+        }
+        val stripped = stripPunctuation(clean).lowercase()
+        val norm = normalizeAccents(stripped)
+        commonForeignToFrenchMap[stripped]?.let { return it }
+        commonForeignToFrenchMap[norm]?.let { return it }
+        // Gestion simple des phrases composées "good morning my friend", "thank you my brother", etc.
+        val patterns = listOf(
+            "good morning " to "bonjour ",
+            "hello " to "bonjour ",
+            "good evening " to "bonsoir ",
+            "thank you very much " to "merci beaucoup ",
+            "thank you " to "merci ",
+            "my name is " to "je m'appelle "
+        )
+        for ((foreignPrefix, frPrefix) in patterns) {
+            if (stripped.startsWith(foreignPrefix)) {
+                val tail = stripped.removePrefix(foreignPrefix).trim()
+                val tailFr = commonForeignToFrenchMap[tail] ?: tail
+                return "$frPrefix$tailFr".trim()
+            }
+        }
+        return null
+    }
+
     /**
      * Traduction directe dans le dictionnaire certifié.
      */
@@ -1081,6 +1315,7 @@ object DictionaryLookupEngine {
                 }?.let { return it.word }
             } else if (tgt.contains("haoussa") || tgt.contains("hausa")) {
                 frenchToHausaMap[stripped]?.let { return it }
+                frenchToHausaMap[normStripped]?.let { return it }
                 HausaKnowledgeData.FULL_HAUSA_DICTIONARY.firstOrNull {
                     it.french.equals(clean, ignoreCase = true) || isCloseMatch(it.french, clean)
                 }?.let { return it.hausa }
@@ -1097,11 +1332,10 @@ object DictionaryLookupEngine {
                 val deprolongedNorm = normalizeAccents(deprolongedStripped)
                 mooreToFrenchMap[deprolongedStripped]?.let { return it }
                 mooreToFrenchMap[deprolongedNorm]?.let { return it }
-                // Voyelles doublées réduites à une seule voyelle en cas d'allongement vocal libre (ex: "biiiga" -> "biga" -> "biiga")
                 val collapsedVowels = deprolongedNorm.replace(Regex("([aeiou])\\1+"), "$1")
-                mooreToFrenchMap.entries.firstOrNull { (k, _) ->
-                    k.replace(Regex("([aeiou])\\1+"), "$1") == collapsedVowels
-                }?.let { return it.value }
+                mooreCollapsedVowelMap[collapsedVowels]?.let { canonical ->
+                    mooreToFrenchMap[canonical]?.let { return it }
+                }
                 DictionaryData.FULL_DICTIONARY.firstOrNull {
                     it.moore.equals(clean, ignoreCase = true) ||
                         it.moore.equals(deprolonged, ignoreCase = true) ||
@@ -1121,6 +1355,10 @@ object DictionaryLookupEngine {
                 val normDioulaNoAccents = normalizeAccents(normDioulaStripped)
                 dioulaToFrenchMap[normDioulaStripped]?.let { return it }
                 dioulaToFrenchMap[normDioulaNoAccents]?.let { return it }
+                val collapsedVowels = normDioulaNoAccents.replace(Regex("([aeiou])\\1+"), "$1")
+                dioulaCollapsedVowelMap[collapsedVowels]?.let { canonical ->
+                    dioulaToFrenchMap[canonical]?.let { return it }
+                }
                 DioulaKnowledgeData.seedDioulaDatabase().firstOrNull {
                     it.word.equals(clean, ignoreCase = true) ||
                         it.word.equals(normalizedDioula, ignoreCase = true) ||
@@ -1130,7 +1368,7 @@ object DictionaryLookupEngine {
             }
         }
 
-        // 5. Haoussa -> Français
+        // 5. Haoussa -> Français / Mooré / Dioula
         if (src.contains("haoussa") || src.contains("hausa")) {
             if (tgt.contains("franç") || tgt.contains("franc")) {
                 hausaToFrenchMap[stripped]?.let { return it }
@@ -1138,6 +1376,22 @@ object DictionaryLookupEngine {
                 HausaKnowledgeData.FULL_HAUSA_DICTIONARY.firstOrNull {
                     it.hausa.equals(clean, ignoreCase = true) || isCloseMatch(it.hausa, clean)
                 }?.let { return it.french }
+            } else if (tgt.contains("moor") || tgt.contains("mòoré") || tgt.contains("dioula") || tgt.contains("jula")) {
+                val frPivot = translateDirect(clean, sourceLang, "Français")
+                if (!frPivot.isNullOrBlank()) {
+                    translateDirect(frPivot, "Français", targetLang)?.let { return it }
+                }
+            }
+        }
+
+        // 6. Langues internationales courantes (Anglais/Espagnol/Allemand) -> Français / Mooré / Dioula via pont local
+        if (src.contains("angl") || src.contains("engl") || src.contains("espagn") || src.contains("allem")) {
+            val frPivot = commonForeignToFrenchMap[stripped] ?: commonForeignToFrenchMap[normStripped]
+            if (!frPivot.isNullOrBlank()) {
+                if (tgt.contains("franç") || tgt.contains("franc")) return frPivot.replaceFirstChar { it.titlecase() }
+                if (tgt.contains("moor") || tgt.contains("mòoré") || tgt.contains("dioula") || tgt.contains("jula") || tgt.contains("haoussa") || tgt.contains("hausa")) {
+                    translateDirect(frPivot, "Français", targetLang)?.let { return it }
+                }
             }
         }
 
@@ -1684,12 +1938,14 @@ object DictionaryLookupEngine {
         val tgtLower = targetLang.lowercase().trim()
 
         val isSrcFrench = srcLower.contains("franç") || srcLower.contains("franc")
-        val isSrcMoore = srcLower.contains("moor")
+        val isSrcMoore = srcLower.contains("moor") || srcLower.contains("mòoré")
         val isSrcDioula = srcLower.contains("dioula") || srcLower.contains("jula")
+        val isSrcHausa = srcLower.contains("haoussa") || srcLower.contains("hausa")
 
         val isTgtFrench = tgtLower.contains("franç") || tgtLower.contains("franc")
-        val isTgtMoore = tgtLower.contains("moor")
+        val isTgtMoore = tgtLower.contains("moor") || tgtLower.contains("mòoré")
         val isTgtDioula = tgtLower.contains("dioula") || tgtLower.contains("jula")
+        val isTgtHausa = tgtLower.contains("haoussa") || tgtLower.contains("hausa")
 
         // 0. Si la phrase entière est déjà une expression exacte dans le dictionnaire local
         val directExact = MultilingualTranslationEngine.tryDirectExpressionMatch(cleanInput, sourceLang, targetLang)
@@ -1715,6 +1971,33 @@ object DictionaryLookupEngine {
             return null
         }
 
+        // Pivot local Haoussa -> Mooré / Dioula via le Français
+        if (isSrcHausa && (isTgtMoore || isTgtDioula)) {
+            val frPivot = translateDirect(cleanInput, sourceLang, "Français")
+            if (!frPivot.isNullOrBlank()) {
+                return assembleFrenchToMooreOrDioula(frPivot, if (isTgtMoore) "Mooré" else "Dioula")
+            }
+            return null
+        }
+
+        // Pivot local Mooré / Dioula -> Haoussa via le Français
+        if ((isSrcMoore || isSrcDioula) && isTgtHausa) {
+            val toFr = assembleSentenceFromLocalDictionary(cleanInput, sourceLang, "Français")
+            if (toFr != null && toFr.translatedText.isNotBlank()) {
+                val haDirect = MultilingualTranslationEngine.tryDirectExpressionMatch(toFr.translatedText, "Français", "Haoussa")
+                    ?: translateDirect(toFr.translatedText, "Français", "Haoussa")
+                if (!haDirect.isNullOrBlank()) {
+                    return LocalSentenceAssembly(
+                        translatedText = haDirect,
+                        breakdown = toFr.breakdown + "${toFr.translatedText} ➔ $haDirect",
+                        matchedCount = toFr.matchedCount,
+                        totalSegments = toFr.totalSegments
+                    )
+                }
+            }
+            return null
+        }
+
         // 1. FRANÇAIS -> MOORÉ ou FRANÇAIS -> DIOULA
         if (isSrcFrench && (isTgtMoore || isTgtDioula)) {
             return assembleFrenchToMooreOrDioula(cleanInput, if (isTgtMoore) "Mooré" else "Dioula")
@@ -1723,6 +2006,14 @@ object DictionaryLookupEngine {
         // 2. MOORÉ -> FRANÇAIS ou DIOULA -> FRANÇAIS
         if ((isSrcMoore || isSrcDioula) && isTgtFrench) {
             return assembleMooreOrDioulaToFrench(cleanInput, if (isSrcMoore) "Mooré" else "Dioula")
+        }
+
+        // 3. Autre langue (Anglais, Espagnol, Allemand) -> Mooré / Dioula via pont local embarqué
+        if (!isSrcFrench && (isTgtMoore || isTgtDioula)) {
+            val frPivot = tryLocalForeignToFrenchPivot(cleanInput, sourceLang)
+            if (!frPivot.isNullOrBlank()) {
+                return assembleFrenchToMooreOrDioula(frPivot, if (isTgtMoore) "Mooré" else "Dioula")
+            }
         }
 
         return null
@@ -2272,9 +2563,24 @@ object DictionaryLookupEngine {
         sourceLang: String // "Mooré" ou "Dioula"
     ): LocalSentenceAssembly? {
         val isMoore = sourceLang == "Mooré"
-        val isQuestion = localText.trim().endsWith("?") || localText.trim().lowercase().endsWith(" wa")
+        val normalizedLocal = if (isMoore) {
+            normalizeMooreProlongations(localText)
+        } else {
+            normalizeDioulaAsrTranscript(localText)
+        }
+        val exactNormalized = translateDirect(normalizedLocal, sourceLang, "Français")
+        if (!exactNormalized.isNullOrBlank()) {
+            return LocalSentenceAssembly(
+                translatedText = exactNormalized,
+                breakdown = listOf("$normalizedLocal ➔ $exactNormalized"),
+                matchedCount = 1,
+                totalSegments = 1
+            )
+        }
 
-        val rawTokens = localText.trim()
+        val isQuestion = normalizedLocal.trim().endsWith("?") || normalizedLocal.trim().lowercase().endsWith(" wa")
+
+        val rawTokens = normalizedLocal.trim()
             .replace("’", "'")
             .replace(Regex("[,;:.?!\"«»()]+"), " ")
             .trim()
@@ -2383,10 +2689,28 @@ object DictionaryLookupEngine {
 
             // 3. Verbes conjugués au passé ou locatifs Mooré / Dioula
             if (isMoore) {
-                if (norm == "kengame" || lower == "kẽngame" || norm == "kenge" || lower == "kênge") {
+                if (norm == "kengame" || norm == "kengaame" || lower == "kẽngame" || lower == "kẽngaame" || norm == "kenge" || lower == "kênge") {
                     val frVerb = if (frParts.firstOrNull()?.lowercase() == "je") "suis allé" else "est allé"
                     frParts.add(frVerb)
                     breakdownList.add("$tok (Kênge = Aller) ➔ $frVerb")
+                    matchedSegments++
+                    totalSegments++
+                    i++
+                    continue
+                }
+                if (norm == "debda" || norm == "debdaame") {
+                    val frVerb = if (frParts.firstOrNull()?.lowercase() == "je") "vais" else "va"
+                    frParts.add(frVerb)
+                    breakdownList.add("$tok (Debda = Aller) ➔ $frVerb")
+                    matchedSegments++
+                    totalSegments++
+                    i++
+                    continue
+                }
+                if (norm == "watame" || norm == "wataame" || norm == "wata") {
+                    val frVerb = if (frParts.firstOrNull()?.lowercase() == "je") "viens" else "vient"
+                    frParts.add(frVerb)
+                    breakdownList.add("$tok (Wata = Venir) ➔ $frVerb")
                     matchedSegments++
                     totalSegments++
                     i++
@@ -2416,13 +2740,27 @@ object DictionaryLookupEngine {
                     i++
                     continue
                 }
-                if (lower.endsWith("ame") && lower.length > 4) {
-                    val stem = lower.removeSuffix("ame")
+                if ((lower.endsWith("aame") || lower.endsWith("ame")) && lower.length > 4) {
+                    val stem = if (lower.endsWith("aame")) lower.removeSuffix("aame") else lower.removeSuffix("ame")
                     val verbFr = translateDirect(stem, "Mooré", "Français")
                         ?: translateDirect("${stem}e", "Mooré", "Français")
                     if (verbFr != null) {
-                        frParts.add("a ${verbFr.lowercase()}")
-                        breakdownList.add("$tok ($stem = $verbFr) ➔ a ${verbFr.lowercase()}")
+                        val aux = if (frParts.firstOrNull()?.lowercase() == "je") "ai" else "a"
+                        frParts.add("$aux ${verbFr.lowercase()}")
+                        breakdownList.add("$tok ($stem = $verbFr) ➔ $aux ${verbFr.lowercase()}")
+                        matchedSegments++
+                        totalSegments++
+                        i++
+                        continue
+                    }
+                }
+                if (lower.endsWith("da") && lower.length > 4) {
+                    val stem = lower.removeSuffix("da")
+                    val verbFr = translateDirect(stem, "Mooré", "Français")
+                        ?: translateDirect("${stem}e", "Mooré", "Français")
+                    if (verbFr != null) {
+                        frParts.add(verbFr.lowercase())
+                        breakdownList.add("$tok ($stem = $verbFr) ➔ ${verbFr.lowercase()}")
                         matchedSegments++
                         totalSegments++
                         i++

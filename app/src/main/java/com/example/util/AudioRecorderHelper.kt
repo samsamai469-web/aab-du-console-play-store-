@@ -37,6 +37,9 @@ class AudioRecorderHelper(private val context: Context) {
     private var currentPcmAmplitude = 0
 
     @Volatile
+    private var currentPcmPeak = 0
+
+    @Volatile
     private var nonZeroSampleFrames = 0
 
     @Volatile
@@ -52,6 +55,7 @@ class AudioRecorderHelper(private val context: Context) {
         stopRecordingInternal(deleteFile = true)
         startTimeMillis = System.currentTimeMillis()
         currentPcmAmplitude = 0
+        currentPcmPeak = 0
         nonZeroSampleFrames = 0
         peakObservedSample = 0
 
@@ -209,6 +213,7 @@ class AudioRecorderHelper(private val context: Context) {
                         nonZeroSampleFrames++
                     }
                     currentPcmAmplitude = rawRms.coerceAtMost(32767)
+                    currentPcmPeak = framePeak.coerceAtMost(32767)
 
                     // Écriture directe dès la milliseconde 0 pour ne jamais couper le début de la parole
                     fos.write(frameBytes)
@@ -237,7 +242,8 @@ class AudioRecorderHelper(private val context: Context) {
                 0
             }
         }
-        return currentPcmAmplitude
+        // Combine RMS et pic de trame pour capter fidèlement les voix douces et les prolongations vocales/nasales
+        return maxOf(currentPcmAmplitude, (currentPcmPeak * 0.60f).toInt()).coerceAtMost(32767)
     }
 
     fun hadNonZeroAudio(): Boolean {
@@ -267,7 +273,7 @@ class AudioRecorderHelper(private val context: Context) {
         // Attend que le thread d'écriture ferme le flux et mette à jour l'en-tête WAV (taille réelle)
         // AVANT de libérer AudioRecord et de retourner le fichier à la transcription
         try {
-            recordingThread?.join(900)
+            recordingThread?.join(350)
         } catch (_: Exception) {}
         recordingThread = null
 
@@ -329,7 +335,7 @@ class AudioRecorderHelper(private val context: Context) {
 
             val sortedRms = winRms.sorted()
             val noiseFloorRms = sortedRms[(winCount * 0.20).toInt().coerceIn(0, winCount - 1)]
-            val speechGateRms = maxOf(22.0, noiseFloorRms * 1.65, noiseFloorRms + 14.0)
+            val speechGateRms = maxOf(14.0, noiseFloorRms * 1.45, noiseFloorRms + 10.0)
 
             var firstActive = -1
             var lastActive = -1
@@ -340,7 +346,7 @@ class AudioRecorderHelper(private val context: Context) {
                 }
             }
 
-            val marginWindows = 14 // 280 ms de marge avant & après pour préserver toutes les syllabes
+            val marginWindows = 16 // 320 ms de marge avant & après pour préserver toutes les syllabes et prolongations
             val keepStartSample = if (firstActive != -1) {
                 ((firstActive - marginWindows).coerceAtLeast(0)) * winSize
             } else {

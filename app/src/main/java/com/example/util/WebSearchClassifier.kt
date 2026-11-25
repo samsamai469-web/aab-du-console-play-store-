@@ -339,8 +339,11 @@ object WebSearchClassifier {
             "en ce moment", "actuellement", "recemment", "derniere minute", "sommet de",
             "inauguration", "communique de", "ministre actuel", "president actuel",
             "gouvernement actuel", "au burkina faso aujourd'hui", "nouvelles du burkina",
-            "evenement recent", "qui dirige actuellement", "situation actuelle",
-            "situation au", "situation dans", "en 2025", "en 2026",
+            "evenement recent", "qui dirige actuellement", "qui dirige", "qui gouverne",
+            "situation actuelle", "situation au", "situation dans", "en 2025", "en 2026",
+            "premier ministre", "president de la", "president du", "chef du gouvernement",
+            "chef de l'etat", "gouvernement du", "gouvernement de", "qui est le ministre",
+            "qui est la ministre", "qui est le maire",
             "autres actualites", "autre actualite", "autres nouvelles", "autres infos"
         )
         return markers.any { norm.contains(it) }

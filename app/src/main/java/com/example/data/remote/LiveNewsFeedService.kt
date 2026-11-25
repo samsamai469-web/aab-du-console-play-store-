@@ -224,6 +224,15 @@ class LiveNewsFeedService {
                                 fetchGoogleNewsRss(q, fallbackSource = "Presse du Faso")
                             } ?: emptyList()
                         }
+                        val dGoogleTopicBroad = async {
+                            if (extraKeywords.isNotBlank()) {
+                                withTimeoutOrNull(5500L) {
+                                    fetchGoogleNewsRss("Burkina Faso $extraKeywords", fallbackSource = "Presse du Faso")
+                                } ?: emptyList()
+                            } else {
+                                emptyList()
+                            }
+                        }
                         val dGoogleMedia = async {
                             withTimeoutOrNull(5500L) {
                                 val q = "(site:lefaso.net OR site:burkina24.com OR site:sidwaya.info OR site:aib.media) when:7d"
@@ -243,6 +252,7 @@ class LiveNewsFeedService {
                         }
 
                         val list = mutableListOf<LiveNewsArticle>()
+                        list.addAll(dGoogleTopicBroad.await())
                         list.addAll(dLefaso.await())
                         list.addAll(dBurkina24.await())
                         list.addAll(dGoogleMedia.await())

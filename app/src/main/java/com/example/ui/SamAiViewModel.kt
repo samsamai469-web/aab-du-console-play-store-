@@ -2700,18 +2700,42 @@ class SamAiViewModel(
 
                 val searchDecision = com.example.util.WebSearchClassifier.classify(userText, currentHistory)
                 val isWebSearchNeeded = searchDecision.isSearchNeeded
+                var liveSources = emptyList<com.example.data.local.WebSource>()
                 val liveContextSummary = if (isWebSearchNeeded) {
-                    com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(userText)
+                    val recentModelHistory = currentHistory
+                        .filter { it.role != "user" }
+                        .takeLast(3)
+                        .joinToString("\n") { it.content }
+                    val newsDeferred = kotlinx.coroutines.CompletableDeferred<com.example.data.remote.LiveNewsResult?>()
+                    kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
+                        val fetched = try {
+                            liveNewsFeedService.fetchLiveNews(userText, alreadyMentionedText = recentModelHistory)
+                        } catch (_: Throwable) {
+                            null
+                        }
+                        newsDeferred.complete(fetched)
+                    }
+                    // Attendre au maximum 1,4s pour ne jamais ralentir le démarrage de la réponse IA
+                    val liveResult = kotlinx.coroutines.withTimeoutOrNull(1_400L) {
+                        newsDeferred.await()
+                    }
+                    if (liveResult != null && liveResult.hasNews && liveResult.contextSummary.isNotBlank()) {
+                        liveSources = liveResult.sources
+                        liveResult.contextSummary
+                    } else {
+                        com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(userText)
+                    }
                 } else {
                     ""
                 }
-                val liveSources = emptyList<com.example.data.local.WebSource>()
 
-                // Moteur IA 100 % Google via Firebase AI Logic (gemini-3.8-flash + Google Search Grounding + repli gemini-3.5-flash-lite)
+                // Moteur IA 100 % Google via Firebase AI Logic (streaming temps réel + Google Search Grounding)
                 var responseText = ""
                 var isError = true
                 var responseSources = liveSources
                 var geminiErrorMessage: String? = null
+                val streamMsgId = UUID.randomUUID().toString()
+                var hasInsertedStreamingMsg = false
 
                 try {
                     val dateStr = java.text.SimpleDateFormat("EEEE d MMMM yyyy", java.util.Locale.FRENCH).format(java.util.Date())
@@ -2759,19 +2783,50 @@ class SamAiViewModel(
                         listOf(com.example.data.repository.ChatMessage(role = "user", content = userText))
                     }
 
-                    val geminiResult = aiRepository.executeGeminiRequest(
-                        apiKey = "",
+                    val lastUiEmitMs = java.util.concurrent.atomic.AtomicLong(0L)
+                    val geminiResult = aiRepository.executeGeminiRequestStreaming(
                         messages = safeGeminiMessages,
                         systemInstruction = systemPrompt,
                         enableSearch = isWebSearchNeeded || liveSources.isNotEmpty(),
                         temperature = if (isWebSearchNeeded || liveContextSummary.isNotBlank()) 0.4 else 0.25,
-                        maxOutputTokens = if (isVoiceCall) 450 else 3000,
-                        preferredModel = if (isVoiceCall) {
+                        maxOutputTokens = if (isVoiceCall) 280 else 2500,
+                        preferredModel = if (isVoiceCall || !isWebSearchNeeded) {
                             com.example.data.repository.AiRepository.LITE_GEMINI_MODEL
                         } else {
                             com.example.data.repository.AiRepository.DEFAULT_GEMINI_MODEL
                         }
-                    )
+                    ) { partialRaw ->
+                        if (requestEpoch != chatSessionEpoch.get() || isVoiceCall) return@executeGeminiRequestStreaming
+                        val partialClean = sanitizeSamAiFallbackBranding(partialRaw)
+                        if (partialClean.isBlank()) return@executeGeminiRequestStreaming
+                        val nowMs = System.currentTimeMillis()
+                        val isFirstChunk = !hasInsertedStreamingMsg
+                        if (!isFirstChunk && (nowMs - lastUiEmitMs.get()) < 45L) {
+                            return@executeGeminiRequestStreaming
+                        }
+                        lastUiEmitMs.set(nowMs)
+                        withContext(Dispatchers.Main.immediate) {
+                            if (requestEpoch != chatSessionEpoch.get()) return@withContext
+                            _isSamAiGeminiThinking.value = false
+                            if (!hasInsertedStreamingMsg) {
+                                hasInsertedStreamingMsg = true
+                                _samAiChatMessages.value = _samAiChatMessages.value + SamAiChatMessage(
+                                    id = streamMsgId,
+                                    sender = "sam_ai",
+                                    text = partialClean,
+                                    timestamp = System.currentTimeMillis(),
+                                    isError = false,
+                                    sources = responseSources,
+                                    model = null,
+                                    language = null
+                                )
+                            } else {
+                                _samAiChatMessages.value = _samAiChatMessages.value.map { msg ->
+                                    if (msg.id == streamMsgId) msg.copy(text = partialClean) else msg
+                                }
+                            }
+                        }
+                    }
                     if (geminiResult.success && geminiResult.text.isNotBlank()) {
                         responseText = sanitizeSamAiFallbackBranding(geminiResult.text)
                         isError = false
@@ -2787,8 +2842,9 @@ class SamAiViewModel(
                 }
 
                 if (responseText.isBlank() || isError) {
-                    responseText = "Je suis à votre disposition. Posez votre question sur l'actualité ou tout autre sujet, et je vous répondrai avec précision !"
-                    isError = false
+                    responseText = geminiErrorMessage?.takeIf { it.isNotBlank() }
+                        ?: "⚠️ Le service Sam AI n'a pas pu obtenir de réponse pour le moment. Vérifiez votre connexion Internet et réessayez."
+                    isError = true
                     responseSources = emptyList()
                 }
 
@@ -2796,16 +2852,27 @@ class SamAiViewModel(
 
                 _isSamAiGeminiThinking.value = false
 
-                val botMsg = SamAiChatMessage(
-                    sender = "sam_ai",
-                    text = responseText,
-                    timestamp = System.currentTimeMillis(),
-                    isError = isError,
-                    sources = responseSources,
-                    model = null,
-                    language = null
-                )
-                _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+                if (hasInsertedStreamingMsg) {
+                    _samAiChatMessages.value = _samAiChatMessages.value.map { msg ->
+                        if (msg.id == streamMsgId) {
+                            msg.copy(text = responseText, isError = isError, sources = responseSources)
+                        } else {
+                            msg
+                        }
+                    }
+                } else {
+                    val botMsg = SamAiChatMessage(
+                        id = streamMsgId,
+                        sender = "sam_ai",
+                        text = responseText,
+                        timestamp = System.currentTimeMillis(),
+                        isError = isError,
+                        sources = responseSources,
+                        model = null,
+                        language = null
+                    )
+                    _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+                }
 
                 if (!isError && onReply != null) {
                     withContext(Dispatchers.Main) {

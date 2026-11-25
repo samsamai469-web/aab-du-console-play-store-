@@ -366,4 +366,136 @@ class TranslationEngineTest {
         assertEquals("Sabali", typo)
         assertEquals("Don Allah", exactHausa)
     }
+
+    // =========================================================================
+    // 10. PROLONGATIONS VOCALES & DICTIONNAIRE LOCAL MULTILINGUE (MOORÉ / DIOULA)
+    // =========================================================================
+
+    @Test
+    fun testMooreProlongationNormalizationAndDirectLookup() {
+        assertEquals("Barka", DictionaryLookupEngine.normalizeMooreProlongations("Baaaarkaaa"))
+        assertEquals("Nii yi beogo", DictionaryLookupEngine.normalizeMooreProlongations("Niiii yiii beogooo"))
+        assertEquals("Wusgo", DictionaryLookupEngine.normalizeMooreProlongations("Wuuusgo"))
+        assertEquals("Laafi", DictionaryLookupEngine.normalizeMooreProlongations("Laaaafiii"))
+
+        val frThankYou = DictionaryLookupEngine.translateDirect("Baaaarkaaa", "Mooré", "Français")
+        assertNotNull(frThankYou)
+        assertTrue(frThankYou!!.contains("Merci", ignoreCase = true))
+
+        val frMorning = DictionaryLookupEngine.translateDirect("Niiii yiii beogooo", "Mooré", "Français")
+        assertEquals("Bonjour", frMorning)
+    }
+
+    @Test
+    fun testDioulaProlongationNormalizationAndDirectLookup() {
+        assertEquals("I ni sogoma", DictionaryLookupEngine.normalizeDioulaAsrTranscript("Iii niii sogomaaa"))
+        assertEquals("Tɔɔrɔ tɛ", DictionaryLookupEngine.normalizeDioulaAsrTranscript("Tɔɔɔrɔɔɔ tɛɛɛ"))
+
+        val frMorning = DictionaryLookupEngine.translateDirect("Iii niii sogomaaa", "Dioula", "Français")
+        assertNotNull(frMorning)
+        assertTrue(frMorning!!.contains("Bonjour", ignoreCase = true))
+
+        val frNoProblem = DictionaryLookupEngine.translateDirect("Tɔɔɔrɔɔɔ tɛɛɛ", "Dioula", "Français")
+        assertNotNull(frNoProblem)
+    }
+
+    @Test
+    fun testLocalBridgeOtherLanguagesToMooreAndDioula() {
+        val enToMoore = DictionaryLookupEngine.assembleSentenceFromLocalDictionary(
+            input = "Thank you",
+            sourceLang = "Anglais",
+            targetLang = "Mooré"
+        )
+        assertNotNull(enToMoore)
+        assertTrue(enToMoore!!.translatedText.contains("Bark", ignoreCase = true))
+
+        val enGoingSchoolToMoore = DictionaryLookupEngine.assembleSentenceFromLocalDictionary(
+            input = "I am going to school",
+            sourceLang = "Anglais",
+            targetLang = "Mooré"
+        )
+        assertNotNull(enGoingSchoolToMoore)
+        assertTrue(enGoingSchoolToMoore!!.translatedText.contains("lekoll", ignoreCase = true))
+
+        val haToMoore = DictionaryLookupEngine.assembleSentenceFromLocalDictionary(
+            input = "Ina kwana",
+            sourceLang = "Haoussa",
+            targetLang = "Mooré"
+        )
+        assertNotNull(haToMoore)
+        assertEquals("Nii yi beogo", haToMoore!!.translatedText)
+
+        val mooreToHa = DictionaryLookupEngine.assembleSentenceFromLocalDictionary(
+            input = "Nii yi beogo",
+            sourceLang = "Mooré",
+            targetLang = "Haoussa"
+        )
+        assertNotNull(mooreToHa)
+        assertEquals("Ina kwana", mooreToHa!!.translatedText)
+    }
+
+    @Test
+    fun testConversationCleanerPreservesAndNormalizesLocalLanguages() {
+        val mooreClean = com.example.util.ConversationCleaner.cleanVoiceTranscript("baaaarkaaa", "Mooré")
+        assertEquals("Barka", mooreClean)
+
+        val dioulaClean = com.example.util.ConversationCleaner.cleanVoiceTranscript("iii niii sogomaaa", "Dioula")
+        assertEquals("I ni sogoma", dioulaClean)
+    }
+
+    @Test
+    fun testTranslationRepositoryPrioritizesLocalDictionaryForAllMooreAndDioulaPairs() = kotlinx.coroutines.runBlocking {
+        val fakeDao = object : com.example.data.local.TranslationDao {
+            override fun getTranslationsForUser(userId: String) = kotlinx.coroutines.flow.flowOf(emptyList<com.example.data.local.TranslationEntity>())
+            override fun getAllTranslations() = kotlinx.coroutines.flow.flowOf(emptyList<com.example.data.local.TranslationEntity>())
+            override suspend fun findValidatedCorrection(text: String, srcLang: String, tgtLang: String): com.example.data.local.TranslationEntity? = null
+            override suspend fun updateValidation(id: Long, isValidated: Boolean, correctedText: String?, date: Long?) = 1
+            override suspend fun updateFavorite(id: Long, isFavorite: Boolean) = 1
+            override suspend fun insertTranslation(translation: com.example.data.local.TranslationEntity) = 1L
+            override suspend fun deleteTranslation(id: Long) = 1
+            override suspend fun deleteAllTranslationsForUser(userId: String) = 0
+            override suspend fun deleteAllTranslations() = 0
+            override suspend fun getTranslationByIdAndUser(id: Long, userId: String): com.example.data.local.TranslationEntity? = null
+            override suspend fun deleteTranslationSecure(id: Long, userId: String) = 0
+        }
+        val repo = com.example.data.repository.TranslationRepository(translationDao = fakeDao)
+        var aiCalledCount = 0
+        val failIfAiCalled: suspend (String, String, String, String) -> String = { _, _, _, _ ->
+            aiCalledCount++
+            ""
+        }
+
+        val frToMoore = repo.translate("Je vais à l'école", "Français", "Mooré", aiFallback = failIfAiCalled)
+        assertTrue(frToMoore.isFromValidatedSource)
+        assertTrue(frToMoore.translatedText.contains("lekoll", ignoreCase = true))
+
+        val enToMoore = repo.translate("I am going to school", "Anglais", "Mooré", aiFallback = failIfAiCalled)
+        assertTrue(enToMoore.isFromValidatedSource)
+        assertTrue(enToMoore.translatedText.contains("lekoll", ignoreCase = true))
+
+        val haToMoore = repo.translate("Ina kwana", "Haoussa", "Mooré", aiFallback = failIfAiCalled)
+        assertTrue(haToMoore.isFromValidatedSource)
+        assertEquals("Nii yi beogo", haToMoore.translatedText)
+
+        val mooreToEn = repo.translate("Nii yi beogo", "Mooré", "Anglais", aiFallback = failIfAiCalled)
+        assertTrue(mooreToEn.isFromValidatedSource)
+        assertEquals("Hello", mooreToEn.translatedText)
+
+        val prolongedMooreToFr = repo.translate("Baaaarkaaa", "Mooré", "Français", aiFallback = failIfAiCalled)
+        assertTrue(prolongedMooreToFr.isFromValidatedSource)
+        assertTrue(prolongedMooreToFr.translatedText.contains("Merci", ignoreCase = true))
+
+        assertEquals(0, aiCalledCount)
+    }
+
+    @Test
+    fun testWebSearchClassifierTriggersForPrimeMinisterAndNotGreeting() {
+        val pmDecision = com.example.util.WebSearchClassifier.classify("qui est le premier ministre du burkina faso")
+        assertTrue(pmDecision.isSearchNeeded)
+        assertEquals(com.example.util.SearchNeedLevel.TEMPORAL_LIVE, pmDecision.level)
+
+        val greetingDecision = com.example.util.WebSearchClassifier.classify("Bonjour")
+        assertFalse(greetingDecision.isSearchNeeded)
+        assertEquals(com.example.util.SearchNeedLevel.NONE, greetingDecision.level)
+    }
 }

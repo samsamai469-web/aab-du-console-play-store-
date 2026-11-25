@@ -71,6 +71,11 @@ object ConversationCleaner {
             }
         } else {
             result = result.replace(Regex("""\s+"""), " ").trim()
+            if (lowerLang == "mos" || lowerLang.contains("moor") || lowerLang.contains("mòor")) {
+                result = com.example.data.engine.DictionaryLookupEngine.normalizeMooreProlongations(result)
+            } else if (lowerLang == "dyu" || lowerLang.contains("dioula") || lowerLang.contains("jula")) {
+                result = com.example.data.engine.DictionaryLookupEngine.normalizeDioulaAsrTranscript(result)
+            }
         }
 
         // 4. Nettoyage de la ponctuation au début du texte

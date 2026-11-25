@@ -307,6 +307,13 @@ class MainActivity : ComponentActivity() {
       } catch (_: Throwable) {}
   }
 
+  override fun onStop() {
+      super.onStop()
+      try {
+          ttsManager.stop()
+      } catch (_: Throwable) {}
+  }
+
   override fun onDestroy() {
       super.onDestroy()
       try {

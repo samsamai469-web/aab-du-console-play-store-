@@ -97,6 +97,30 @@ fun TranslationScreen(
         }
     }
 
+    var lastAutoSpokenSignature by remember { mutableStateOf("") }
+    val activeEffectiveTgt = lastOutput?.targetLang ?: targetLang
+    LaunchedEffect(translatedText, activeEffectiveTgt) {
+        if (translatedText.isBlank()) {
+            lastAutoSpokenSignature = ""
+        } else if (
+            !translatedText.startsWith("Erreur") &&
+            !translatedText.startsWith("⚠️") &&
+            !translatedText.equals("Traduction indisponible", ignoreCase = true)
+        ) {
+            val signature = "$translatedText|$activeEffectiveTgt"
+            if (signature != lastAutoSpokenSignature) {
+                lastAutoSpokenSignature = signature
+                ttsManager.speak(translatedText, activeEffectiveTgt)
+            }
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            ttsManager.stop()
+        }
+    }
+
     val sourceLanguages = listOf("Français", "Haoussa", "Mooré", "Dioula", "Allemand", "Anglais", "Arabe", "Espagnol")
     val targetLanguages = listOf("Haoussa", "Mooré", "Dioula", "Anglais", "Allemand", "Français", "Arabe", "Espagnol")
 
@@ -594,16 +618,6 @@ fun TranslationScreen(
                         val effectiveTgt = lastOutput?.targetLang ?: targetLang
 
                         item {
-                            LaunchedEffect(translatedText, effectiveTgt) {
-                                if (translatedText.isNotBlank() &&
-                                    !translatedText.startsWith("Erreur") &&
-                                    !translatedText.startsWith("⚠️") &&
-                                    !translatedText.equals("Traduction indisponible", ignoreCase = true)
-                                ) {
-                                    ttsManager.speak(translatedText, effectiveTgt)
-                                }
-                            }
-
                             Card(
                                 modifier = Modifier.fillMaxWidth(),
                                 shape = RoundedCornerShape(18.dp),

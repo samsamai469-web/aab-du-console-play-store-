@@ -10,6 +10,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -236,6 +237,13 @@ fun LiveConversationScreen(
             user1SpeechManager.resetState()
             user2SpeechManager.resetState()
         }
+    }
+
+    BackHandler {
+        ttsManager.stop()
+        user1SpeechManager.resetState()
+        user2SpeechManager.resetState()
+        onDismiss()
     }
 
     // Chargement de l'historique hebdomadaire avec auto-réinitialisation (7 jours)

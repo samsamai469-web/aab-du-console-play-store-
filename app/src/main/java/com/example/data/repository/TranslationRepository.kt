@@ -172,6 +172,7 @@ class TranslationRepository(
         var badge = "SAM AI ⚡"
         var breakdown = emptyList<String>()
         var localLexiconHint = ""
+        var partialLocalDraft = ""
 
         // =========================================================================
         // CAS 1 : MOORÉ & DIOULA — LE DICTIONNAIRE LOCAL PREND LE RELAIS EN PRIORITÉ
@@ -182,8 +183,21 @@ class TranslationRepository(
                 else -> "Dioula"
             }
 
+            // 0. Correspondance directe instantanée dans le lexique multilingue embarqué (toutes paires)
+            val directCross = MultilingualTranslationEngine.tryDirectExpressionMatch(
+                input = cleanText,
+                sourceLang = effectiveSourceLang,
+                targetLang = effectiveTargetLang
+            )
+            if (!directCross.isNullOrBlank() && !directCross.equals(cleanText, ignoreCase = true)) {
+                translated = directCross.trim()
+                badge = "📖 Dictionnaire Local ($localLangLabel)"
+                isLocal = true
+                MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, true)
+            }
+
             // A. Paire directe Français <-> Mooré/Dioula ou Mooré <-> Dioula
-            if ((srcIsFrench && tgtIsMooreOrDioula) || (srcIsMooreOrDioula && tgtIsFrench) || (srcIsMooreOrDioula && tgtIsMooreOrDioula)) {
+            if (translated.isBlank() && ((srcIsFrench && tgtIsMooreOrDioula) || (srcIsMooreOrDioula && tgtIsFrench) || (srcIsMooreOrDioula && tgtIsMooreOrDioula))) {
                 val smartComp = trySmartCompositional(cleanText, effectiveSourceLang, effectiveTargetLang)
                 val localAssembly = DictionaryLookupEngine.assembleSentenceFromLocalDictionary(
                     input = cleanText,
@@ -194,8 +208,8 @@ class TranslationRepository(
                 val isHighCoverageLocal = localAssembly != null &&
                     localAssembly.translatedText.isNotBlank() &&
                     !localAssembly.translatedText.equals(cleanText, ignoreCase = true) &&
-                    (localAssembly.totalSegments <= 2 && localAssembly.matchedCount == localAssembly.totalSegments ||
-                        localAssembly.matchedCount * 4 >= localAssembly.totalSegments * 3)
+                    ((localAssembly.totalSegments <= 3 && localAssembly.matchedCount >= maxOf(1, localAssembly.totalSegments - 1)) ||
+                        localAssembly.matchedCount * 3 >= localAssembly.totalSegments * 2)
 
                 if (isHighCoverageLocal) {
                     translated = localAssembly!!.translatedText.trim()
@@ -208,20 +222,43 @@ class TranslationRepository(
                     badge = "📖 Dictionnaire Local ($localLangLabel)"
                     isLocal = true
                     MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, true)
+                } else if (localAssembly != null && localAssembly.translatedText.isNotBlank() && !localAssembly.translatedText.equals(cleanText, ignoreCase = true)) {
+                    partialLocalDraft = localAssembly.translatedText.trim()
+                    breakdown = localAssembly.breakdown
+                    localLexiconHint = buildString {
+                        if (localAssembly.breakdown.isNotEmpty()) {
+                            append(localAssembly.breakdown.joinToString("; "))
+                        }
+                        append(" | Ébauche dictionnaire local : $partialLocalDraft")
+                    }
                 } else if (localAssembly != null && localAssembly.breakdown.isNotEmpty()) {
                     localLexiconHint = localAssembly.breakdown.joinToString("; ")
                 }
             }
-            // B. Paire Autre Langue (ex: Anglais, Arabe, Haoussa, Espagnol) -> Mooré ou Dioula
-            // OpenAI traduit Autre Langue -> Français, puis le Dictionnaire Local Mooré/Dioula traduit mot à mot jusqu'à la fin de la phrase
-            else if (!srcIsFrench && tgtIsMooreOrDioula) {
+            // B. Paire Autre Langue (ex: Anglais, Arabe, Haoussa, Espagnol, Allemand) -> Mooré ou Dioula
+            // Utilise d'abord le pont local embarqué, sinon Google Translate (~250ms) vers le Français, puis le Dictionnaire Local Mooré/Dioula
+            else if (translated.isBlank() && !srcIsFrench && tgtIsMooreOrDioula) {
                 try {
-                    val rawPivot = aiFallback(cleanText, effectiveSourceLang, "Français", "").trim()
+                    val localPivot = DictionaryLookupEngine.tryLocalForeignToFrenchPivot(cleanText, effectiveSourceLang)
+                    val rawPivot = if (!localPivot.isNullOrBlank()) {
+                        localPivot
+                    } else {
+                        val googlePivot = try {
+                            com.example.data.remote.GoogleTranslationService.translate(cleanText, effectiveSourceLang, "Français")
+                        } catch (_: Throwable) { null }
+                        if (!googlePivot.isNullOrBlank()) {
+                            googlePivot
+                        } else {
+                            aiFallback(cleanText, effectiveSourceLang, "Français", "")
+                        }
+                    }.trim()
+
                     val frenchPivot = rawPivot
                         .replace(Regex("""(?i)^(traduction|translation)\s*:\s*"""), "")
                         .removeSurrounding("\"")
                         .removeSurrounding("«", "»")
                         .trim()
+
                     if (frenchPivot.isNotBlank()) {
                         val smartComp = trySmartCompositional(frenchPivot, "Français", effectiveTargetLang)
                         val localAssembly = DictionaryLookupEngine.assembleSentenceFromLocalDictionary(
@@ -229,8 +266,13 @@ class TranslationRepository(
                             sourceLang = "Français",
                             targetLang = effectiveTargetLang
                         )
-                        if (localAssembly != null && localAssembly.translatedText.isNotBlank()) {
-                            translated = localAssembly.translatedText.trim()
+                        val isGoodPivotAssembly = localAssembly != null &&
+                            localAssembly.translatedText.isNotBlank() &&
+                            (localAssembly.matchedCount * 3 >= localAssembly.totalSegments * 2 ||
+                                !com.example.data.local.ApiKeyManager.hasActiveInternetConnection())
+
+                        if (isGoodPivotAssembly) {
+                            translated = localAssembly!!.translatedText.trim()
                             breakdown = localAssembly.breakdown
                             badge = "📖 Dictionnaire Local ($localLangLabel)"
                             isLocal = true
@@ -240,13 +282,24 @@ class TranslationRepository(
                             badge = "📖 Dictionnaire Local ($localLangLabel)"
                             isLocal = true
                             MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, true)
+                        } else if (localAssembly != null && localAssembly.translatedText.isNotBlank()) {
+                            partialLocalDraft = localAssembly.translatedText.trim()
+                            breakdown = localAssembly.breakdown
+                            localLexiconHint = buildString {
+                                if (localAssembly.breakdown.isNotEmpty()) {
+                                    append(localAssembly.breakdown.joinToString("; "))
+                                }
+                                append(" | Pivot français : $frenchPivot | Ébauche dictionnaire local : $partialLocalDraft")
+                            }
+                        } else {
+                            localLexiconHint = "Pivot français : $frenchPivot"
                         }
                     }
                 } catch (_: Throwable) {}
             }
-            // C. Paire Mooré ou Dioula -> Autre Langue (ex: Anglais, Arabe, Haoussa, Espagnol)
-            // Le Dictionnaire Local Mooré/Dioula traduit mot à mot vers le Français, puis OpenAI traduit vers la langue cible sans erreur
-            else if (srcIsMooreOrDioula && !tgtIsFrench) {
+            // C. Paire Mooré ou Dioula -> Autre Langue (ex: Anglais, Arabe, Haoussa, Espagnol, Allemand)
+            // Le Dictionnaire Local Mooré/Dioula traduit vers le Français, puis pont local Haoussa ou Google Translate rapide (~250ms) vers la langue cible
+            else if (translated.isBlank() && srcIsMooreOrDioula && !tgtIsFrench) {
                 val localToFrench = DictionaryLookupEngine.assembleSentenceFromLocalDictionary(
                     input = cleanText,
                     sourceLang = effectiveSourceLang,
@@ -255,55 +308,94 @@ class TranslationRepository(
                 val frenchFromLocal = localToFrench?.translatedText?.takeIf { it.isNotBlank() }
                     ?: trySmartCompositional(cleanText, effectiveSourceLang, "Français")
                     ?: DictionaryLookupEngine.translateDirect(cleanText, effectiveSourceLang, "Français")
+
                 if (!frenchFromLocal.isNullOrBlank()) {
-                    try {
-                        val openAiFinal = aiFallback(frenchFromLocal, "Français", effectiveTargetLang, "").trim()
-                        if (openAiFinal.isNotBlank()) {
-                            translated = openAiFinal
-                            breakdown = localToFrench?.breakdown.orEmpty()
-                            badge = "📖 Dictionnaire Local ($localLangLabel)"
-                            isLocal = true
-                            MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, true)
-                        }
-                    } catch (_: Throwable) {}
+                    breakdown = localToFrench?.breakdown.orEmpty()
+                    val isTargetHausa = effectiveTargetLang.contains("haoussa", ignoreCase = true) ||
+                        effectiveTargetLang.contains("hausa", ignoreCase = true)
+
+                    val directFromFr = if (isTargetHausa) {
+                        MultilingualTranslationEngine.tryDirectExpressionMatch(frenchFromLocal, "Français", "Haoussa")
+                            ?: DictionaryLookupEngine.translateDirect(frenchFromLocal, "Français", "Haoussa")
+                    } else {
+                        MultilingualTranslationEngine.tryDirectExpressionMatch(frenchFromLocal, "Français", effectiveTargetLang)
+                    }
+
+                    if (!directFromFr.isNullOrBlank()) {
+                        translated = directFromFr.trim()
+                        badge = "📖 Dictionnaire Local ($localLangLabel)"
+                        isLocal = true
+                        MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, true)
+                    } else {
+                        try {
+                            val googleFinal = if (!isTargetHausa) {
+                                try {
+                                    com.example.data.remote.GoogleTranslationService.translate(frenchFromLocal, "Français", effectiveTargetLang)
+                                } catch (_: Throwable) { null }
+                            } else {
+                                null
+                            }
+                            val finalTarget = googleFinal?.takeIf { it.isNotBlank() }
+                                ?: aiFallback(frenchFromLocal, "Français", effectiveTargetLang, "").trim()
+                            if (finalTarget.isNotBlank()) {
+                                translated = finalTarget
+                                badge = "📖 Dictionnaire Local ($localLangLabel)"
+                                isLocal = true
+                                MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, true)
+                            }
+                        } catch (_: Throwable) {}
+                    }
+
+                    // Si le réseau échoue mais que le dictionnaire local a trouvé le sens en Français, on le garde en secours
+                    if (translated.isBlank() && !frenchFromLocal.equals(cleanText, ignoreCase = true)) {
+                        partialLocalDraft = frenchFromLocal.trim()
+                    }
                 }
             }
         }
 
         // =========================================================================
-        // CAS 2 : AUTRES LANGUES (Français, Anglais, Arabe, Haoussa, etc.) -> IA
+        // CAS 2 : COMPLÉMENT IA (OU AUTRES LANGUES) AVEC SECOURS DICTIONNAIRE LOCAL GARANTI
         // =========================================================================
         if (translated.isBlank() || translated.equals(cleanText, ignoreCase = true)) {
-            try {
-                val onlineResult = aiFallback(cleanText, effectiveSourceLang, effectiveTargetLang, localLexiconHint)
-                if (onlineResult.isNotBlank() && !onlineResult.equals(cleanText, ignoreCase = true)) {
-                    translated = onlineResult.trim()
-                    badge = "SAM AI ⚡"
-                    isLocal = false
-                    MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, false)
-                }
-            } catch (_: Throwable) {}
+            if (com.example.data.local.ApiKeyManager.hasActiveInternetConnection()) {
+                try {
+                    val onlineResult = aiFallback(cleanText, effectiveSourceLang, effectiveTargetLang, localLexiconHint)
+                    if (onlineResult.isNotBlank() && !onlineResult.equals(cleanText, ignoreCase = true)) {
+                        translated = onlineResult.trim()
+                        badge = if (localLexiconHint.isNotBlank()) "📖 Dictionnaire + SAM AI ⚡" else "SAM AI ⚡"
+                        isLocal = localLexiconHint.isNotBlank()
+                        MultilingualTranslationEngine.putInCache(cleanText, effectiveSourceLang, effectiveTargetLang, translated, isLocal)
+                    }
+                } catch (_: Throwable) {}
+            }
         }
 
-        // Repli local ultime si hors-ligne pour les autres langues
+        // Repli local ultime (hors-ligne ou échec IA) : priorité à l'ébauche locale assemblée si disponible
         if (translated.isBlank() || translated.equals(cleanText, ignoreCase = true)) {
-            val compositional = trySmartCompositional(cleanText, sourceLangInput, targetLangInput)
-            val dictionaryDirect = if (compositional.isNullOrBlank()) {
-                DictionaryLookupEngine.translateDirect(cleanText, sourceLangInput, targetLangInput)
-            } else null
-            val wordByWord = if (compositional.isNullOrBlank() && dictionaryDirect.isNullOrBlank()) {
-                tryWordByWordSafe(cleanText, sourceLangInput, targetLangInput)
-            } else null
-
-            val localResult = compositional ?: dictionaryDirect ?: wordByWord
-            if (!localResult.isNullOrBlank() && !localResult.equals(cleanText, ignoreCase = true)) {
-                translated = localResult.trim()
+            if (partialLocalDraft.isNotBlank() && !partialLocalDraft.equals(cleanText, ignoreCase = true)) {
+                translated = partialLocalDraft
                 badge = "📖 Dictionnaire Local"
                 isLocal = true
             } else {
-                translated = cleanText
-                badge = "Source"
-                isLocal = false
+                val compositional = trySmartCompositional(cleanText, effectiveSourceLang, effectiveTargetLang)
+                val dictionaryDirect = if (compositional.isNullOrBlank()) {
+                    DictionaryLookupEngine.translateDirect(cleanText, effectiveSourceLang, effectiveTargetLang)
+                } else null
+                val wordByWord = if (compositional.isNullOrBlank() && dictionaryDirect.isNullOrBlank()) {
+                    tryWordByWordSafe(cleanText, effectiveSourceLang, effectiveTargetLang)
+                } else null
+
+                val localResult = compositional ?: dictionaryDirect ?: wordByWord
+                if (!localResult.isNullOrBlank() && !localResult.equals(cleanText, ignoreCase = true)) {
+                    translated = localResult.trim()
+                    badge = "📖 Dictionnaire Local"
+                    isLocal = true
+                } else {
+                    translated = cleanText
+                    badge = "Source"
+                    isLocal = false
+                }
             }
         }
 

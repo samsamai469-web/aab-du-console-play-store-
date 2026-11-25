@@ -9,10 +9,14 @@ import com.google.firebase.ai.type.InlineDataPart
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.util.Locale
 
@@ -31,8 +35,8 @@ class OpenAiWhisperService(@Suppress("UNUSED_PARAMETER") context: Context) {
         private const val TAG = "GoogleSpeechTranscribe"
         private const val PRIMARY_TRANSCRIBE_MODEL = "gemini-3.8-flash"
         private const val FALLBACK_TRANSCRIBE_MODEL = "gemini-3.5-flash-lite"
-        private const val FAST_TRANSCRIBE_TIMEOUT_MS = 6_500L
-        private const val AFRICAN_TRANSCRIBE_TIMEOUT_MS = 8_000L
+        private const val FAST_TRANSCRIBE_TIMEOUT_MS = 4_500L
+        private const val AFRICAN_TRANSCRIBE_TIMEOUT_MS = 5_500L
 
         fun isLikelyMooreUtterance(text: String): Boolean = false
 
@@ -123,68 +127,76 @@ class OpenAiWhisperService(@Suppress("UNUSED_PARAMETER") context: Context) {
                     "S'il n'y a vraiment aucune parole humaine audible, renvoie uniquement une chaîne vide."
         }
 
-        val modelsToTry = if (isMooreHint || isDioulaHint) {
-            listOf(
-                PRIMARY_TRANSCRIBE_MODEL to AFRICAN_TRANSCRIBE_TIMEOUT_MS,
-                FALLBACK_TRANSCRIBE_MODEL to FAST_TRANSCRIBE_TIMEOUT_MS
-            )
-        } else {
-            listOf(
-                FALLBACK_TRANSCRIBE_MODEL to FAST_TRANSCRIBE_TIMEOUT_MS,
-                PRIMARY_TRANSCRIBE_MODEL to AFRICAN_TRANSCRIBE_TIMEOUT_MS
-            )
-        }
+        val modelsToTry = listOf(
+            FALLBACK_TRANSCRIBE_MODEL to FAST_TRANSCRIBE_TIMEOUT_MS,
+            PRIMARY_TRANSCRIBE_MODEL to AFRICAN_TRANSCRIBE_TIMEOUT_MS
+        )
 
         var lastError: Throwable? = null
         for ((modelId, timeoutMs) in modelsToTry) {
-            try {
-                val model = firebaseAi.generativeModel(
-                    modelName = modelId,
-                    systemInstruction = content { text(systemGuideText) },
-                    generationConfig = generationConfig {
-                        temperature = 0.0f
-                        maxOutputTokens = 256
+            val resultDeferred = CompletableDeferred<Result<String>>()
+            val transcribeJob = CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                try {
+                    val model = firebaseAi.generativeModel(
+                        modelName = modelId,
+                        systemInstruction = content { text(systemGuideText) },
+                        generationConfig = generationConfig {
+                            temperature = 0.0f
+                            maxOutputTokens = 256
+                        }
+                    )
+                    val promptContent = content {
+                        part(InlineDataPart(audioBytes, mimeType))
+                        text(instruction)
                     }
-                )
-                val promptContent = content {
-                    part(InlineDataPart(audioBytes, mimeType))
-                    text(instruction)
-                }
-                val response = withTimeout(timeoutMs) {
-                    model.generateContent(promptContent)
-                }
-                val rawText = response.text.orEmpty()
-                    .trim()
-                    .removeSurrounding("\"")
-                    .removeSurrounding("«", "»")
-                    .trim()
+                    val response = model.generateContent(promptContent)
+                    val rawText = response.text.orEmpty()
+                        .trim()
+                        .removeSurrounding("\"")
+                        .removeSurrounding("«", "»")
+                        .trim()
 
-                if (rawText.isBlank() || isHallucinationOrPromptEcho(rawText)) {
-                    return@withContext Result.success("")
+                    if (rawText.isBlank() || isHallucinationOrPromptEcho(rawText)) {
+                        resultDeferred.complete(Result.success(""))
+                    } else {
+                        val postProcessed = when {
+                            isMooreHint -> applyMoorePhoneticCorrections(rawText, isMooreHint = true)
+                            isDioulaHint -> applyDioulaPhoneticCorrections(rawText, isDioulaHint = true)
+                            else -> rawText
+                        }
+                        Log.d(TAG, "Transcription Google ($modelId / $targetLangLabel) -> \"$postProcessed\" (raw=\"$rawText\")")
+                        resultDeferred.complete(Result.success(postProcessed))
+                    }
+                } catch (e: Throwable) {
+                    resultDeferred.complete(Result.failure(e))
                 }
+            }
 
-                val postProcessed = when {
-                    isMooreHint -> applyMoorePhoneticCorrections(rawText, isMooreHint = true)
-                    isDioulaHint -> applyDioulaPhoneticCorrections(rawText, isDioulaHint = true)
-                    else -> rawText
+            val outcome = withTimeoutOrNull(timeoutMs) {
+                resultDeferred.await()
+            }
+            if (outcome == null) {
+                transcribeJob.cancel(CancellationException("TRANSCRIBE_TIMEOUT"))
+                Log.w(TAG, "Timeout transcription audio sur $modelId (${timeoutMs}ms)")
+                lastError = java.util.concurrent.TimeoutException("Timeout transcription audio sur $modelId")
+                continue
+            }
+
+            if (outcome.isSuccess) {
+                return@withContext outcome
+            } else {
+                val err = outcome.exceptionOrNull()
+                if (err is CancellationException && err !is TimeoutCancellationException) {
+                    throw err
                 }
-                Log.d(TAG, "Transcription Google ($modelId / $targetLangLabel) -> \"$postProcessed\" (raw=\"$rawText\")")
-                return@withContext Result.success(postProcessed)
-            } catch (ce: CancellationException) {
-                if (ce is TimeoutCancellationException) {
-                    lastError = ce
-                    Log.w(TAG, "Timeout transcription audio sur $modelId")
-                } else {
-                    throw ce
-                }
-            } catch (e: Exception) {
-                lastError = e
-                Log.w(TAG, "Échec transcription audio sur $modelId: ${e.message}", e)
+                lastError = err
+                Log.w(TAG, "Échec transcription audio sur $modelId: ${err?.message}", err)
             }
         }
 
         val errMsg = when (lastError) {
-            is TimeoutCancellationException -> "Délai de transcription audio dépassé. Veuillez réessayer."
+            is TimeoutCancellationException,
+            is java.util.concurrent.TimeoutException -> "Délai de transcription audio dépassé. Veuillez réessayer."
             is java.net.UnknownHostException,
             is java.net.ConnectException,
             is java.net.NoRouteToHostException ->
@@ -208,26 +220,28 @@ class OpenAiWhisperService(@Suppress("UNUSED_PARAMETER") context: Context) {
 Tu es un système de reconnaissance vocale (ASR) spécialisé en MOORÉ (langue nationale du Burkina Faso).
 RÈGLES STRICTES :
 1. Transcris fidèlement ce que la personne prononce en mooré (y compris s'il y a quelques mots empruntés au français).
-2. NE TRANSFORME JAMAIS un mot mooré en mot français qui lui ressemble phonétiquement (exemple interdit : transformer « Barka » en « barca », « Nii yi beogo » en « ni biogo » ou « il est beau », « Sugri » en « souris », « Fo laafi » en « faut la fille », « Kibaré » en « qui barré »).
-3. Utilise l'orthographe mooré naturelle (avec ʋ, ɩ, ɛ, ã, ẽ, ĩ, õ, ũ si approprié ou graphie claire).
-4. Repères lexicaux mooré fréquents :
+2. PROLONGATIONS & VOIX DOUCE : Les locuteurs peuvent traîner ou prolonger certaines voyelles ou consonnes (ex : « Baaaarkaaa », « Niiii yiii beogooo », « Laaaafiii », « Wuuusgo », « Kooooom », « Foooo ») ou parler doucement. Restitue toujours le mot ou la phrase mooré naturel exact sans couper la fin de phrase ni inventer un mot français.
+3. NE TRANSFORME JAMAIS un mot mooré en mot français qui lui ressemble phonétiquement (exemple interdit : transformer « Barka » en « barca », « Nii yi beogo » en « ni biogo » ou « il est beau », « Sugri » en « souris », « Fo laafi » en « faut la fille », « Kibaré » en « qui barré »).
+4. Utilise l'orthographe mooré naturelle (avec ʋ, ɩ, ɛ, ã, ẽ, ĩ, õ, ũ si approprié ou graphie claire).
+5. Repères lexicaux mooré fréquents :
    - Salutations : Nii yi beogo, Ne y beogo, Yibeo kibare, Nii windga, Windga kibare, Nii zabre, Zabre kibare, Niyungo, Yungo kibare, Neewôgô, Ne y waoongo, Kibaré, Fo laafi, Yãmb laafi bame wa, Laafi bala, Mam laafi bala, Ya sonma, Laafi beeme, La fõ.
    - Politesse & Bases : Barka, Bark wusgo, Barka ka be ye, Sugri, M kosa sugri, Tõnd kotame, N-ye, Ayo, A zemsame, A yaa sõma, A pa sõma ye, Yaa sɩda, Bilmãse, Nindaaré, Beoogo laafi, Wind da ganeg laafi, Wẽnd na ning barka.
    - Phrases courantes : M, Maam, Fo, Fõ, Tõnd, Yãmb, M debda raagẽ, M debda zakin, M debda tʋʋmde, M debda lekollẽ, M yita zakin, M data ligdi, M ka ligd ye, M tara ligdi, Kõ-m koom, Kõ-m rɩɩbo, Kõ-m ligdi, A yaa ligd a wãna, A yaa toogo, M wʋmame, M pa wʋm ye, M miime, M pa mi ye, M nan gounsam, M nonga foo, Fo yʋʋre la bõe, Mam yʋʋre la, Song maam, Wa ka, Zĩnd ka, Gũ-m, Gom bila bila.
    - Mots : koom (eau), ligdi (argent), rɩɩbo (nourriture), zaka / roogo (maison), raaga (marché), rawa (homme), paga (femme), biiga (enfant), mougne (riz), saabo (tô), buru (pain), nemdo (viande), zĩm (poisson), zom-kom, kênge, wa, rɩ, yũ, gũsi.
-5. Renvoie uniquement la transcription exacte, sans guillemets, sans traduction ni commentaire. Si aucune voix humaine n'est audible, renvoie une chaîne vide.
+6. Renvoie uniquement la transcription exacte, sans guillemets, sans traduction ni commentaire. Si aucune voix humaine n'est audible, renvoie une chaîne vide.
             """.trimIndent()
             isDioulaHint -> """
 Tu es un système de reconnaissance vocale (ASR) spécialisé en DIOULA / JULA (Burkina Faso, Côte d'Ivoire, Mali).
 RÈGLES STRICTES :
 1. Transcris fidèlement ce que la personne prononce en dioula (y compris s'il y a quelques mots empruntés au français).
-2. NE TRANSFORME JAMAIS un mot dioula en mot français qui lui ressemble phonétiquement (exemple interdit : transformer « I ni ce » en « initié » ou « il dit c'est », « I ni sogoma » en « il ni sogoma », « Tɔɔrɔ tɛ » en « trop tard » ou « toro té », « N bɛ taa » en « en bêtat », « I ka kɛnɛ wa » en « il a qu'à... »).
-3. Phonologie dioula : c = tch (I ni ce = i ni tché), j = dj (ji = dji, joli = djoli), u = ou (sugu = sougou, dumuni = doumouni), ɛ = è, ɔ = o ouvert, ɲ = gn, ŋ = ng.
-4. Repères lexicaux dioula fréquents :
+2. PROLONGATIONS & VOIX DOUCE : Les locuteurs peuvent prolonger les voyelles ou consonnes (ex : « Iii niii sogomaaa », « Iii niii ceee », « Tɔɔɔrɔɔɔ tɛɛɛ », « Waaari », « Jiiii ») ou parler doucement. Restitue toujours le mot ou la phrase dioula naturel exact sans couper la phrase.
+3. NE TRANSFORME JAMAIS un mot dioula en mot français qui lui ressemble phonétiquement (exemple interdit : transformer « I ni ce » en « initié » ou « il dit c'est », « I ni sogoma » en « il ni sogoma », « Tɔɔrɔ tɛ » en « trop tard » ou « toro té », « N bɛ taa » en « en bêtat », « I ka kɛnɛ wa » en « il a qu'à... »).
+4. Phonologie dioula : c = tch (I ni ce = i ni tché), j = dj (ji = dji, joli = djoli), u = ou (sugu = sougou, dumuni = doumouni), ɛ = è, ɔ = o ouvert, ɲ = gn, ŋ = ng.
+5. Repères lexicaux dioula fréquents :
    - Salutations : I ni sogoma, Aw ni sogoma, I ni tilen, I ni wula, I ni su, K'an su diya, I ni ce, I ni ce kosɛbɛ, I ni baara, Aw ni baara, I ka kɛnɛ wa, Aw ka kɛnɛ wa, N ka kɛnɛ, Tɔɔrɔ tɛ, Ile do, I dansɛ, Aw dansɛ, Sabali, Yafa n ma, Hakɛto, K'an bɛn, K'an bɛn sini, K'an bɛn sɔɔni, Awo, Ayi, A bɛnna, A ka ɲi, A man ɲi, Tiɛn don, Tiɛn tɛ.
    - Phrases courantes : N, Ne, I, Ile, A, An, Aw, U, N bɛ taa sugu la, N bɛ taa so, N bɛ taa baara la, N bɛ taa lakɔli la, N taara, N bɛ na, N bɔra so, I bɛ taa min, I bɛ mun kɛ, I bɛ min, Kɔngɔ bɛ n na, Minnɔgɔ bɛ n na, Ji di n ma, Dumuni di n ma, Wari di n ma, Wari bɛ n bolo, Wari tɛ n bolo, A sɔngɔ ye joli ye, A sɔngɔ ka gɛlɛn, Dɔgɔ bɔ a la, N y'a faamu, N m'a faamu, N y'a lɔn, N m'a lɔn, Kuma dɔɔni dɔɔni, Segi a kan, N dɛmɛ, N wele, N b'i fɛ, I tɔgɔ ye di, N tɔgɔ ye, Na yan, I sigi, N makɔnɔ.
    - Mots & Chiffres : ji (eau), wari (argent), dumuni (nourriture), so (maison), sugu (marché), dugu (village/ville), baara (travail), tɛri (ami), fa (père), ba (mère), den (enfant), cɛ (homme), muso (femme), malo (riz), sogo (viande), jɛgɛ (poisson), kelen, fila, saba, naani, duuru, wɔɔrɔ, wolonwula, seegin, kɔnɔntɔn, tan.
-5. Renvoie uniquement la transcription exacte, sans guillemets, sans traduction ni commentaire. Si aucune voix humaine n'est audible, renvoie une chaîne vide.
+6. Renvoie uniquement la transcription exacte, sans guillemets, sans traduction ni commentaire. Si aucune voix humaine n'est audible, renvoie une chaîne vide.
             """.trimIndent()
             else -> """
 Tu es un système de reconnaissance vocale (ASR) multilingue de très haute précision (langue attendue : $targetLangLabel).

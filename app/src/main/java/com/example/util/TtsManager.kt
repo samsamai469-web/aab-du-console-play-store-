@@ -24,6 +24,7 @@ import com.google.firebase.ai.type.SpeechConfig
 import com.google.firebase.ai.type.Voice
 import com.google.firebase.ai.type.generationConfig
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -44,6 +45,8 @@ import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.sqrt
 
 class TtsManager(context: Context) : TextToSpeech.OnInitListener {
@@ -68,6 +71,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var speechJob: Job? = null
+    private val activeSpeechGeneration = AtomicLong(0L)
 
     private val firebaseAi by lazy {
         Firebase.ai(backend = GenerativeBackend.googleAI())
@@ -78,10 +82,19 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         private const val PRIMARY_TTS_MODEL = "gemini-3.1-flash-tts-preview"
         private const val UNIFIED_GOOGLE_MALE_VOICE = "Charon"
         private const val CACHE_PREFIX = "sam_tts_google_v7_"
-        private const val FIRST_CHUNK_TIMEOUT_MS = 2_200L
+        private const val FIRST_CHUNK_TIMEOUT_MS = 700L
+        private const val INTER_CHUNK_STALL_TIMEOUT_MS = 3_500L
+        private const val NEURAL_COOLDOWN_MS = 180_000L
+        private const val MAX_CONSECUTIVE_NEURAL_FAILURES = 1
 
         @Volatile
         private var preferredWorkingTtsModel: String? = null
+
+        @Volatile
+        private var consecutiveNeuralFailures: Int = 0
+
+        @Volatile
+        private var lastNeuralFailureTimeMs: Long = 0L
 
         private val activeInstances = java.util.Collections.synchronizedSet(
             java.util.Collections.newSetFromMap(java.util.WeakHashMap<TtsManager, Boolean>())
@@ -120,6 +133,10 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     private var activeOnErrorCallback: (() -> Unit)? = null
     private var activeOnStartCallback: (() -> Unit)? = null
     private var pendingSpeech: (() -> Unit)? = null
+    private var pendingInitWatchdog: Runnable? = null
+    @Volatile
+    private var activeUtteranceId: String? = null
+    private val cachedVoicesByLang = java.util.concurrent.ConcurrentHashMap<String, android.speech.tts.Voice>()
 
     init {
         activeInstances.add(this)
@@ -190,19 +207,23 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
             try {
-                selectBestVoiceForLocale(Locale.FRENCH)
+                tts?.language = Locale.FRENCH
                 tts?.setPitch(0.98f)
                 tts?.setSpeechRate(1.0f)
                 tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
+                        if (utteranceId != null && activeUtteranceId != null && utteranceId != activeUtteranceId) return
                         isGlobalTtsSpeaking = true
                         SpeechRecognitionManager.pauseAllActiveRecognizersForTts()
                         mainHandler.post {
-                            activeOnStartCallback?.invoke()
+                            if (utteranceId == null || activeUtteranceId == null || utteranceId == activeUtteranceId) {
+                                activeOnStartCallback?.invoke()
+                            }
                         }
                     }
 
                     override fun onAudioAvailable(utteranceId: String?, audio: ByteArray?) {
+                        if (utteranceId != null && activeUtteranceId != null && utteranceId != activeUtteranceId) return
                         if (audio != null && audio.size >= 4) {
                             var sumSq = 0.0
                             val samples = audio.size / 2
@@ -221,6 +242,8 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                     }
 
                     override fun onDone(utteranceId: String?) {
+                        if (utteranceId != null && activeUtteranceId != null && utteranceId != activeUtteranceId) return
+                        activeUtteranceId = null
                         isGlobalTtsSpeaking = false
                         _ttsSoundLevel.value = 0f
                         lastGlobalTtsEndTimeMs = System.currentTimeMillis()
@@ -232,6 +255,8 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                     }
 
                     override fun onError(utteranceId: String?) {
+                        if (utteranceId != null && activeUtteranceId != null && utteranceId != activeUtteranceId) return
+                        activeUtteranceId = null
                         isGlobalTtsSpeaking = false
                         _ttsSoundLevel.value = 0f
                         lastGlobalTtsEndTimeMs = System.currentTimeMillis()
@@ -243,6 +268,11 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                     }
                 })
                 isReady = true
+                pendingInitWatchdog?.let { mainHandler.removeCallbacks(it) }
+                pendingInitWatchdog = null
+                scope.launch(Dispatchers.IO) {
+                    warmUpVoiceCache()
+                }
                 val pending = pendingSpeech
                 pendingSpeech = null
                 pending?.invoke()
@@ -250,6 +280,8 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 isReady = false
                 isGlobalTtsSpeaking = false
                 pendingSpeech = null
+                pendingInitWatchdog?.let { mainHandler.removeCallbacks(it) }
+                pendingInitWatchdog = null
             }
         } else {
             isReady = false
@@ -316,14 +348,17 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
         // Verrouille immédiatement l'état global TTS et coupe tout microphone de reconnaissance actif
         // pour que SAM AI ne ré-entende jamais sa propre voix en haut-parleur
+        val requestGeneration = activeSpeechGeneration.incrementAndGet()
         isGlobalTtsSpeaking = true
         SpeechRecognitionManager.pauseAllActiveRecognizersForTts()
 
         speechJob = scope.launch {
-            val success = trySpeakWithNeuralVoice(spokenText, langCode, rate)
-            if (!success) {
+            val success = trySpeakWithNeuralVoice(spokenText, langCode, rate, requestGeneration)
+            if (!success && isActive && requestGeneration == activeSpeechGeneration.get() && isGlobalTtsSpeaking) {
                 withContext(Dispatchers.Main) {
-                    speakWithLocalAndroidTts(spokenText, langCode, rate)
+                    if (requestGeneration == activeSpeechGeneration.get() && isGlobalTtsSpeaking) {
+                        speakWithLocalAndroidTts(spokenText, langCode, rate)
+                    }
                 }
             }
         }
@@ -501,7 +536,10 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         spokenText: String,
         langCode: String,
         naturalSpeed: Float,
-        cachedFile: File
+        cachedFile: File,
+        requestGeneration: Long,
+        abortedByTimeout: AtomicBoolean,
+        firstAudioSignal: CompletableDeferred<Boolean>
     ): Boolean = withContext(Dispatchers.IO) {
         val ttsInput = ensureNaturalSentenceEnding(spokenText).take(2200)
         val prompt = buildHumanVoiceDirectorPrompt(langCode, ttsInput)
@@ -517,8 +555,17 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
         val candidateModels = listOf(PRIMARY_TTS_MODEL)
 
+        fun isRequestStillValid(): Boolean {
+            return !abortedByTimeout.get() &&
+                requestGeneration == activeSpeechGeneration.get() &&
+                isGlobalTtsSpeaking
+        }
+
         for (modelName in candidateModels) {
-            if (!isActive || !isGlobalTtsSpeaking) return@withContext false
+            if (!isActive || !isRequestStillValid()) {
+                firstAudioSignal.complete(false)
+                return@withContext false
+            }
             var localTrack: AudioTrack? = null
             var receivedFirstAudio = false
             var startedStreamingTrack = false
@@ -528,6 +575,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             var detectedSampleRate = 24000
             var totalPcmBytesWritten = 0L
             var pendingOddByte: Byte? = null
+            var lastChunkReceivedMs = System.currentTimeMillis()
 
             try {
                 val model = firebaseAi.generativeModel(
@@ -538,12 +586,13 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 coroutineScope {
                     val streamJob = launch {
                         model.generateContentStream(prompt).collect { chunk ->
-                            if (!isActive || !isGlobalTtsSpeaking) {
-                                throw CancellationException("TTS stopped")
+                            if (!isActive || !isRequestStillValid()) {
+                                throw CancellationException("TTS stopped or timed out")
                             }
                             val parts = chunk.candidates.firstOrNull()?.content?.parts.orEmpty()
                             for (part in parts) {
                                 if (part is InlineDataPart && part.inlineData.isNotEmpty()) {
+                                    lastChunkReceivedMs = System.currentTimeMillis()
                                     if (!receivedFirstAudio) {
                                         receivedFirstAudio = true
                                         if (part.mimeType.isNotBlank()) {
@@ -566,7 +615,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                                         }
                                         if (isStreamablePcmOrWavMimeType(detectedMimeType)) {
                                             val canPlay = withContext(Dispatchers.Main) {
-                                                if (!isGlobalTtsSpeaking) {
+                                                if (!isRequestStillValid()) {
                                                     false
                                                 } else {
                                                     releaseMediaPlayer()
@@ -581,11 +630,20 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                                             }
                                             val track = createStreamingAudioTrack(detectedSampleRate, naturalSpeed)
                                             if (track != null) {
+                                                if (!isRequestStillValid()) {
+                                                    releaseStreamAudioTrack(track)
+                                                    throw CancellationException("TTS superseded before track play")
+                                                }
                                                 localTrack = track
                                                 activeAudioTrack = track
                                                 track.play()
                                                 startedStreamingTrack = true
-                                                mainHandler.post { activeOnStartCallback?.invoke() }
+                                                firstAudioSignal.complete(true)
+                                                mainHandler.post {
+                                                    if (isRequestStillValid()) {
+                                                        activeOnStartCallback?.invoke()
+                                                    }
+                                                }
                                             } else {
                                                 compressedFallbackStream = ByteArrayOutputStream()
                                             }
@@ -618,7 +676,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
                                             if (evenLen > 0) {
                                                 var writtenOffset = 0
-                                                while (writtenOffset < evenLen && isActive && isNeuralPlaying) {
+                                                while (writtenOffset < evenLen && isActive && isNeuralPlaying && isRequestStillValid()) {
                                                     val slice = minOf(2048, evenLen - writtenOffset)
                                                     val written = track.write(alignedBytes, writtenOffset, slice)
                                                     if (written <= 0) break
@@ -636,19 +694,26 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                         }
                     }
 
-                    val watchdogJob = launch {
-                        delay(FIRST_CHUNK_TIMEOUT_MS)
-                        if (!receivedFirstAudio) {
-                            Log.w("TtsManager", "Timeout premier octet sur $modelName (${FIRST_CHUNK_TIMEOUT_MS}ms)")
-                            streamJob.cancel(CancellationException("FIRST_CHUNK_TIMEOUT"))
+                    val stallWatchdogJob = launch {
+                        while (isActive) {
+                            delay(200L)
+                            if (!isRequestStillValid()) {
+                                streamJob.cancel(CancellationException("TTS_ABORTED"))
+                                break
+                            }
+                            if (receivedFirstAudio && (System.currentTimeMillis() - lastChunkReceivedMs) > INTER_CHUNK_STALL_TIMEOUT_MS) {
+                                Log.w("TtsManager", "Stall inter-chunk sur $modelName")
+                                streamJob.cancel(CancellationException("INTER_CHUNK_STALL"))
+                                break
+                            }
                         }
                     }
 
                     streamJob.join()
-                    watchdogJob.cancel()
+                    stallWatchdogJob.cancel()
                 }
 
-                if (startedStreamingTrack && totalPcmBytesWritten > 0L && localTrack != null) {
+                if (startedStreamingTrack && totalPcmBytesWritten > 0L && localTrack != null && isRequestStillValid()) {
                     preferredWorkingTtsModel = modelName
                     val allBytes = fullCacheStream.toByteArray()
                     val wavBytes = if (hasRiffWavHeader(allBytes)) {
@@ -668,7 +733,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                     val totalFrames = totalPcmBytesWritten / 2L
                     val maxWaitMs = ((totalFrames * 1000L) / (detectedSampleRate * naturalSpeed)).toLong() + 1200L
                     val waitStart = System.currentTimeMillis()
-                    while (isActive && isNeuralPlaying) {
+                    while (isActive && isNeuralPlaying && isRequestStillValid()) {
                         val playedFrames = try { track.playbackHeadPosition.toLong() } catch (_: Exception) { totalFrames }
                         if (playedFrames >= totalFrames || (System.currentTimeMillis() - waitStart) > maxWaitMs) {
                             break
@@ -676,7 +741,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                         delay(35L)
                     }
 
-                    if (isNeuralPlaying) {
+                    if (isNeuralPlaying && isRequestStillValid()) {
                         isNeuralPlaying = false
                         isGlobalTtsSpeaking = false
                         _ttsSoundLevel.value = 0f
@@ -685,12 +750,13 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                         activeOnDoneCallback = null
                         mainHandler.post { cb?.invoke() }
                     }
+                    firstAudioSignal.complete(true)
                     return@withContext true
                 }
 
                 // Cas rare où l'audio reçu était compressé (non-PCM)
                 val compressedBytes = compressedFallbackStream?.toByteArray()
-                if (compressedBytes != null && compressedBytes.size >= 200) {
+                if (compressedBytes != null && compressedBytes.size >= 200 && isRequestStillValid()) {
                     preferredWorkingTtsModel = modelName
                     val playableBytes = if (hasRiffWavHeader(compressedBytes)) {
                         compressedBytes
@@ -698,35 +764,40 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                         wrapPcm24kMono16BitAsWav(compressedBytes, detectedSampleRate)
                     }
                     FileOutputStream(cachedFile).use { it.write(playableBytes) }
+                    firstAudioSignal.complete(true)
                     return@withContext playAudioFileWithMediaPlayer(cachedFile, cachedFile, naturalSpeed, spokenText, langCode, naturalSpeed)
                 }
             } catch (ce: CancellationException) {
+                firstAudioSignal.complete(false)
                 throw ce
             } catch (e: Throwable) {
                 Log.w("TtsManager", "Google Gemini TTS $modelName indisponible: ${e.message}")
             } finally {
                 withContext(NonCancellable) {
                     releaseStreamAudioTrack(localTrack)
-                    if (startedStreamingTrack) {
-                        abandonPlaybackAudioFocus()
-                        if (isNeuralPlaying || isGlobalTtsSpeaking) {
+                    if (!abortedByTimeout.get() && requestGeneration == activeSpeechGeneration.get()) {
+                        if (startedStreamingTrack) {
+                            abandonPlaybackAudioFocus()
+                            if (isNeuralPlaying || isGlobalTtsSpeaking) {
+                                isNeuralPlaying = false
+                                isGlobalTtsSpeaking = false
+                                _ttsSoundLevel.value = 0f
+                                lastGlobalTtsEndTimeMs = System.currentTimeMillis()
+                            }
+                        } else {
                             isNeuralPlaying = false
-                            isGlobalTtsSpeaking = false
                             _ttsSoundLevel.value = 0f
-                            lastGlobalTtsEndTimeMs = System.currentTimeMillis()
                         }
-                    } else {
-                        isNeuralPlaying = false
-                        _ttsSoundLevel.value = 0f
                     }
                 }
             }
 
-            // Si la lecture avait déjà commencé et a été coupée en cours, on ne relance pas un autre modèle
             if (startedStreamingTrack) {
+                firstAudioSignal.complete(true)
                 return@withContext true
             }
         }
+        firstAudioSignal.complete(false)
         false
     }
 
@@ -837,8 +908,12 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     private suspend fun trySpeakWithNeuralVoice(
         spokenText: String,
         langCode: String,
-        rate: Float
+        rate: Float,
+        requestGeneration: Long
     ): Boolean = withContext(Dispatchers.IO) {
+        val abortedByTimeout = AtomicBoolean(false)
+        val firstAudioSignal = CompletableDeferred<Boolean>()
+        var neuralJob: Job? = null
         try {
             val naturalSpeed = computeNaturalSpeed(rate)
             val cachedFile = getCachedVoiceFile(spokenText, langCode, naturalSpeed)
@@ -854,12 +929,68 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 )
             }
 
-            return@withContext withTimeoutOrNull(8_000L) {
-                streamAndPlayNeuralVoice(spokenText, langCode, naturalSpeed, cachedFile)
-            } ?: false
+            if (!com.example.data.local.ApiKeyManager.hasActiveInternetConnection()) {
+                return@withContext false
+            }
+
+            val inCooldown = consecutiveNeuralFailures >= MAX_CONSECUTIVE_NEURAL_FAILURES &&
+                (System.currentTimeMillis() - lastNeuralFailureTimeMs) < NEURAL_COOLDOWN_MS
+            if (inCooldown) {
+                return@withContext false
+            }
+
+            // Course non-bloquante : si aucun octet audio n'arrive sous FIRST_CHUNK_TIMEOUT_MS (700 ms),
+            // on détache immédiatement le job sans attendre neuralJob.join() (qui pouvait bloquer 30-60s dans Firebase/AppCheck)
+            // et on bascule instantanément sur le moteur vocal local Android.
+            neuralJob = scope.launch(Dispatchers.IO) {
+                try {
+                    streamAndPlayNeuralVoice(
+                        spokenText = spokenText,
+                        langCode = langCode,
+                        naturalSpeed = naturalSpeed,
+                        cachedFile = cachedFile,
+                        requestGeneration = requestGeneration,
+                        abortedByTimeout = abortedByTimeout,
+                        firstAudioSignal = firstAudioSignal
+                    )
+                } catch (ce: CancellationException) {
+                    firstAudioSignal.complete(false)
+                    throw ce
+                } catch (t: Throwable) {
+                    Log.w("TtsManager", "Exception Google Gemini TTS, repli local: ${t.message}")
+                    firstAudioSignal.complete(false)
+                } finally {
+                    firstAudioSignal.complete(false)
+                }
+            }
+
+            val gotFirstAudio = withTimeoutOrNull(FIRST_CHUNK_TIMEOUT_MS) {
+                firstAudioSignal.await()
+            } == true
+
+            if (!gotFirstAudio || abortedByTimeout.get() || requestGeneration != activeSpeechGeneration.get()) {
+                abortedByTimeout.set(true)
+                neuralJob.cancel(CancellationException("FIRST_CHUNK_TIMEOUT"))
+                consecutiveNeuralFailures++
+                lastNeuralFailureTimeMs = System.currentTimeMillis()
+                Log.w("TtsManager", "Bascule instantanée vers TTS local (${FIRST_CHUNK_TIMEOUT_MS}ms écoulés)")
+                return@withContext false
+            }
+
+            // L'audio streaming joue déjà activement : on attend la fin propre de lecture
+            neuralJob.join()
+            consecutiveNeuralFailures = 0
+            lastNeuralFailureTimeMs = 0L
+            return@withContext true
         } catch (ce: CancellationException) {
+            abortedByTimeout.set(true)
+            neuralJob?.cancel(ce)
             throw ce
         } catch (e: Exception) {
+            abortedByTimeout.set(true)
+            neuralJob?.cancel(CancellationException("TTS_EXCEPTION"))
+            consecutiveNeuralFailures++
+            lastNeuralFailureTimeMs = System.currentTimeMillis()
             Log.w("TtsManager", "Exception Google Gemini TTS, repli local: ${e.message}")
             return@withContext false
         }
@@ -901,25 +1032,61 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         } catch (_: Exception) {}
     }
 
+    private fun warmUpVoiceCache() {
+        try {
+            val voices = tts?.voices ?: return
+            val targetLangs = listOf("fr", "en", "de", "es", "ar", "it", "pt", "ru", "zh")
+            for (lang in targetLangs) {
+                if (cachedVoicesByLang.containsKey(lang)) continue
+                val best = voices.asSequence()
+                    .filter { v ->
+                        v.locale.language.equals(lang, ignoreCase = true) &&
+                            !v.isNetworkConnectionRequired &&
+                            !v.features.contains("notInstalled")
+                    }
+                    .sortedWith(
+                        compareByDescending<android.speech.tts.Voice> { it.quality }
+                            .thenByDescending { v ->
+                                val n = v.name.lowercase(Locale.ROOT)
+                                if (n.contains("frd") || n.contains("male") || n.contains("iom") || n.contains("thomas") || n.contains("cfb") || n.contains("rjd") || n.contains("gba")) 1 else 0
+                            }
+                    )
+                    .firstOrNull()
+                if (best != null) {
+                    cachedVoicesByLang[lang] = best
+                }
+            }
+        } catch (_: Exception) {}
+    }
+
     private fun selectBestVoiceForLocale(targetLocale: Locale) {
         try {
             tts?.language = targetLocale
-            val matchingVoices = tts?.voices?.filter { v ->
+            val langKey = targetLocale.language.lowercase(Locale.ROOT)
+            val cached = cachedVoicesByLang[langKey]
+            if (cached != null) {
+                tts?.voice = cached
+                return
+            }
+            val matchingOfflineVoices = tts?.voices?.filter { v ->
                 v.locale.language.equals(targetLocale.language, ignoreCase = true) &&
+                    !v.isNetworkConnectionRequired &&
                     !v.features.contains("notInstalled")
             }.orEmpty()
-            if (matchingVoices.isEmpty()) return
+            if (matchingOfflineVoices.isEmpty()) return
 
-            // En repli local (souvent hors ligne), privilégier les voix installées de haute qualité sans dépendance réseau bloquante
-            val ranked = matchingVoices.sortedWith(
-                compareBy<android.speech.tts.Voice> { if (it.isNetworkConnectionRequired) 1 else 0 }
-                    .thenByDescending { it.quality }
+            // Sélectionne exclusivement des voix locales hors-ligne pour éviter toute attente réseau de 30s du moteur Google TTS
+            val ranked = matchingOfflineVoices.sortedWith(
+                compareByDescending<android.speech.tts.Voice> { it.quality }
                     .thenByDescending { v ->
                         val n = v.name.lowercase(Locale.ROOT)
                         if (n.contains("frd") || n.contains("male") || n.contains("iom") || n.contains("thomas") || n.contains("cfb") || n.contains("rjd") || n.contains("gba")) 1 else 0
                     }
             )
-            ranked.firstOrNull()?.let { tts?.voice = it }
+            ranked.firstOrNull()?.let {
+                cachedVoicesByLang[langKey] = it
+                tts?.voice = it
+            }
         } catch (_: Exception) {}
     }
 
@@ -929,12 +1096,36 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         rate: Float
     ) {
         if (!isReady) {
-            // Ne jamais laisser isGlobalTtsSpeaking bloqué à true si le moteur TTS local n'est pas encore prêt
-            isGlobalTtsSpeaking = false
+            if (tts == null) {
+                isGlobalTtsSpeaking = false
+                _ttsSoundLevel.value = 0f
+                abandonPlaybackAudioFocus()
+                val errCb = activeOnErrorCallback
+                activeOnErrorCallback = null
+                activeOnDoneCallback = null
+                errCb?.invoke()
+                return
+            }
+            isGlobalTtsSpeaking = true
             _ttsSoundLevel.value = 0f
             pendingSpeech = {
                 speakWithLocalAndroidTts(spokenText, langCode, rate)
             }
+            pendingInitWatchdog?.let { mainHandler.removeCallbacks(it) }
+            val watchdog = Runnable {
+                if (!isReady && pendingSpeech != null) {
+                    pendingSpeech = null
+                    isGlobalTtsSpeaking = false
+                    _ttsSoundLevel.value = 0f
+                    abandonPlaybackAudioFocus()
+                    val errCb = activeOnErrorCallback
+                    activeOnErrorCallback = null
+                    activeOnDoneCallback = null
+                    errCb?.invoke()
+                }
+            }
+            pendingInitWatchdog = watchdog
+            mainHandler.postDelayed(watchdog, 1_200L)
             return
         }
         try {
@@ -961,18 +1152,27 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
             val params = android.os.Bundle().apply {
                 putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
+                putString(TextToSpeech.Engine.KEY_FEATURE_NETWORK_TIMEOUT_MS, "500")
+                putString(TextToSpeech.Engine.KEY_FEATURE_NETWORK_RETRIES_COUNT, "0")
             }
-            val utteranceId = "sam_tts_${System.currentTimeMillis()}"
+            val utteranceId = "sam_tts_${System.nanoTime()}"
+            activeUtteranceId = utteranceId
             val result = tts?.speak(ensureNaturalSentenceEnding(spokenText), TextToSpeech.QUEUE_FLUSH, params, utteranceId)
             if (result == TextToSpeech.ERROR) {
                 isGlobalTtsSpeaking = false
                 abandonPlaybackAudioFocus()
-                activeOnErrorCallback?.invoke()
+                val errCb = activeOnErrorCallback
+                activeOnErrorCallback = null
+                activeOnDoneCallback = null
+                errCb?.invoke()
             }
         } catch (_: Exception) {
             isGlobalTtsSpeaking = false
             abandonPlaybackAudioFocus()
-            activeOnErrorCallback?.invoke()
+            val errCb = activeOnErrorCallback
+            activeOnErrorCallback = null
+            activeOnDoneCallback = null
+            errCb?.invoke()
         }
     }
 
@@ -1524,6 +1724,8 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     fun stop() {
         try {
+            activeSpeechGeneration.incrementAndGet()
+            activeUtteranceId = null
             if (isNeuralPlaying || isGlobalTtsSpeaking || (tts?.isSpeaking == true)) {
                 lastGlobalTtsEndTimeMs = System.currentTimeMillis()
             }
