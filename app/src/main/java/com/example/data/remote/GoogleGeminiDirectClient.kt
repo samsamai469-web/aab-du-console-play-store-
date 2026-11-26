@@ -26,6 +26,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import okhttp3.Call
 import okhttp3.Callback
+import okhttp3.ConnectionPool
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -36,7 +37,10 @@ import okhttp3.WebSocketListener
 import java.io.IOException
 import java.net.Inet4Address
 import java.net.Inet6Address
+import java.net.InetAddress
 import java.net.URI
+import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -106,17 +110,19 @@ class DirectGeminiLiveSession internal constructor(
         if (pcmBytes.isEmpty()) return true
         val payload = buildJsonObject {
             putJsonObject("realtimeInput") {
-                put(
-                    "mediaChunks",
-                    buildJsonArray {
-                        add(
-                            buildJsonObject {
-                                put("mimeType", mimeType)
-                                put("data", Base64.encodeToString(pcmBytes, Base64.NO_WRAP))
-                            }
-                        )
-                    }
-                )
+                putJsonObject("audio") {
+                    put("mimeType", mimeType)
+                    put("data", Base64.encodeToString(pcmBytes, Base64.NO_WRAP))
+                }
+            }
+        }
+        return webSocket.send(payload.toString())
+    }
+
+    fun sendAudioStreamEnd(): Boolean {
+        val payload = buildJsonObject {
+            putJsonObject("realtimeInput") {
+                put("audioStreamEnd", true)
             }
         }
         return webSocket.send(payload.toString())
@@ -142,19 +148,32 @@ object GoogleGeminiDirectClient {
         isLenient = true
     }
 
+    private val dnsCache = ConcurrentHashMap<String, Pair<Long, List<InetAddress>>>()
+    private val dnsCacheTtlMs = 60_000L
+
     private val ipv4PreferredDns = object : okhttp3.Dns {
-        override fun lookup(hostname: String): List<java.net.InetAddress> {
+        override fun lookup(hostname: String): List<InetAddress> {
+            val now = System.currentTimeMillis()
+            val cached = dnsCache[hostname]
+            if (cached != null && (now - cached.first) < dnsCacheTtlMs && cached.second.isNotEmpty()) {
+                return cached.second
+            }
             val all = okhttp3.Dns.SYSTEM.lookup(hostname)
             val v4 = all.filterIsInstance<Inet4Address>()
             val v6 = all.filterIsInstance<Inet6Address>()
-            return if (v4.isNotEmpty()) v4 + v6 else all
+            val ordered = if (v4.isNotEmpty()) v4 + v6 else all
+            if (ordered.isNotEmpty()) {
+                dnsCache[hostname] = now to ordered
+            }
+            return ordered
         }
     }
 
     private val restClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .dns(ipv4PreferredDns)
-            .connectTimeout(15, TimeUnit.SECONDS)
+            .connectionPool(ConnectionPool(6, 5, TimeUnit.MINUTES))
+            .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(60, TimeUnit.SECONDS)
             .writeTimeout(20, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
@@ -532,7 +551,8 @@ object GoogleGeminiDirectClient {
     ): DirectGeminiLiveSession = withContext(Dispatchers.IO) {
         val validKey = requireValidApiKey(apiKey)
         val normalizedModel = if (model.startsWith("models/")) model else "models/$model"
-        val wsUrl = "$LIVE_WS_BASE?key=$validKey"
+        val encodedKey = URLEncoder.encode(validKey, "UTF-8")
+        val wsUrl = "$LIVE_WS_BASE?key=$encodedKey"
         val eventChannel = Channel<DirectLiveServerEvent>(Channel.UNLIMITED)
         val setupReady = CompletableDeferred<Boolean>()
 
@@ -567,7 +587,7 @@ object GoogleGeminiDirectClient {
                         buildJsonArray {
                             add(
                                 buildJsonObject {
-                                    putJsonObject("google_search") {}
+                                    putJsonObject("googleSearch") {}
                                 }
                             )
                         }
@@ -576,7 +596,10 @@ object GoogleGeminiDirectClient {
             }
         }.toString()
 
-        val req = Request.Builder().url(wsUrl).build()
+        val req = Request.Builder()
+            .url(wsUrl)
+            .header("x-goog-api-key", validKey)
+            .build()
         val ws = liveWsClient.newWebSocket(
             req,
             object : WebSocketListener() {
@@ -643,6 +666,21 @@ object GoogleGeminiDirectClient {
         if (rawJson.isBlank()) return
         try {
             val root = jsonParser.parseToJsonElement(rawJson).jsonObject
+            val errObj = root["error"]?.jsonObject
+            if (errObj != null) {
+                val code = errObj["code"]?.jsonPrimitive?.contentOrNull?.toIntOrNull() ?: 400
+                val status = errObj["status"]?.jsonPrimitive?.contentOrNull
+                val msg = errObj["message"]?.jsonPrimitive?.contentOrNull ?: rawJson.take(200)
+                val err = GeminiApiHttpException(code, status, msg, rawJson)
+                Log.w(TAG, "Live WebSocket error frame: ${err.message}")
+                if (!setupReady.isCompleted) {
+                    setupReady.completeExceptionally(err)
+                } else {
+                    eventChannel.trySend(DirectLiveServerEvent(error = err))
+                    eventChannel.close(err)
+                }
+                return
+            }
             if (root.containsKey("setupComplete")) {
                 setupReady.complete(true)
                 return

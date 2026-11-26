@@ -195,34 +195,34 @@ class SpeechRecognitionManager(private val context: Context) {
                     maxSpeechAmpInSession = amp
                 }
 
-                // Calibre le bruit ambiant uniquement sur les niveaux calmes (<= 180) pour qu'une parole
+                // Calibre le bruit ambiant uniquement sur les niveaux calmes (<= 140) pour qu'une parole
                 // qui démarre immédiatement ne fasse jamais exploser le seuil d'entrée
-                if (!speechDetected && elapsedSinceStart >= 60L && amp in 1..180) {
+                if (!speechDetected && elapsedSinceStart >= 60L && amp in 1..140) {
                     noiseFloor = if (!noiseCalibrated) {
                         noiseCalibrated = true
-                        amp.toFloat().coerceIn(6f, 120f)
+                        amp.toFloat().coerceIn(6f, 55f)
                     } else if (amp < noiseFloor) {
-                        ((noiseFloor * 0.78f) + (amp * 0.22f)).coerceIn(6f, 160f)
+                        ((noiseFloor * 0.78f) + (amp * 0.22f)).coerceIn(6f, 70f)
                     } else if (amp < noiseFloor * 1.45f) {
-                        ((noiseFloor * 0.90f) + (amp * 0.10f)).coerceIn(6f, 160f)
+                        ((noiseFloor * 0.90f) + (amp * 0.10f)).coerceIn(6f, 70f)
                     } else {
                         noiseFloor
                     }
                 }
 
-                val onsetThreshold = maxOf(18, (noiseFloor * 1.65f).toInt(), (noiseFloor + 12f).toInt()).coerceAtMost(240)
+                val onsetThreshold = maxOf(14, (noiseFloor * 1.45f).toInt(), (noiseFloor + 8f).toInt()).coerceAtMost(95)
                 val activeThreshold = if (speechDetected) {
                     maxOf(
-                        14,
-                        (noiseFloor * 1.30f).toInt(),
-                        (noiseFloor + 8f).toInt(),
-                        (peakSpeechAmp * 0.08f).toInt().coerceAtMost(110)
+                        12,
+                        (noiseFloor * 1.25f).toInt(),
+                        (noiseFloor + 6f).toInt(),
+                        (peakSpeechAmp * 0.08f).toInt().coerceAtMost(75)
                     )
                 } else {
                     onsetThreshold
                 }
                 val strongSpeechThreshold = if (speechDetected) {
-                    maxOf(onsetThreshold, (peakSpeechAmp * 0.14f).toInt().coerceAtMost(180))
+                    maxOf(onsetThreshold, (peakSpeechAmp * 0.14f).toInt().coerceAtMost(115))
                 } else {
                     onsetThreshold
                 }
@@ -233,7 +233,7 @@ class SpeechRecognitionManager(private val context: Context) {
                     if (amp > peakSpeechAmp) {
                         peakSpeechAmp = amp
                     }
-                    if (!speechDetected && (consecutiveOnsetFrames >= 2 || amp >= maxOf(90, onsetThreshold * 2))) {
+                    if (!speechDetected && (consecutiveOnsetFrames >= 2 || amp >= maxOf(65, onsetThreshold * 2))) {
                         speechDetected = true
                         hasDetectedSpeechInSession = true
                         speechStartTime = now - 40L

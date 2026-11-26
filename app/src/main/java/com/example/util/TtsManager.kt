@@ -130,6 +130,9 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     @Volatile
     private var activeUtteranceId: String? = null
     private val cachedVoicesByLang = java.util.concurrent.ConcurrentHashMap<String, android.speech.tts.Voice>()
+    private val cachedAudioFileNames = java.util.Collections.synchronizedSet(HashSet<String>())
+    @Volatile
+    private var lastAppliedLangKey: String? = null
 
     init {
         activeInstances.add(this)
@@ -138,19 +141,27 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         } catch (_: Exception) {
             isReady = false
         }
-        // Purge les anciens fichiers audio mis en cache avant la migration 100 % Google Gemini TTS
+        // Purge les anciens fichiers audio et indexe les caches existants en mémoire
         scope.launch {
             try {
                 val dir = File(appContext.cacheDir, "tts_voice_cache")
                 if (dir.exists()) {
                     dir.listFiles()?.forEach { file ->
-                        if (file.isFile && !file.name.startsWith(CACHE_PREFIX)) {
-                            file.delete()
+                        if (file.isFile) {
+                            if (!file.name.startsWith(CACHE_PREFIX)) {
+                                file.delete()
+                            } else if (file.length() >= 200L) {
+                                cachedAudioFileNames.add(file.name)
+                            }
                         }
                     }
                 }
             } catch (_: Exception) {}
         }
+    }
+
+    fun warmUp() {
+        // Déclenche l'initialisation précoce de TextToSpeech dès le lancement de l'app
     }
 
     private fun normalizeLanguageCode(language: String?): String {
@@ -289,7 +300,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     fun setSpeechRate(rate: Float) {
         currentSpeechRate = rate.coerceIn(0.5f, 2.0f)
         try {
-            tts?.setSpeechRate(currentSpeechRate)
+            tts?.setSpeechRate(computeNaturalSpeed(currentSpeechRate))
         } catch (_: Exception) {}
     }
 
@@ -345,13 +356,36 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         isGlobalTtsSpeaking = true
         SpeechRecognitionManager.pauseAllActiveRecognizersForTts()
 
-        speechJob = scope.launch {
-            val success = trySpeakWithNeuralVoice(spokenText, langCode, rate, requestGeneration)
-            if (!success && isActive && requestGeneration == activeSpeechGeneration.get() && isGlobalTtsSpeaking) {
-                withContext(Dispatchers.Main) {
-                    if (requestGeneration == activeSpeechGeneration.get() && isGlobalTtsSpeaking) {
-                        speakWithLocalAndroidTts(spokenText, langCode, rate)
+        val naturalSpeed = computeNaturalSpeed(rate)
+        val cachedFile = getCachedVoiceFile(spokenText, langCode, naturalSpeed)
+        if (cachedAudioFileNames.contains(cachedFile.name) && cachedFile.exists() && cachedFile.length() >= 200L) {
+            speechJob = scope.launch {
+                val ok = playAudioFileWithMediaPlayer(
+                    audioFileToPlay = cachedFile,
+                    cachedFile = cachedFile,
+                    naturalSpeed = naturalSpeed,
+                    spokenText = spokenText,
+                    langCode = langCode,
+                    rawRate = rate
+                )
+                if (!ok && isActive && requestGeneration == activeSpeechGeneration.get() && isGlobalTtsSpeaking) {
+                    withContext(Dispatchers.Main) {
+                        if (requestGeneration == activeSpeechGeneration.get() && isGlobalTtsSpeaking) {
+                            speakWithLocalAndroidTts(spokenText, langCode, rate)
+                        }
                     }
+                }
+            }
+            return
+        }
+
+        // Prononciation locale instantanée (<30ms) sans aucun blocage réseau de 700ms
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            speakWithLocalAndroidTts(spokenText, langCode, rate)
+        } else {
+            mainHandler.post {
+                if (requestGeneration == activeSpeechGeneration.get() && isGlobalTtsSpeaking) {
+                    speakWithLocalAndroidTts(spokenText, langCode, rate)
                 }
             }
         }
@@ -359,24 +393,28 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     private fun buildHumanVoiceDirectorPrompt(langCode: String, ttsInput: String): String {
         val styleDirection = when (langCode) {
-            "en" -> "Warm natural male English voice:"
-            "es" -> "Voz masculina cálida y natural:"
-            "de" -> "Warme, natürliche männliche Stimme:"
-            "ar" -> "بصوت رجالي دافئ وطبيعي:"
-            "it" -> "Voce maschile calda e naturale:"
-            "pt" -> "Voz masculina calorosa e natural:"
-            "ru" -> "Тёплым, естественным мужским голосом:"
-            "zh" -> "用温暖自然的男性声音朗读："
-            "mos" -> "Lis cette phonétique mooré d'une voix masculine calme et naturelle :"
-            "dyu" -> "Lis cette phonétique dioula d'une voix masculine calme et naturelle :"
-            "ha" -> "Lis cette phonétique haoussa d'une voix masculine calme et naturelle :"
-            else -> "Voix masculine calme, chaleureuse et naturelle :"
+            "en" -> "Clear natural male English voice:"
+            "es" -> "Voz masculina clara y natural:"
+            "de" -> "Klare, natürliche männliche Stimme:"
+            "ar" -> "بصوت رجالي واضح وطبيعي:"
+            "it" -> "Voce maschile chiara e naturale:"
+            "pt" -> "Voz masculina clara e natural:"
+            "ru" -> "Чётким, естественным мужским голосом:"
+            "zh" -> "用清晰自然的男性声音朗读："
+            "mos" -> "Lis cette phonétique mooré d'une voix masculine claire et naturelle :"
+            "dyu" -> "Lis cette phonétique dioula d'une voix masculine claire et naturelle :"
+            "ha" -> "Lis cette phonétique haoussa d'une voix masculine claire et naturelle :"
+            else -> "Voix masculine claire, fluide et naturelle :"
         }
         return "$styleDirection $ttsInput"
     }
 
     private fun computeNaturalSpeed(userRate: Float): Float {
-        return userRate.coerceIn(0.65f, 1.5f)
+        return if (kotlin.math.abs(userRate - 1.0f) < 0.02f) {
+            1.05f
+        } else {
+            userRate.coerceIn(0.65f, 1.6f)
+        }
     }
 
     private fun ensureNaturalSentenceEnding(text: String): String {
@@ -728,6 +766,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                     scope.launch(Dispatchers.IO) {
                         try {
                             FileOutputStream(cachedFile).use { it.write(wavBytes) }
+                            cachedAudioFileNames.add(cachedFile.name)
                         } catch (_: Exception) {}
                     }
 
@@ -1064,32 +1103,19 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     private fun selectBestVoiceForLocale(targetLocale: Locale) {
         try {
-            tts?.language = targetLocale
             val langKey = targetLocale.language.lowercase(Locale.ROOT)
-            val cached = cachedVoicesByLang[langKey]
-            if (cached != null) {
-                tts?.voice = cached
+            if (lastAppliedLangKey == langKey && cachedVoicesByLang.containsKey(langKey)) {
                 return
             }
-            val matchingOfflineVoices = tts?.voices?.filter { v ->
-                v.locale.language.equals(targetLocale.language, ignoreCase = true) &&
-                    !v.isNetworkConnectionRequired &&
-                    !v.features.contains("notInstalled")
-            }.orEmpty()
-            if (matchingOfflineVoices.isEmpty()) return
-
-            // Sélectionne exclusivement des voix locales hors-ligne pour éviter toute attente réseau de 30s du moteur Google TTS
-            val ranked = matchingOfflineVoices.sortedWith(
-                compareByDescending<android.speech.tts.Voice> { it.quality }
-                    .thenByDescending { v ->
-                        val n = v.name.lowercase(Locale.ROOT)
-                        if (n.contains("frd") || n.contains("male") || n.contains("iom") || n.contains("thomas") || n.contains("cfb") || n.contains("rjd") || n.contains("gba")) 1 else 0
-                    }
-            )
-            ranked.firstOrNull()?.let {
-                cachedVoicesByLang[langKey] = it
-                tts?.voice = it
+            val cached = cachedVoicesByLang[langKey]
+            if (cached != null) {
+                tts?.language = targetLocale
+                tts?.voice = cached
+                lastAppliedLangKey = langKey
+                return
             }
+            tts?.language = targetLocale
+            lastAppliedLangKey = langKey
         } catch (_: Exception) {}
     }
 
@@ -1128,7 +1154,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                 }
             }
             pendingInitWatchdog = watchdog
-            mainHandler.postDelayed(watchdog, 1_200L)
+            mainHandler.postDelayed(watchdog, 2_500L)
             return
         }
         try {
@@ -1155,7 +1181,6 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
             val params = android.os.Bundle().apply {
                 putFloat(TextToSpeech.Engine.KEY_PARAM_VOLUME, 1.0f)
-                putString(TextToSpeech.Engine.KEY_FEATURE_NETWORK_TIMEOUT_MS, "500")
                 putString(TextToSpeech.Engine.KEY_FEATURE_NETWORK_RETRIES_COUNT, "0")
             }
             val utteranceId = "sam_tts_${System.nanoTime()}"

@@ -66,6 +66,9 @@ class AiRepository(
         const val REASONING_GEMINI_MODEL = "gemini-4-argon"
         const val LITE_GEMINI_MODEL = "gemini-3.5-flash-lite"
         private const val AI_TIMEOUT_MS = 10_000L
+
+        @Volatile
+        private var preferredWorkingChatModel: String? = null
     }
 
     private fun resolveApiKey(overrideKey: String = ""): String {
@@ -545,7 +548,8 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         maxOutputTokens: Int,
         preferredModel: String = DEFAULT_GEMINI_MODEL
     ): GeminiRequestResult = withContext(Dispatchers.IO) {
-        val baseModels = listOf(
+        val baseModels = listOfNotNull(
+            preferredWorkingChatModel,
             LITE_GEMINI_MODEL,
             DEFAULT_GEMINI_MODEL
         ).distinct()
@@ -587,7 +591,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             googleSearchAttempted = true
             val searchModel = modelsToTry.first()
             try {
-                val response = withTimeout(minOf(18_000L, maxTotalBudgetMs)) {
+                val response = withTimeout(minOf(9_000L, maxTotalBudgetMs)) {
                     GoogleGeminiDirectClient.generateContent(
                         apiKey = resolvedKey,
                         model = searchModel,
@@ -600,6 +604,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                 }
                 val text = response.text.trim()
                 if (text.isNotBlank()) {
+                    preferredWorkingChatModel = searchModel
                     return@withContext GeminiRequestResult(
                         success = true,
                         text = text,
@@ -634,7 +639,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         for ((idx, targetModel) in modelsToTry.withIndex()) {
             val remainingMs = maxTotalBudgetMs - (System.currentTimeMillis() - requestStartMs)
             if (remainingMs < 2_500L) break
-            val attemptTimeoutMs = if (idx == 0) minOf(10_000L, remainingMs) else minOf(9_000L, remainingMs)
+            val attemptTimeoutMs = if (idx == 0) minOf(6_500L, remainingMs) else minOf(6_000L, remainingMs)
             try {
                 val response = withTimeout(attemptTimeoutMs) {
                     GoogleGeminiDirectClient.generateContent(
@@ -649,6 +654,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                 }
                 val text = response.text.trim()
                 if (text.isNotBlank()) {
+                    preferredWorkingChatModel = targetModel
                     return@withContext GeminiRequestResult(
                         success = true,
                         text = text,
@@ -700,7 +706,11 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         preferredModel: String = LITE_GEMINI_MODEL,
         onPartialText: suspend (String) -> Unit
     ): GeminiRequestResult = withContext(Dispatchers.IO) {
-        val baseModels = listOf(LITE_GEMINI_MODEL, DEFAULT_GEMINI_MODEL).distinct()
+        val baseModels = listOfNotNull(
+            preferredWorkingChatModel,
+            LITE_GEMINI_MODEL,
+            DEFAULT_GEMINI_MODEL
+        ).distinct()
         val cleanPreferred = preferredModel.trim()
         val allowedNewModels = setOf(DEFAULT_GEMINI_MODEL, REASONING_GEMINI_MODEL, LITE_GEMINI_MODEL)
         val modelsToTry = if (cleanPreferred in allowedNewModels) {
@@ -827,10 +837,11 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                     val streamResult = streamFromModel(
                         targetModel = searchModel,
                         useGoogleSearch = true,
-                        firstChunkTimeoutMs = minOf(15_000L, remainingMs),
-                        totalStreamTimeoutMs = minOf(30_000L, remainingMs)
+                        firstChunkTimeoutMs = minOf(7_500L, remainingMs),
+                        totalStreamTimeoutMs = minOf(25_000L, remainingMs)
                     )
                     if (streamResult.text.isNotBlank()) {
+                        preferredWorkingChatModel = searchModel
                         return@withContext GeminiRequestResult(
                             success = true,
                             text = streamResult.text,
@@ -877,10 +888,11 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                 val streamResult = streamFromModel(
                     targetModel = targetModel,
                     useGoogleSearch = false,
-                    firstChunkTimeoutMs = minOf(12_000L, remainingMs),
-                    totalStreamTimeoutMs = minOf(30_000L, remainingMs)
+                    firstChunkTimeoutMs = minOf(5_500L, remainingMs),
+                    totalStreamTimeoutMs = minOf(25_000L, remainingMs)
                 )
                 if (streamResult.text.isNotBlank()) {
+                    preferredWorkingChatModel = targetModel
                     return@withContext GeminiRequestResult(
                         success = true,
                         text = streamResult.text,
@@ -910,7 +922,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                 // Repli unary uniquement si le flux a échoué pour une raison non-timeout/non-réseau et qu'il reste du budget
                 val afterStreamRemainingMs = totalRequestBudgetMs - (System.currentTimeMillis() - streamStartMs)
                 if (!isStreamTimeoutOrNetwork && afterStreamRemainingMs >= 3_000L) {
-                    val unaryResponse = withTimeoutOrNull(minOf(10_000L, afterStreamRemainingMs)) {
+                    val unaryResponse = withTimeoutOrNull(minOf(6_500L, afterStreamRemainingMs)) {
                         GoogleGeminiDirectClient.generateContent(
                             apiKey = resolvedKey,
                             model = targetModel,
@@ -923,6 +935,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                     }
                     val unaryText = unaryResponse?.text.orEmpty().trim()
                     if (unaryText.isNotBlank()) {
+                        preferredWorkingChatModel = targetModel
                         onPartialText(unaryText)
                         return@withContext GeminiRequestResult(
                             success = true,

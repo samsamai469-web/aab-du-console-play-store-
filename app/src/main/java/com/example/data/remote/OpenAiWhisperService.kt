@@ -28,8 +28,11 @@ class OpenAiWhisperService(context: Context) {
         private const val TAG = "GoogleSpeechTranscribe"
         private const val PRIMARY_TRANSCRIBE_MODEL = "gemini-3.8-flash"
         private const val FALLBACK_TRANSCRIBE_MODEL = "gemini-3.5-flash-lite"
-        private const val FAST_TRANSCRIBE_TIMEOUT_MS = 4_500L
-        private const val AFRICAN_TRANSCRIBE_TIMEOUT_MS = 5_500L
+        private const val FAST_TRANSCRIBE_TIMEOUT_MS = 3_800L
+        private const val AFRICAN_TRANSCRIBE_TIMEOUT_MS = 4_800L
+
+        @Volatile
+        private var preferredWorkingTranscribeModel: String? = null
 
         fun isLikelyMooreUtterance(text: String): Boolean = false
 
@@ -125,10 +128,13 @@ class OpenAiWhisperService(context: Context) {
                     "S'il n'y a vraiment aucune parole humaine audible, renvoie uniquement une chaîne vide."
         }
 
-        val modelsToTry = listOf(
+        val baseModels = listOf(
             FALLBACK_TRANSCRIBE_MODEL to FAST_TRANSCRIBE_TIMEOUT_MS,
             PRIMARY_TRANSCRIBE_MODEL to AFRICAN_TRANSCRIBE_TIMEOUT_MS
         )
+        val modelsToTry = preferredWorkingTranscribeModel?.let { pref ->
+            baseModels.sortedByDescending { it.first == pref }
+        } ?: baseModels
 
         val requestContents = listOf(
             DirectContentInput(
@@ -186,6 +192,7 @@ class OpenAiWhisperService(context: Context) {
             }
 
             if (outcome.isSuccess) {
+                preferredWorkingTranscribeModel = modelId
                 return@withContext outcome
             } else {
                 val err = outcome.exceptionOrNull()

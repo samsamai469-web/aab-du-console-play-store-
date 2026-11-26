@@ -2527,7 +2527,8 @@ class SamAiViewModel(
         userQuestion: String,
         isMooreVoice: Boolean = false,
         isVoiceCall: Boolean = false,
-        onReply: ((String) -> Unit)? = null
+        onReply: ((String) -> Unit)? = null,
+        onError: ((String) -> Unit)? = null
     ) {
         val cleanQuestion = userQuestion.trim()
         if (cleanQuestion.isBlank() || (_isSamAiGeminiThinking.value && !isVoiceCall && !isMooreVoice)) return
@@ -2702,29 +2703,20 @@ class SamAiViewModel(
                 val isWebSearchNeeded = searchDecision.isSearchNeeded
                 var liveSources = emptyList<com.example.data.local.WebSource>()
                 val liveContextSummary = if (isWebSearchNeeded) {
+                    // Lecture instantanée du cache RSS (0 ms) sans bloquer le démarrage de Gemini.
+                    // Si le cache est vide, un rafraîchissement asynchrone est lancé en arrière-plan
+                    // pendant que Gemini utilise son outil Google Search natif en direct.
+                    val cached = com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(userText)
                     val recentModelHistory = currentHistory
                         .filter { it.role != "user" }
                         .takeLast(3)
                         .joinToString("\n") { it.content }
-                    val newsDeferred = kotlinx.coroutines.CompletableDeferred<com.example.data.remote.LiveNewsResult?>()
                     kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
-                        val fetched = try {
+                        try {
                             liveNewsFeedService.fetchLiveNews(userText, alreadyMentionedText = recentModelHistory)
-                        } catch (_: Throwable) {
-                            null
-                        }
-                        newsDeferred.complete(fetched)
+                        } catch (_: Throwable) {}
                     }
-                    // Attendre au maximum 1,4s pour ne jamais ralentir le démarrage de la réponse IA
-                    val liveResult = kotlinx.coroutines.withTimeoutOrNull(1_400L) {
-                        newsDeferred.await()
-                    }
-                    if (liveResult != null && liveResult.hasNews && liveResult.contextSummary.isNotBlank()) {
-                        liveSources = liveResult.sources
-                        liveResult.contextSummary
-                    } else {
-                        com.example.data.remote.LiveNewsFeedService.getInstantCachedSummary(userText)
-                    }
+                    cached
                 } else {
                     ""
                 }
@@ -2878,15 +2870,20 @@ class SamAiViewModel(
                     withContext(Dispatchers.Main) {
                         onReply(responseText)
                     }
+                } else if (isError && onError != null) {
+                    withContext(Dispatchers.Main) {
+                        onError(responseText)
+                    }
                 }
             } catch (ce: kotlinx.coroutines.CancellationException) {
                 throw ce
             } catch (t: Throwable) {
                 if (requestEpoch != chatSessionEpoch.get()) return@launch
                 Log.e("SamAiViewModel", "Unexpected error in askSamAiGemini: ${t.message}", t)
+                val errText = "⚠️ Service SAM AI : Une erreur temporaire est survenue. Veuillez réessayer."
                 val botMsg = SamAiChatMessage(
                     sender = "sam_ai",
-                    text = "⚠️ Service SAM AI : Une erreur temporaire est survenue. Veuillez réessayer.",
+                    text = errText,
                     timestamp = System.currentTimeMillis(),
                     isError = true,
                     sources = emptyList(),
@@ -2894,6 +2891,11 @@ class SamAiViewModel(
                     language = null
                 )
                 _samAiChatMessages.value = _samAiChatMessages.value + botMsg
+                if (onError != null) {
+                    withContext(Dispatchers.Main) {
+                        onError(errText)
+                    }
+                }
             } finally {
                 if (requestEpoch == chatSessionEpoch.get()) {
                     _isSamAiGeminiThinking.value = false

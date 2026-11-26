@@ -236,7 +236,7 @@ class GeminiLiveClient(
                         systemInstruction = systemPrompt,
                         voiceName = "Charon",
                         enableGoogleSearch = false,
-                        setupTimeoutMs = 6_000L
+                        setupTimeoutMs = 4_000L
                     )
                     LiveTranslateLogger.logWebSocket("LiveSession connectée ($modelId)")
                     break

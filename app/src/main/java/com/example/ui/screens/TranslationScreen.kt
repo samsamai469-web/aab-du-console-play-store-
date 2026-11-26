@@ -109,6 +109,7 @@ fun TranslationScreen(
         ) {
             val signature = "$translatedText|$activeEffectiveTgt"
             if (signature != lastAutoSpokenSignature) {
+                kotlinx.coroutines.delay(100L)
                 lastAutoSpokenSignature = signature
                 ttsManager.speak(translatedText, activeEffectiveTgt)
             }

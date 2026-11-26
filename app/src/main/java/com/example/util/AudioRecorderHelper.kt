@@ -168,11 +168,25 @@ class AudioRecorderHelper(private val context: Context) {
         return null
     }
 
-    private fun attachHardwareAudioEffects(@Suppress("UNUSED_PARAMETER") audioSessionId: Int) {
-        // Ne pas activer AutomaticGainControl : sous Android, l'AGC amplifie fortement le bruit de fond
-        // dès que l'utilisateur s'arrête de parler, ce qui empêche la détection de fin de phrase et
-        // sature les consonnes du Mooré et du Dioula. On préfère une capture PCM linéaire propre
-        // suivie d'une normalisation intelligente après enregistrement.
+    private fun attachHardwareAudioEffects(audioSessionId: Int) {
+        try {
+            if (NoiseSuppressor.isAvailable()) {
+                noiseSuppressor = NoiseSuppressor.create(audioSessionId)?.apply {
+                    enabled = true
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "NoiseSuppressor indisponible: ${e.message}")
+        }
+        try {
+            if (AcousticEchoCanceler.isAvailable()) {
+                echoCanceler = AcousticEchoCanceler.create(audioSessionId)?.apply {
+                    enabled = true
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "AcousticEchoCanceler indisponible: ${e.message}")
+        }
     }
 
     private fun writeAudioDataToWav(record: AudioRecord, outputFile: File, @Suppress("UNUSED_PARAMETER") bufferSize: Int) {

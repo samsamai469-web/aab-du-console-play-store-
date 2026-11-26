@@ -138,6 +138,8 @@ fun SamAiGeminiAssistantModal(
     val fallbackSoundLevel by speechManager.soundLevel.collectAsState()
     val ttsSoundLevel by ttsManager.ttsSoundLevel.collectAsState()
 
+    var fallbackConsecutiveErrors by remember { mutableIntStateOf(0) }
+
     fun listenFallbackTurn() {
         if (!isVoiceCallActive || isLiveMicMuted || !isUsingFallbackRest || ttsManager.isSpeaking() || TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) return
         if (liveCallState == VoiceCallState.SAM_SPEAKING || liveCallState == VoiceCallState.THINKING) return
@@ -148,8 +150,9 @@ fun SamAiGeminiAssistantModal(
             onResult = { recognizedText ->
                 val clean = recognizedText.trim()
                 if (clean.isNotBlank() && isVoiceCallActive && !isLiveMicMuted) {
+                    fallbackConsecutiveErrors = 0
                     speechManager.reset()
-                    liveUserDraft = ""
+                    liveUserDraft = clean
                     liveAiDraft = ""
                     liveCallState = VoiceCallState.THINKING
 
@@ -158,6 +161,7 @@ fun SamAiGeminiAssistantModal(
                         isMooreVoice = false,
                         isVoiceCall = true,
                         onReply = { botReply ->
+                            liveUserDraft = ""
                             if (isVoiceCallActive) {
                                 speechManager.reset()
                                 liveCallState = VoiceCallState.SAM_SPEAKING
@@ -175,7 +179,7 @@ fun SamAiGeminiAssistantModal(
                                                 liveCallState = VoiceCallState.USER_SPEAKING
                                                 listenFallbackTurn()
                                             }
-                                        }, 520L)
+                                        }, 320L)
                                     },
                                     onError = {
                                         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
@@ -184,9 +188,21 @@ fun SamAiGeminiAssistantModal(
                                                 liveCallState = VoiceCallState.USER_SPEAKING
                                                 listenFallbackTurn()
                                             }
-                                        }, 520L)
+                                        }, 320L)
                                     }
                                 )
+                            }
+                        },
+                        onError = { errMsg ->
+                            liveUserDraft = ""
+                            if (isVoiceCallActive) {
+                                Toast.makeText(context, errMsg, Toast.LENGTH_SHORT).show()
+                                liveCallState = VoiceCallState.USER_SPEAKING
+                                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                    if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) {
+                                        listenFallbackTurn()
+                                    }
+                                }, 450L)
                             }
                         }
                     )
@@ -195,16 +211,28 @@ fun SamAiGeminiAssistantModal(
                         if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L) && liveCallState == VoiceCallState.USER_SPEAKING) {
                             listenFallbackTurn()
                         }
-                    }, 200L)
+                    }, 220L)
                 }
             },
-            onError = { _ ->
-                if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking()) {
+            onError = { err ->
+                if (!isVoiceCallActive || isLiveMicMuted) return@startListening
+                val isNormalSilenceOrCooldown = err.contains("Aucune parole", ignoreCase = true) ||
+                    err.contains("Haut-parleur actif", ignoreCase = true)
+                if (!isNormalSilenceOrCooldown) {
+                    fallbackConsecutiveErrors++
+                    if (fallbackConsecutiveErrors == 1 || fallbackConsecutiveErrors % 3 == 0) {
+                        Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    fallbackConsecutiveErrors = 0
+                }
+                val retryDelayMs = if (isNormalSilenceOrCooldown) 350L else minOf(1500L, 450L * fallbackConsecutiveErrors.coerceAtLeast(1))
+                if (!ttsManager.isSpeaking() && fallbackConsecutiveErrors < 6) {
                     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                         if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L) && liveCallState == VoiceCallState.USER_SPEAKING) {
                             listenFallbackTurn()
                         }
-                    }, 350L)
+                    }, retryDelayMs)
                 }
             }
         )
@@ -223,6 +251,7 @@ fun SamAiGeminiAssistantModal(
             onFallbackRequired = { _ ->
                 if (isVoiceCallActive && !isUsingFallbackRest) {
                     isUsingFallbackRest = true
+                    liveCallState = VoiceCallState.USER_SPEAKING
                     startFallbackListening.value()
                 }
             }

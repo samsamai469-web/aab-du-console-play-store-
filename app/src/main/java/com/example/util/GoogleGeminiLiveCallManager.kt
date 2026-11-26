@@ -9,6 +9,7 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.NoiseSuppressor
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -62,6 +63,9 @@ class GoogleGeminiLiveCallManager(
         private const val LIVE_MODEL_FALLBACK = "gemini-3.1-flash-live-preview"
         private const val LIVE_VOICE = "Charon"
 
+        @Volatile
+        private var preferredWorkingLiveModel: String? = null
+
         private const val SAM_AI_LIVE_INSTRUCTIONS = """
 Tu es SAM AI, un homme chaleureux, naturel, cultivé et ultra-précis. L'appel téléphonique avec l'utilisateur est DÉJÀ en cours et les salutations ont DÉJÀ été faites.
 Nous sommes en octobre 2026 et tu disposes de Google Search en temps réel ainsi que des actualités en direct ci-dessous.
@@ -103,6 +107,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
     private var echoCanceler: AcousticEchoCanceler? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
     private var recordingJob: Job? = null
     private var receiveJob: Job? = null
     private var playbackJob: Job? = null
@@ -124,7 +129,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     @Volatile
     private var playbackFinishTimeMs: Long = 0L
 
-    private val postPlaybackEchoGuardMs = 520L
+    private val postPlaybackEchoGuardMs = 260L
 
     private val _callState = MutableStateFlow(VoiceCallState.CONNECTING)
     val callState: StateFlow<VoiceCallState> = _callState.asStateFlow()
@@ -209,7 +214,11 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         }
 
         val systemInstructionText = buildLiveSystemInstruction(liveHeadlines)
-        val modelsToTry = listOf(LIVE_MODEL_PRIMARY, LIVE_MODEL_FALLBACK)
+        val modelsToTry = listOfNotNull(
+            preferredWorkingLiveModel,
+            LIVE_MODEL_PRIMARY,
+            LIVE_MODEL_FALLBACK
+        ).distinct()
         for (modelName in modelsToTry) {
             if (!isActiveCall.get()) return false
             try {
@@ -220,12 +229,13 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                     systemInstruction = systemInstructionText,
                     voiceName = LIVE_VOICE,
                     enableGoogleSearch = true,
-                    setupTimeoutMs = 6_500L
+                    setupTimeoutMs = 4_000L
                 )
                 if (!isActiveCall.get()) {
                     try { session.close() } catch (_: Throwable) {}
                     return false
                 }
+                preferredWorkingLiveModel = modelName
                 liveSession = session
                 sessionReadyAtMs = System.currentTimeMillis()
                 isSessionReady.set(true)
@@ -236,7 +246,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                 startMicrophoneStreaming(session)
                 return true
             } catch (tce: TimeoutCancellationException) {
-                Log.w(TAG, "Timeout connexion Live sur $modelName (6.5s)")
+                Log.w(TAG, "Timeout connexion Live sur $modelName (4s)")
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Throwable) {
@@ -391,9 +401,9 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             ).coerceAtLeast(2560)
 
             val recorder = listOf(
-                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.MIC,
                 MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                MediaRecorder.AudioSource.MIC
+                MediaRecorder.AudioSource.VOICE_RECOGNITION
             ).firstNotNullOfOrNull { src ->
                 try {
                     val rec = AudioRecord(
@@ -428,6 +438,15 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             } catch (e: Exception) {
                 Log.w(TAG, "AEC matériel non disponible: ${e.message}")
             }
+            try {
+                if (NoiseSuppressor.isAvailable()) {
+                    noiseSuppressor = NoiseSuppressor.create(recorder.audioSessionId)?.apply {
+                        enabled = true
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "NoiseSuppressor non disponible: ${e.message}")
+            }
 
             try {
                 recorder.startRecording()
@@ -441,13 +460,25 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             var initialFramesSkipped = 0
             var wasAiSpeakingOrGuarded = false
             var postAiFlushFramesRemaining = 0
-            var ambientFloor = 55.0
+            var ambientFloor = 45.0
             var voiceHoldFrames = 0
+            var consecutiveZeroOrErrFrames = 0
 
             while (isActive && isActiveCall.get()) {
                 val readBytes = recorder.read(frameBuffer, 0, frameBuffer.size)
+                if (readBytes <= 0) {
+                    consecutiveZeroOrErrFrames++
+                    if (consecutiveZeroOrErrFrames > 50) {
+                        Log.w(TAG, "AudioRecord lecture silencieuse/erreur ($readBytes), bascule fallback")
+                        notifyFallback("Flux microphone interrompu")
+                        break
+                    }
+                    delay(10L)
+                    continue
+                }
+                consecutiveZeroOrErrFrames = 0
                 if (readBytes > 0) {
-                    if (initialFramesSkipped < 12) {
+                    if (initialFramesSkipped < 3) {
                         initialFramesSkipped++
                         _soundLevel.value = 0f
                         continue
@@ -460,7 +491,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                     }
 
                     val now = System.currentTimeMillis()
-                    if (sessionReadyAtMs > 0L && now - sessionReadyAtMs < 150L) {
+                    if (sessionReadyAtMs > 0L && now - sessionReadyAtMs < 60L) {
                         _soundLevel.value = 0f
                         continue
                     }
@@ -475,7 +506,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                         continue
                     } else if (wasAiSpeakingOrGuarded) {
                         wasAiSpeakingOrGuarded = false
-                        postAiFlushFramesRemaining = 10
+                        postAiFlushFramesRemaining = 3
                         _soundLevel.value = 0f
                         voiceHoldFrames = 0
                         continue
@@ -627,7 +658,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                                 _soundLevel.value = aiNormalizedLevel
 
                                 offset += written
-                                playbackFinishTimeMs = maxOf(playbackFinishTimeMs, System.currentTimeMillis() + 320L)
+                                playbackFinishTimeMs = maxOf(playbackFinishTimeMs, System.currentTimeMillis() + 120L)
 
                                 val writeElapsed = System.currentTimeMillis() - writeStartMs
                                 if (writeElapsed < 16L) {
@@ -638,7 +669,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                             Log.w(TAG, "Erreur écriture AudioTrack: ${e.message}")
                         } finally {
                             if (pcmPlaybackQueue.isEmpty()) {
-                                playbackFinishTimeMs = maxOf(playbackFinishTimeMs, System.currentTimeMillis() + 260L)
+                                playbackFinishTimeMs = System.currentTimeMillis() + 120L
                                 isPlaybackWorkerWriting.set(false)
                             }
                         }
@@ -678,9 +709,13 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     }
 
     fun commitUserSpeechNow() {
-        val currentText = currentUserTranscriptBuilder.toString().trim()
-        if (!isResponseInProgress.get() && currentText.isNotBlank()) {
+        if (!isResponseInProgress.get() && isActiveCall.get()) {
             _callState.value = VoiceCallState.THINKING
+            scope.launch(Dispatchers.IO) {
+                try {
+                    liveSession?.sendAudioStreamEnd()
+                } catch (_: Throwable) {}
+            }
         }
     }
 
@@ -768,6 +803,10 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         try {
             echoCanceler?.release()
             echoCanceler = null
+        } catch (_: Exception) {}
+        try {
+            noiseSuppressor?.release()
+            noiseSuppressor = null
         } catch (_: Exception) {}
 
         try {
