@@ -55,9 +55,11 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
 
         run: |
           set -euo pipefail
@@ -87,11 +89,13 @@ jobs:
           check_secret KEY_ALIAS "${KEY_ALIAS:-}" yes || ERROR=1
           check_secret KEY_PASSWORD "${KEY_PASSWORD:-}" yes || ERROR=1
 
+          EFFECTIVE_GEMINI_KEY="${GEMINI_API_KEY:-${GOOGLE_API_KEY:-}}"
           check_secret OPENAI_API_KEY "${OPENAI_API_KEY:-}" no || ERROR=1
-          check_secret GEMINI_API_KEY "${GEMINI_API_KEY:-}" no || ERROR=1
+          check_secret GEMINI_API_KEY "${EFFECTIVE_GEMINI_KEY:-}" no || ERROR=1
           check_secret YOUTUBE_API_KEY "${YOUTUBE_API_KEY:-}" no || ERROR=1
           check_secret RESEND_API_KEY "${RESEND_API_KEY:-}" no || ERROR=1
           check_secret GOOGLE_CLIENT_SECRET "${GOOGLE_CLIENT_SECRET:-}" no || ERROR=1
+          check_secret HUGGINGFACE_API_KEY "${HUGGINGFACE_API_KEY:-}" no || ERROR=1
 
           if [ "$ERROR" -ne 0 ]; then
             echo "::error::Un ou plusieurs secrets obligatoires sont absents."
@@ -232,9 +236,11 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
           YOUTUBE_API_KEY: ${{ secrets.YOUTUBE_API_KEY }}
           RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          HUGGINGFACE_API_KEY: ${{ secrets.HUGGINGFACE_API_KEY }}
 
           KEYSTORE_PATH: ${{ github.workspace }}/app/release.jks
           STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -243,6 +249,28 @@ jobs:
 
         run: |
           set -euo pipefail
+
+          trap 'rm -f .env' EXIT
+          EFFECTIVE_GEMINI_KEY="${GEMINI_API_KEY:-${GOOGLE_API_KEY:-}}"
+          {
+            echo "BASE_URL=https://generativelanguage.googleapis.com/"
+            echo "GOOGLE_CLIENT_ID=438563104660-t8bmjvsmt4dpl4elj7has3vsg7obfken.apps.googleusercontent.com"
+            if [ -n "${EFFECTIVE_GEMINI_KEY:-}" ]; then
+              printf 'GEMINI_API_KEY=%s\n' "$EFFECTIVE_GEMINI_KEY"
+            fi
+            if [ -n "${YOUTUBE_API_KEY:-}" ]; then
+              printf 'YOUTUBE_API_KEY=%s\n' "$YOUTUBE_API_KEY"
+            fi
+            if [ -n "${RESEND_API_KEY:-}" ]; then
+              printf 'RESEND_API_KEY=%s\n' "$RESEND_API_KEY"
+            fi
+            if [ -n "${GOOGLE_CLIENT_SECRET:-}" ]; then
+              printf 'GOOGLE_CLIENT_SECRET=%s\n' "$GOOGLE_CLIENT_SECRET"
+            fi
+            if [ -n "${HUGGINGFACE_API_KEY:-}" ]; then
+              printf 'HUGGINGFACE_API_KEY=%s\n' "$HUGGINGFACE_API_KEY"
+            fi
+          } > .env
 
           echo "Generation APK Release..."
           gradle clean assembleRelease bundleRelease --no-daemon

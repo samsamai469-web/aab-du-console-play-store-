@@ -29,6 +29,19 @@ android {
 
         testInstrumentationRunner =
             "androidx.test.runner.AndroidJUnitRunner"
+
+        val envGeminiKey = (
+            providers.environmentVariable("GEMINI_API_KEY").orNull
+                ?: providers.environmentVariable("GOOGLE_API_KEY").orNull
+                ?: providers.gradleProperty("GEMINI_API_KEY").orNull
+                ?: ""
+            )
+            .trim()
+            .removeSurrounding("\"")
+            .removeSurrounding("'")
+            .replace("\\", "\\\\")
+            .replace("\"", "\\\"")
+        buildConfigField("String", "ENV_GEMINI_API_KEY", "\"$envGeminiKey\"")
     }
 
     // ==========================================
