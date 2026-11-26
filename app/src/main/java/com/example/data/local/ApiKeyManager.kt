@@ -51,6 +51,10 @@ class ApiKeyManager(context: Context) {
         if (!customKey.isNullOrBlank() && customKey != "MY_GEMINI_API_KEY") {
             return customKey
         }
+        val buildKey = readBuildConfigGeminiKey()
+        if (buildKey.isNotBlank()) {
+            return buildKey
+        }
         if (cachedServerGeminiKey.isNotBlank() && cachedServerGeminiKey != "MY_GEMINI_API_KEY") {
             return cachedServerGeminiKey
         }
@@ -63,14 +67,15 @@ class ApiKeyManager(context: Context) {
     }
 
     fun isGeminiConfigured(): Boolean {
-        return true
+        return getActiveGeminiApiKey().isNotBlank()
     }
 
     fun getGeminiKeySource(): ApiKeySource {
         val customKey = prefs.getString(KEY_CUSTOM_GEMINI_API_KEY, null)?.trim()
         return when {
             !customKey.isNullOrBlank() && customKey != "MY_GEMINI_API_KEY" -> ApiKeySource.USER_CUSTOM
-            else -> ApiKeySource.SYSTEM_ENV
+            readBuildConfigGeminiKey().isNotBlank() -> ApiKeySource.SYSTEM_ENV
+            else -> ApiKeySource.NONE
         }
     }
 
@@ -316,6 +321,34 @@ class ApiKeyManager(context: Context) {
                         try { Thread.sleep(250L) } catch (_: Throwable) {}
                     }
                 }
+            }
+            return ""
+        }
+
+        fun readBuildConfigGeminiKey(): String {
+            return try {
+                val raw = BuildConfig.GEMINI_API_KEY.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+                if (raw.isNotBlank() && raw != "MY_GEMINI_API_KEY") raw else ""
+            } catch (_: Throwable) {
+                ""
+            }
+        }
+
+        fun resolveGeminiApiKey(context: Context? = sharedAppContext): String {
+            val ctx = context ?: sharedAppContext
+            if (ctx != null) {
+                try {
+                    val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    val customKey = prefs.getString(KEY_CUSTOM_GEMINI_API_KEY, null)?.trim()
+                    if (!customKey.isNullOrBlank() && customKey != "MY_GEMINI_API_KEY") {
+                        return customKey
+                    }
+                } catch (_: Throwable) {}
+            }
+            val buildKey = readBuildConfigGeminiKey()
+            if (buildKey.isNotBlank()) return buildKey
+            if (cachedServerGeminiKey.isNotBlank() && cachedServerGeminiKey != "MY_GEMINI_API_KEY") {
+                return cachedServerGeminiKey
             }
             return ""
         }

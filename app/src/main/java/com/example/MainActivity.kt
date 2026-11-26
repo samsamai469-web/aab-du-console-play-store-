@@ -122,9 +122,6 @@ class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
 
-    // Initialisation obligatoire de Firebase App Check avant toute UI, ViewModel ou requête Firebase
-    com.example.util.configureAppCheck(this, intent)
-    
     // Initialisation immédiate du contexte Firebase Auth
     try {
       com.example.data.remote.FirebaseAuthService.initContext(this)
@@ -246,9 +243,6 @@ class MainActivity : ComponentActivity() {
   override fun onNewIntent(intent: Intent) {
     super.onNewIntent(intent)
     setIntent(intent)
-    if (BuildConfig.DEBUG && intent.hasExtra("FIREBASE_APPCHECK_DEBUG_TOKEN")) {
-      com.example.util.configureAppCheck(this, intent)
-    }
     try {
       handleIntent(intent)
     } catch (_: Throwable) {}

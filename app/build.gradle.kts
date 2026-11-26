@@ -215,13 +215,13 @@ dependencies {
     implementation(platform(libs.androidx.compose.bom))
     implementation(platform(libs.firebase.bom))
 
-    // Firebase
+    // Firebase (Auth, Firestore, Storage, Functions)
     implementation(libs.firebase.auth)
     implementation(libs.firebase.firestore)
-    implementation(libs.firebase.ai)
-    implementation(libs.firebase.appcheck)
-    implementation(libs.firebase.appcheck.recaptcha)
-    implementation(libs.firebase.appcheck.debug)
+    // implementation(libs.firebase.ai) // Remplacé par l'API directe Google Gemini (GEMINI_API_KEY)
+    // implementation(libs.firebase.appcheck)
+    // implementation(libs.firebase.appcheck.recaptcha)
+    // implementation(libs.firebase.appcheck.debug)
     implementation("com.google.firebase:firebase-storage")
     implementation("com.google.firebase:firebase-functions")
 

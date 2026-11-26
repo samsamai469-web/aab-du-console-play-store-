@@ -1,23 +1,17 @@
 package com.example
 
 import android.content.Context
-import android.content.Intent
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.local.ApiKeyManager
 import com.example.data.local.AppDatabase
 import com.example.data.remote.FirebaseAuthService
+import com.example.data.remote.GeminiApiHttpException
+import com.example.data.remote.MissingGeminiApiKeyException
 import com.example.data.repository.AiRepository
 import com.example.data.repository.ChatMessage
 import com.example.util.GeminiErrorHandler
 import com.example.util.SearchNeedLevel
 import com.example.util.WebSearchClassifier
-import com.example.util.configureAppCheck
-import com.google.firebase.FirebaseApp
-import com.google.firebase.ai.type.Content
-import com.google.firebase.ai.type.QuotaExceededException
-import com.google.firebase.ai.type.RequestTimeoutException
-import com.google.firebase.ai.type.ServerException
-import com.google.firebase.ai.type.ServiceDisabledException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -33,55 +27,6 @@ import java.net.UnknownHostException
 @Config(sdk = [34])
 class FirebaseAiErrorAndInitTest {
 
-    private fun newServerException(message: String): ServerException {
-        val ctor = ServerException::class.java.getDeclaredConstructor(String::class.java, Throwable::class.java)
-        ctor.isAccessible = true
-        return ctor.newInstance(message, null)
-    }
-
-    private fun newQuotaExceededException(message: String): QuotaExceededException {
-        val ctor = QuotaExceededException::class.java.getDeclaredConstructor(String::class.java, Throwable::class.java)
-        ctor.isAccessible = true
-        return ctor.newInstance(message, null)
-    }
-
-    private fun newServiceDisabledException(message: String): ServiceDisabledException {
-        val ctor = ServiceDisabledException::class.java.getDeclaredConstructor(String::class.java, Throwable::class.java)
-        ctor.isAccessible = true
-        return ctor.newInstance(message, null)
-    }
-
-    private fun newRequestTimeoutException(message: String, cause: Throwable?): RequestTimeoutException {
-        val ctor = RequestTimeoutException::class.java.getDeclaredConstructor(
-            String::class.java,
-            Throwable::class.java,
-            List::class.java
-        )
-        ctor.isAccessible = true
-        return ctor.newInstance(message, cause, emptyList<Content>())
-    }
-
-    @Test
-    fun configureAppCheck_persistsDebugTokenSynchronouslyBeforeProviderFactory() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val expectedToken = "test-debug-token-1234-5678"
-        val intent = Intent().apply {
-            putExtra("FIREBASE_APPCHECK_DEBUG_TOKEN", expectedToken)
-        }
-
-        configureAppCheck(context, intent)
-
-        val persistenceKey = FirebaseApp.getInstance().persistenceKey
-        val prefs = context.getSharedPreferences(
-            "com.google.firebase.appcheck.debug.store.$persistenceKey",
-            Context.MODE_PRIVATE
-        )
-        assertEquals(
-            expectedToken,
-            prefs.getString("com.google.firebase.appcheck.debug.DEBUG_SECRET", null)
-        )
-    }
-
     @Test
     fun explicitFirebaseOptions_matchComAnvilSamaiAppId() {
         val options = FirebaseAuthService.getExplicitFirebaseOptions()
@@ -90,47 +35,75 @@ class FirebaseAiErrorAndInitTest {
     }
 
     @Test
-    fun geminiErrorHandler_surfacesSpecificFirebaseAiErrorsClearly() {
-        val appCheckErr = GeminiErrorHandler.parse(
-            newServerException("403 FirebaseAppCheck token is invalid: App attestation failed")
+    fun apiKeyManager_savesAndResolvesCustomGeminiApiKey() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val manager = ApiKeyManager(context)
+        manager.clearGeminiApiKey()
+
+        manager.saveGeminiApiKey("AIzaTestKey1234567890")
+        assertEquals("AIzaTestKey1234567890", manager.getActiveGeminiApiKey())
+        assertTrue(manager.isGeminiConfigured())
+        assertEquals("AIzaTestKey1234567890", ApiKeyManager.resolveGeminiApiKey(context))
+
+        manager.clearGeminiApiKey()
+    }
+
+    @Test
+    fun geminiErrorHandler_surfacesDirectGoogleApiErrorsClearly() {
+        val missingKeyErr = GeminiErrorHandler.parse(MissingGeminiApiKeyException())
+        assertTrue(missingKeyErr.isAuthError)
+        assertTrue(missingKeyErr.userFriendlyMessage.contains("GEMINI_API_KEY"))
+
+        val invalidKeyErr = GeminiErrorHandler.parse(
+            GeminiApiHttpException(
+                httpCode = 403,
+                apiStatus = "PERMISSION_DENIED",
+                serverMessage = "API key not valid. Please pass a valid API key.",
+                rawBody = null
+            )
         )
-        assertTrue(appCheckErr.isAuthError)
-        assertTrue(appCheckErr.userFriendlyMessage.contains("App Check"))
+        assertTrue(invalidKeyErr.isAuthError)
+        assertEquals(403, invalidKeyErr.httpCode)
+        assertTrue(invalidKeyErr.userFriendlyMessage.contains("Clé API Google Gemini"))
 
         val quotaErr = GeminiErrorHandler.parse(
-            newQuotaExceededException("Quota exceeded for quota metric")
+            GeminiApiHttpException(
+                httpCode = 429,
+                apiStatus = "RESOURCE_EXHAUSTED",
+                serverMessage = "Quota exceeded for quota metric",
+                rawBody = null
+            )
         )
         assertTrue(quotaErr.isRateLimited)
+        assertEquals(429, quotaErr.httpCode)
         assertTrue(quotaErr.userFriendlyMessage.contains("Quota") || quotaErr.userFriendlyMessage.contains("429"))
 
-        val disabledErr = GeminiErrorHandler.parse(
-            newServiceDisabledException("Firebase AI Logic API has not been used in project sam-traduction")
-        )
-        assertTrue(disabledErr.userFriendlyMessage.contains("Firebase AI Logic"))
-
         val notFoundErr = GeminiErrorHandler.parse(
-            newServerException("404 models/gemini-test is not found for API version v1beta")
+            GeminiApiHttpException(
+                httpCode = 404,
+                apiStatus = "NOT_FOUND",
+                serverMessage = "models/gemini-test is not found for API version v1beta",
+                rawBody = null
+            )
         )
         assertEquals(404, notFoundErr.httpCode)
         assertTrue(notFoundErr.userFriendlyMessage.contains("n'est pas disponible"))
 
         val overloadErr = GeminiErrorHandler.parse(
-            newServerException("503 The model is overloaded. Please try again later.")
+            GeminiApiHttpException(
+                httpCode = 503,
+                apiStatus = "UNAVAILABLE",
+                serverMessage = "The model is overloaded. Please try again later.",
+                rawBody = null
+            )
         )
         assertTrue(overloadErr.isTemporaryOverload)
+        assertEquals(503, overloadErr.httpCode)
 
-        val timeoutErr = GeminiErrorHandler.parse(
-            newRequestTimeoutException("Request timed out", SocketTimeoutException("Read timed out"))
-        )
+        val timeoutErr = GeminiErrorHandler.parse(SocketTimeoutException("Read timed out"))
         assertTrue(timeoutErr.userFriendlyMessage.contains("temps"))
 
-        val genericServerErr = GeminiErrorHandler.parse(
-            newServerException("Unexpected server payload rejection")
-        )
-        assertTrue(genericServerErr.userFriendlyMessage.contains("Unexpected server payload rejection"))
-        assertFalse(genericServerErr.userFriendlyMessage.contains("erreur temporaire"))
-
-        val hostErr = GeminiErrorHandler.parse(UnknownHostException("firebasevertexai.googleapis.com"))
+        val hostErr = GeminiErrorHandler.parse(UnknownHostException("generativelanguage.googleapis.com"))
         assertTrue(
             hostErr.userFriendlyMessage.contains("inaccessible") ||
                 hostErr.userFriendlyMessage.contains("réseau")

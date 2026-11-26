@@ -8,20 +8,12 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.util.Log
-import com.google.firebase.Firebase
-import com.google.firebase.ai.ai
-import com.google.firebase.ai.type.AudioTranscriptionConfig
-import com.google.firebase.ai.type.GenerativeBackend
-import com.google.firebase.ai.type.InlineData
-import com.google.firebase.ai.type.InlineDataPart
-import com.google.firebase.ai.type.LiveServerContent
-import com.google.firebase.ai.type.LiveSession
-import com.google.firebase.ai.type.PublicPreviewAPI
-import com.google.firebase.ai.type.ResponseModality
-import com.google.firebase.ai.type.SpeechConfig
-import com.google.firebase.ai.type.Voice
-import com.google.firebase.ai.type.content
-import com.google.firebase.ai.type.liveGenerationConfig
+import com.example.data.local.ApiKeyManager
+import com.example.data.remote.DirectGeminiLiveSession
+import com.example.data.remote.DirectLiveServerEvent
+import com.example.data.remote.GeminiApiHttpException
+import com.example.data.remote.GoogleGeminiDirectClient
+import com.example.data.remote.MissingGeminiApiKeyException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -31,25 +23,22 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
-import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.log10
 import kotlin.math.sqrt
 
 /**
- * Client officiel et résilient Google Gemini Live pour Sam Traduction (Firebase AI Logic).
+ * Client officiel et résilient Google Gemini Live pour Sam Traduction (API directe Google).
  *
  * Architecture :
  * 1. Capture microphone PCM 16kHz Little-Endian, calcul RMS pour affichage de niveau sonore VAD.
  * 2. Modèles officiels Google Gemini Live :
- *    - Principal : gemini-3.1-flash-live-preview (modèle audio-to-audio en direct)
- *    - Repli automatique : gemini-2.5-flash-native-audio-preview-12-2025
- * 3. Connexion sécurisée via Firebase AI Logic + App Check (aucune clé API requise côté client).
+ *    - Principal : gemini-3.8-live (modèle audio-to-audio en direct)
+ *    - Repli automatique : gemini-3.1-flash-live-preview
+ * 3. Connexion WebSocket directe à generativelanguage.googleapis.com via GEMINI_API_KEY (Secrets).
  * 4. Bascule transparente et temps réel sur le moteur vocal adaptatif (SpeechRecognitionManager + Gemini Audio)
  *    pour une compatibilité 100% sans interruption (Français, Anglais, Mooré, Dioula, Haoussa).
  */
-@OptIn(PublicPreviewAPI::class)
 class GeminiLiveClient(
     private val context: Context,
     private val coroutineScope: CoroutineScope
@@ -58,11 +47,11 @@ class GeminiLiveClient(
     enum class LiveMode(val displayName: String, val modelId: String) {
         CONTROLLED_TRANSLATION(
             displayName = "Mode 1 — Traduction contrôlée",
-            modelId = "gemini-3.1-flash-live-preview"
+            modelId = "gemini-3.8-live"
         ),
         INSTANT_INTERPRETER(
             displayName = "Mode 2 — Interprète instantané",
-            modelId = "gemini-3.1-flash-live-preview"
+            modelId = "gemini-3.8-live"
         )
     }
 
@@ -82,9 +71,7 @@ class GeminiLiveClient(
         }
     }
 
-    private val firebaseAi by lazy {
-        Firebase.ai(backend = GenerativeBackend.googleAI())
-    }
+    private val apiKeyManager by lazy { ApiKeyManager(context.applicationContext) }
 
     private val _liveMode = MutableStateFlow(LiveMode.CONTROLLED_TRANSLATION)
     val liveMode = _liveMode.asStateFlow()
@@ -113,7 +100,7 @@ class GeminiLiveClient(
     private var receiveJob: Job? = null
     private var fallbackPartialJob: Job? = null
     private var fallbackSoundJob: Job? = null
-    private var liveSession: LiveSession? = null
+    private var liveSession: DirectGeminiLiveSession? = null
     private val isRecording = AtomicBoolean(false)
     private val isSetupComplete = AtomicBoolean(false)
     private val isSessionActive = AtomicBoolean(false)
@@ -136,8 +123,8 @@ class GeminiLiveClient(
         private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
         private const val BUFFER_CHUNK_SIZE = 1600
-        private const val LIVE_MODEL_SECONDARY = "gemini-3.1-flash-live-preview"
-        private const val LIVE_MODEL_FALLBACK = "gemini-2.5-flash-native-audio-preview-12-2025"
+        private const val LIVE_MODEL_SECONDARY = "gemini-3.8-live"
+        private const val LIVE_MODEL_FALLBACK = "gemini-3.1-flash-live-preview"
     }
 
     init {
@@ -209,17 +196,27 @@ class GeminiLiveClient(
             return
         }
 
-        connectFirebaseLiveSession()
+        connectDirectLiveSession()
     }
 
-    private fun connectFirebaseLiveSession() {
+    private fun connectDirectLiveSession() {
         _sessionState.value = LiveSessionState.Ready
         _statusMessage.value = "Connexion à Google Gemini Live (${_liveMode.value.displayName})..."
-        LiveTranslateLogger.logWebSocket("Connexion Firebase AI LiveSession")
+        LiveTranslateLogger.logWebSocket("Connexion Google Gemini Live WebSocket")
         isSetupComplete.set(false)
 
         connectJob?.cancel()
         connectJob = coroutineScope.launch(Dispatchers.IO) {
+            val apiKeyToUse = activeApiKey.ifBlank { apiKeyManager.getActiveGeminiLiveApiKey() }
+            if (apiKeyToUse.isBlank()) {
+                LiveTranslateLogger.logError("Clé API Google Gemini manquante : bascule mode adaptatif")
+                coroutineScope.launch(Dispatchers.Main) {
+                    _statusMessage.value = "Mode vocal adaptatif actif"
+                    startNativeFallback(activeSourceLang, activeTargetLang)
+                }
+                return@launch
+            }
+
             val systemPrompt = """
                 Tu es l'interprète vocal instantané Google Gemini Live.
                 Ta mission : Traduire instantanément et fidèlement la parole de $activeSourceLang vers $activeTargetLang.
@@ -228,26 +225,19 @@ class GeminiLiveClient(
                 - Produis uniquement la traduction directe en $activeTargetLang, sans commentaires ni salutations superflues.
             """.trimIndent()
 
-            val config = liveGenerationConfig {
-                responseModality = ResponseModality.AUDIO
-                speechConfig = SpeechConfig(voice = Voice("Charon"))
-                inputAudioTranscription = AudioTranscriptionConfig()
-                outputAudioTranscription = AudioTranscriptionConfig()
-            }
-
             val modelsToTry = listOf(_liveMode.value.modelId, LIVE_MODEL_SECONDARY, LIVE_MODEL_FALLBACK).distinct()
-            var connectedSession: LiveSession? = null
+            var connectedSession: DirectGeminiLiveSession? = null
             for (modelId in modelsToTry) {
                 if (!isSessionActive.get()) return@launch
                 try {
-                    val liveModel = firebaseAi.liveModel(
-                        modelName = modelId,
-                        generationConfig = config,
-                        systemInstruction = content { text(systemPrompt) }
+                    connectedSession = GoogleGeminiDirectClient.connectLiveSession(
+                        apiKey = apiKeyToUse,
+                        model = modelId,
+                        systemInstruction = systemPrompt,
+                        voiceName = "Charon",
+                        enableGoogleSearch = false,
+                        setupTimeoutMs = 6_000L
                     )
-                    connectedSession = withTimeout(5_500L) {
-                        liveModel.connect()
-                    }
                     LiveTranslateLogger.logWebSocket("LiveSession connectée ($modelId)")
                     break
                 } catch (tce: TimeoutCancellationException) {
@@ -256,6 +246,11 @@ class GeminiLiveClient(
                     throw ce
                 } catch (e: Throwable) {
                     LiveTranslateLogger.logError("LiveSession ($modelId) indisponible : ${e.message}")
+                    if (e is MissingGeminiApiKeyException ||
+                        (e is GeminiApiHttpException && (e.httpCode == 401 || e.httpCode == 403))
+                    ) {
+                        break
+                    }
                 }
             }
 
@@ -282,9 +277,10 @@ class GeminiLiveClient(
                 try {
                     connectedSession.receive().collect { serverMessage ->
                         if (!isSessionActive.get()) return@collect
-                        if (serverMessage is LiveServerContent) {
-                            handleLiveServerMessage(serverMessage)
+                        if (serverMessage.error != null) {
+                            throw serverMessage.error
                         }
+                        handleLiveServerMessage(serverMessage)
                     }
                 } catch (ce: CancellationException) {
                     throw ce
@@ -301,8 +297,8 @@ class GeminiLiveClient(
         }
     }
 
-    private fun handleLiveServerMessage(contentMsg: LiveServerContent) {
-        val inputChunk = contentMsg.inputTranscription?.text.orEmpty()
+    private fun handleLiveServerMessage(contentMsg: DirectLiveServerEvent) {
+        val inputChunk = contentMsg.inputTranscription
         if (inputChunk.isNotBlank()) {
             coroutineScope.launch(Dispatchers.Main) {
                 _sessionState.value = LiveSessionState.Transcribing
@@ -311,7 +307,7 @@ class GeminiLiveClient(
             }
         }
 
-        val outputChunk = contentMsg.outputTranscription?.text.orEmpty()
+        val outputChunk = contentMsg.outputTranscription
         if (outputChunk.isNotBlank()) {
             coroutineScope.launch(Dispatchers.Main) {
                 _sessionState.value = LiveSessionState.Translating
@@ -321,21 +317,17 @@ class GeminiLiveClient(
             }
         }
 
-        val parts = contentMsg.content?.parts.orEmpty()
-        for (part in parts) {
-            if (part is InlineDataPart) {
-                val pcmBytes = part.inlineData
-                if (pcmBytes.isNotEmpty()) {
-                    try {
-                        if (audioTrack == null) initAudioTrack()
-                        audioTrack?.write(pcmBytes, 0, pcmBytes.size)
-                        coroutineScope.launch(Dispatchers.Main) {
-                            _sessionState.value = LiveSessionState.Speaking
-                            LiveTranslateLogger.logState("Lecture")
-                        }
-                    } catch (e: Exception) {
-                        LiveTranslateLogger.logError("Erreur lecture audio PCM : ${e.message}")
+        for (pcmBytes in contentMsg.audioChunks) {
+            if (pcmBytes.isNotEmpty()) {
+                try {
+                    if (audioTrack == null) initAudioTrack()
+                    audioTrack?.write(pcmBytes, 0, pcmBytes.size)
+                    coroutineScope.launch(Dispatchers.Main) {
+                        _sessionState.value = LiveSessionState.Speaking
+                        LiveTranslateLogger.logState("Lecture")
                     }
+                } catch (e: Exception) {
+                    LiveTranslateLogger.logError("Erreur lecture audio PCM : ${e.message}")
                 }
             }
         }
@@ -354,7 +346,7 @@ class GeminiLiveClient(
     }
 
     @SuppressLint("MissingPermission")
-    private fun startAudioRecording(session: LiveSession) {
+    private fun startAudioRecording(session: DirectGeminiLiveSession) {
         if (!isSessionActive.get()) return
 
         try {
@@ -401,10 +393,8 @@ class GeminiLiveClient(
                         if (isSetupComplete.get()) {
                             try {
                                 session.sendAudioRealtime(
-                                    InlineData(
-                                        data = byteBuffer.copyOf(readShorts * 2),
-                                        mimeType = "audio/pcm;rate=$SAMPLE_RATE"
-                                    )
+                                    pcmBytes = byteBuffer.copyOf(readShorts * 2),
+                                    mimeType = "audio/pcm;rate=$SAMPLE_RATE"
                                 )
                             } catch (ce: CancellationException) {
                                 throw ce

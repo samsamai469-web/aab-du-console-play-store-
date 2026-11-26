@@ -12,23 +12,14 @@ import android.media.audiofx.AcousticEchoCanceler
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import com.example.data.local.ApiKeyManager
+import com.example.data.remote.DirectGeminiLiveSession
+import com.example.data.remote.DirectLiveServerEvent
+import com.example.data.remote.GeminiApiHttpException
+import com.example.data.remote.GoogleGeminiDirectClient
 import com.example.data.remote.LiveNewsFeedService
+import com.example.data.remote.MissingGeminiApiKeyException
 import com.example.ui.components.VoiceCallState
-import com.google.firebase.Firebase
-import com.google.firebase.ai.ai
-import com.google.firebase.ai.type.AudioTranscriptionConfig
-import com.google.firebase.ai.type.GenerativeBackend
-import com.google.firebase.ai.type.InlineData
-import com.google.firebase.ai.type.InlineDataPart
-import com.google.firebase.ai.type.LiveServerContent
-import com.google.firebase.ai.type.LiveSession
-import com.google.firebase.ai.type.PublicPreviewAPI
-import com.google.firebase.ai.type.ResponseModality
-import com.google.firebase.ai.type.SpeechConfig
-import com.google.firebase.ai.type.Tool
-import com.google.firebase.ai.type.Voice
-import com.google.firebase.ai.type.content
-import com.google.firebase.ai.type.liveGenerationConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,7 +33,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeout
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -51,15 +41,14 @@ import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.sqrt
 
 /**
- * Gestionnaire officiel d'appel vocal temps réel propulsé à 100 % par Google Gemini Live
- * via Firebase AI Logic (LiveSession bidirectionnel Audio-to-Audio + Google Search Grounding).
- * - Modèle principal : gemini-3.1-flash-live-preview (vocal bidirectionnel Google en direct)
- * - Repli automatique : gemini-2.5-flash-native-audio-preview-12-2025
+ * Gestionnaire officiel d'appel vocal temps réel propulsé à 100 % par l'API directe Google Gemini Live
+ * (WebSocket BidiGenerateContent Audio-to-Audio + Google Search Grounding).
+ * - Modèle principal : gemini-3.8-live (vocal bidirectionnel Google en direct)
+ * - Repli automatique : gemini-3.1-flash-live-preview
  * - Capture microphone PCM 16-bit 16 kHz mono -> session.sendAudioRealtime(...)
  * - Restitution AudioTrack PCM 16-bit 24 kHz mono + calcul RMS temps réel pour l'orbe Saturne
  * - Verrouillé en Français avec l'identité officielle de SAM AI.
  */
-@OptIn(PublicPreviewAPI::class)
 class GoogleGeminiLiveCallManager(
     private val context: Context,
     private val onTurnCompleted: (userText: String, aiText: String) -> Unit = { _, _ -> },
@@ -69,8 +58,8 @@ class GoogleGeminiLiveCallManager(
         private const val TAG = "GeminiLiveCall"
         private const val INPUT_SAMPLE_RATE = 16000
         private const val OUTPUT_SAMPLE_RATE = 24000
-        private const val LIVE_MODEL_PRIMARY = "gemini-3.1-flash-live-preview"
-        private const val LIVE_MODEL_FALLBACK = "gemini-2.5-flash-native-audio-preview-12-2025"
+        private const val LIVE_MODEL_PRIMARY = "gemini-3.8-live"
+        private const val LIVE_MODEL_FALLBACK = "gemini-3.1-flash-live-preview"
         private const val LIVE_VOICE = "Charon"
 
         private const val SAM_AI_LIVE_INSTRUCTIONS = """
@@ -106,14 +95,11 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         )
     }
 
-    private val firebaseAi by lazy {
-        Firebase.ai(backend = GenerativeBackend.googleAI())
-    }
-    private val liveNewsFeedService = LiveNewsFeedService()
+    private val apiKeyManager by lazy { ApiKeyManager(context.applicationContext) }
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var liveSession: LiveSession? = null
+    private var liveSession: DirectGeminiLiveSession? = null
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
     private var echoCanceler: AcousticEchoCanceler? = null
@@ -216,28 +202,26 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     }
 
     private suspend fun connectLiveSession(liveHeadlines: String): Boolean {
-        val sysContent = content { text(buildLiveSystemInstruction(liveHeadlines)) }
-        val liveConfig = liveGenerationConfig {
-            responseModality = ResponseModality.AUDIO
-            speechConfig = SpeechConfig(voice = Voice(LIVE_VOICE))
-            inputAudioTranscription = AudioTranscriptionConfig()
-            outputAudioTranscription = AudioTranscriptionConfig()
+        val apiKey = apiKeyManager.getActiveGeminiLiveApiKey()
+        if (apiKey.isBlank()) {
+            Log.w(TAG, "Clé API Google Gemini manquante pour l'appel Live")
+            return false
         }
 
+        val systemInstructionText = buildLiveSystemInstruction(liveHeadlines)
         val modelsToTry = listOf(LIVE_MODEL_PRIMARY, LIVE_MODEL_FALLBACK)
         for (modelName in modelsToTry) {
             if (!isActiveCall.get()) return false
             try {
-                Log.d(TAG, "Connexion Google Gemini Live avec $modelName...")
-                val liveModel = firebaseAi.liveModel(
-                    modelName = modelName,
-                    generationConfig = liveConfig,
-                    systemInstruction = sysContent,
-                    tools = listOf(Tool.googleSearch())
+                Log.d(TAG, "Connexion Google Gemini Live direct avec $modelName...")
+                val session = GoogleGeminiDirectClient.connectLiveSession(
+                    apiKey = apiKey,
+                    model = modelName,
+                    systemInstruction = systemInstructionText,
+                    voiceName = LIVE_VOICE,
+                    enableGoogleSearch = true,
+                    setupTimeoutMs = 6_500L
                 )
-                val session = withTimeout(5_500L) {
-                    liveModel.connect()
-                }
                 if (!isActiveCall.get()) {
                     try { session.close() } catch (_: Throwable) {}
                     return false
@@ -246,31 +230,37 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                 sessionReadyAtMs = System.currentTimeMillis()
                 isSessionReady.set(true)
                 _callState.value = VoiceCallState.USER_SPEAKING
-                Log.d(TAG, "Google Gemini Live connecté ($modelName)")
+                Log.d(TAG, "Google Gemini Live direct connecté ($modelName)")
 
                 startReceivingLoop(session)
                 startMicrophoneStreaming(session)
                 return true
             } catch (tce: TimeoutCancellationException) {
-                Log.w(TAG, "Timeout connexion Live sur $modelName (5.5s)")
+                Log.w(TAG, "Timeout connexion Live sur $modelName (6.5s)")
             } catch (ce: CancellationException) {
                 throw ce
             } catch (e: Throwable) {
                 Log.w(TAG, "Échec connexion Live sur $modelName : ${e.message}", e)
+                if (e is MissingGeminiApiKeyException ||
+                    (e is GeminiApiHttpException && (e.httpCode == 401 || e.httpCode == 403))
+                ) {
+                    return false
+                }
             }
         }
         return false
     }
 
-    private fun startReceivingLoop(session: LiveSession) {
+    private fun startReceivingLoop(session: DirectGeminiLiveSession) {
         receiveJob?.cancel()
         receiveJob = scope.launch(Dispatchers.IO) {
             try {
-                session.receive().collect { message ->
+                session.receive().collect { event ->
                     if (!isActiveCall.get()) return@collect
-                    if (message is LiveServerContent) {
-                        handleLiveServerContent(message)
+                    if (event.error != null) {
+                        throw event.error
                     }
+                    handleLiveServerContent(event)
                 }
             } catch (ce: CancellationException) {
                 throw ce
@@ -283,7 +273,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         }
     }
 
-    private fun handleLiveServerContent(msg: LiveServerContent) {
+    private fun handleLiveServerContent(msg: DirectLiveServerEvent) {
         if (msg.interrupted) {
             isPlaybackManuallyCancelled.set(true)
             acceptingAiAudio.set(false)
@@ -295,7 +285,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             return
         }
 
-        val inputChunk = msg.inputTranscription?.text.orEmpty()
+        val inputChunk = msg.inputTranscription
         if (inputChunk.isNotEmpty() && !isAiSpeakingOrEchoGuardActive()) {
             currentUserTranscriptBuilder.append(inputChunk)
             val candidateUser = currentUserTranscriptBuilder.toString().trim()
@@ -304,7 +294,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             }
         }
 
-        val outputChunk = msg.outputTranscription?.text.orEmpty()
+        val outputChunk = msg.outputTranscription
         if (outputChunk.isNotEmpty() && !isPlaybackManuallyCancelled.get()) {
             if (!isResponseInProgress.get()) {
                 currentAiTranscriptBuilder.clear()
@@ -315,16 +305,12 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             _aiTranscript.value = sanitizeSamAiPersona(currentAiTranscriptBuilder.toString())
         }
 
-        val parts = msg.content?.parts.orEmpty()
-        for (part in parts) {
-            if (part is InlineDataPart) {
-                val pcmBytes = part.inlineData
-                if (pcmBytes.isNotEmpty() && !isPlaybackManuallyCancelled.get()) {
-                    isResponseInProgress.set(true)
-                    acceptingAiAudio.set(true)
-                    _callState.value = VoiceCallState.SAM_SPEAKING
-                    enqueuePcmForPlayback(pcmBytes)
-                }
+        for (pcmBytes in msg.audioChunks) {
+            if (pcmBytes.isNotEmpty() && !isPlaybackManuallyCancelled.get()) {
+                isResponseInProgress.set(true)
+                acceptingAiAudio.set(true)
+                _callState.value = VoiceCallState.SAM_SPEAKING
+                enqueuePcmForPlayback(pcmBytes)
             }
         }
 
@@ -379,10 +365,10 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                 isActiveCall.get() &&
                 (
                     isResponseInProgress.get() ||
-                    isPlaybackWorkerWriting.get() ||
-                    pcmPlaybackQueue.isNotEmpty() ||
-                    (playbackFinishTimeMs > 0L && System.currentTimeMillis() < (playbackFinishTimeMs + postPlaybackEchoGuardMs))
-                )
+                        isPlaybackWorkerWriting.get() ||
+                        pcmPlaybackQueue.isNotEmpty() ||
+                        (playbackFinishTimeMs > 0L && System.currentTimeMillis() < (playbackFinishTimeMs + postPlaybackEchoGuardMs))
+                    )
             ) {
                 delay(25L)
             }
@@ -395,7 +381,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     }
 
     @SuppressLint("MissingPermission")
-    private fun startMicrophoneStreaming(session: LiveSession) {
+    private fun startMicrophoneStreaming(session: DirectGeminiLiveSession) {
         recordingJob?.cancel()
         recordingJob = scope.launch(Dispatchers.IO) {
             val minBuffer = AudioRecord.getMinBufferSize(
@@ -545,10 +531,8 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
 
                     try {
                         session.sendAudioRealtime(
-                            InlineData(
-                                data = processedBuffer,
-                                mimeType = "audio/pcm;rate=$INPUT_SAMPLE_RATE"
-                            )
+                            pcmBytes = processedBuffer,
+                            mimeType = "audio/pcm;rate=$INPUT_SAMPLE_RATE"
                         )
                     } catch (ce: CancellationException) {
                         throw ce

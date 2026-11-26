@@ -11,19 +11,20 @@ import com.example.data.local.ConversationEntity
 import com.example.data.local.LinguisticDao
 import com.example.data.local.MessageEntity
 import com.example.data.local.WebSource
+import com.example.data.remote.DirectContentInput
+import com.example.data.remote.DirectPartInput
+import com.example.data.remote.GeminiApiHttpException
+import com.example.data.remote.GoogleGeminiDirectClient
 import com.example.data.remote.GoogleTranslationService
+import com.example.data.remote.MissingGeminiApiKeyException
 import com.example.util.GeminiErrorHandler
-import com.google.firebase.Firebase
-import com.google.firebase.ai.ai
-import com.google.firebase.ai.type.GenerativeBackend
-import com.google.firebase.ai.type.Tool
-import com.google.firebase.ai.type.content
-import com.google.firebase.ai.type.generationConfig
+import com.example.util.ParsedGeminiError
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -31,6 +32,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 data class ChatMessage(
     val role: String,
@@ -61,11 +65,41 @@ class AiRepository(
         const val DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
         const val REASONING_GEMINI_MODEL = "gemini-4-argon"
         const val LITE_GEMINI_MODEL = "gemini-3.5-flash-lite"
-        private const val AI_TIMEOUT_MS = 8_000L
+        private const val AI_TIMEOUT_MS = 10_000L
     }
 
-    private val firebaseAi by lazy {
-        Firebase.ai(backend = GenerativeBackend.googleAI())
+    private fun resolveApiKey(overrideKey: String = ""): String {
+        val clean = overrideKey.trim().removeSurrounding("\"").removeSurrounding("'").trim()
+        if (clean.isNotBlank() && clean != "MY_GEMINI_API_KEY") {
+            return clean
+        }
+        return apiKeyManager.getActiveGeminiApiKey()
+    }
+
+    private fun bitmapToJpegBytes(bitmap: Bitmap): ByteArray {
+        val maxDim = 1600
+        val scaled = if (bitmap.width > maxDim || bitmap.height > maxDim) {
+            val ratio = minOf(maxDim.toFloat() / bitmap.width, maxDim.toFloat() / bitmap.height)
+            Bitmap.createScaledBitmap(
+                bitmap,
+                (bitmap.width * ratio).toInt().coerceAtLeast(1),
+                (bitmap.height * ratio).toInt().coerceAtLeast(1),
+                true
+            )
+        } else {
+            bitmap
+        }
+        return ByteArrayOutputStream().use { baos ->
+            scaled.compress(Bitmap.CompressFormat.JPEG, 86, baos)
+            baos.toByteArray()
+        }
+    }
+
+    private fun isFatalApiKeyError(parsed: ParsedGeminiError, raw: Throwable): Boolean {
+        return parsed.isAuthError ||
+            parsed.httpCode == 403 ||
+            parsed.httpCode == 401 ||
+            raw is MissingGeminiApiKeyException
     }
 
     fun getConversationsForUser(userId: String): Flow<List<ConversationEntity>> {
@@ -100,26 +134,34 @@ class AiRepository(
         )
 
         try {
+            val apiKey = resolveApiKey()
             val systemText =
                 "Tu es SAM AI, l'assistant intelligent d'élite, cultivé et polyvalent, conçu par Abdoul Mohamine Sawadogo. " +
-                "Réponds directement, intelligemment et sans bavardage superflu. " +
-                "Ne te présente JAMAIS (pas de 'Bonjour', 'Je suis SAM AI') dans une discussion déjà engagée. " +
-                "Si l'utilisateur demande de détailler ou pose une question complémentaire, approfondis directement et de manière riche et structurée."
+                    "Réponds directement, intelligemment et sans bavardage superflu. " +
+                    "Ne te présente JAMAIS (pas de 'Bonjour', 'Je suis SAM AI') dans une discussion déjà engagée. " +
+                    "Si l'utilisateur demande de détailler ou pose une question complémentaire, approfondis directement et de manière riche et structurée."
+
+            val directContents = listOf(
+                DirectContentInput(
+                    role = "user",
+                    parts = listOf(DirectPartInput(text = text))
+                )
+            )
 
             var fullResponse = ""
             var lastStreamError: Throwable? = null
             for (streamModel in listOf(LITE_GEMINI_MODEL, DEFAULT_GEMINI_MODEL).distinct()) {
                 try {
-                    val model = firebaseAi.generativeModel(
-                        modelName = streamModel,
-                        systemInstruction = content { text(systemText) }
-                    )
                     fullResponse = ""
                     withTimeout(45_000L) {
-                        model.generateContentStream(text).collect { chunk ->
-                            val chunkText = chunk.text.orEmpty()
-                            if (chunkText.isNotEmpty()) {
-                                fullResponse += chunkText
+                        GoogleGeminiDirectClient.streamGenerateContent(
+                            apiKey = apiKey,
+                            model = streamModel,
+                            contents = directContents,
+                            systemInstruction = systemText
+                        ) { chunk ->
+                            if (chunk.text.isNotEmpty()) {
+                                fullResponse += chunk.text
                                 emit(fullResponse)
                             }
                         }
@@ -134,6 +176,8 @@ class AiRepository(
                 } catch (e: Throwable) {
                     Log.w(TAG, "Stream with $streamModel failed: ${e.message}", e)
                     lastStreamError = e
+                    val parsed = GeminiErrorHandler.parse(e)
+                    if (isFatalApiKeyError(parsed, e)) break
                 }
             }
 
@@ -165,7 +209,7 @@ class AiRepository(
                 throw ce
             }
         } catch (e: Throwable) {
-            Log.e(TAG, "Firebase AI streaming failed", e)
+            Log.e(TAG, "Direct Google Gemini streaming failed", e)
             val errMsg = GeminiErrorHandler.parse(e).userFriendlyMessage
             chatDao.insertMessage(
                 MessageEntity(
@@ -237,7 +281,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             }
         }
 
-        // 0b. Pour les paires standard (Français, Anglais, Arabe, Espagnol, Allemand, etc.) : Google Translate officiel ultra-rapide (~250ms)
+        // 0b. Pour les paires standard : Google Translate officiel ultra-rapide (~250ms)
         if (!isMooreOrDioula && !isHausa) {
             try {
                 val googleFast = GoogleTranslationService.translate(cleanSrc, srcLang, tgtLang)
@@ -247,49 +291,59 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             } catch (_: Throwable) {}
         }
 
-        // 1. Moteur IA Google via Firebase AI Logic (gemini-3.5-flash-lite -> gemini-3.8-flash) avec course non-bloquante
-        val candidateModels = listOf(LITE_GEMINI_MODEL, DEFAULT_GEMINI_MODEL).distinct()
-        val translateStartMs = System.currentTimeMillis()
-        for (candidateModel in candidateModels) {
-            val elapsed = System.currentTimeMillis() - translateStartMs
-            val remaining = 8_500L - elapsed
-            if (remaining < 1_200L) break
-            val callTimeout = minOf(4_500L, remaining)
-            val resultDeferred = kotlinx.coroutines.CompletableDeferred<String?>()
-            val aiJob = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
-                try {
-                    val model = firebaseAi.generativeModel(
-                        modelName = candidateModel,
-                        systemInstruction = content { text(systemInstructionText) },
-                        generationConfig = generationConfig {
-                            temperature = 0.1f
+        // 1. Moteur IA Google Gemini direct (gemini-3.5-flash-lite -> gemini-3.8-flash)
+        val apiKey = resolveApiKey()
+        if (apiKey.isNotBlank()) {
+            val candidateModels = listOf(LITE_GEMINI_MODEL, DEFAULT_GEMINI_MODEL).distinct()
+            val prompt = "Texte à traduire du $srcLang vers le $tgtLang :\n$cleanSrc"
+            val contents = listOf(DirectContentInput(role = "user", parts = listOf(DirectPartInput(text = prompt))))
+            val translateStartMs = System.currentTimeMillis()
+            for (candidateModel in candidateModels) {
+                val elapsed = System.currentTimeMillis() - translateStartMs
+                val remaining = 8_500L - elapsed
+                if (remaining < 1_200L) break
+                val callTimeout = minOf(4_500L, remaining)
+                val resultDeferred = CompletableDeferred<String?>()
+                val isAuthAbort = AtomicBoolean(false)
+                val aiJob = CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                    try {
+                        val response = GoogleGeminiDirectClient.generateContent(
+                            apiKey = apiKey,
+                            model = candidateModel,
+                            contents = contents,
+                            systemInstruction = systemInstructionText,
+                            temperature = 0.1f,
                             maxOutputTokens = 600
+                        )
+                        val rawResult = response.text.trim()
+                        val cleanResult = extractCleanTranslation(rawResult, tgtLang)
+                        if (cleanResult.isNotBlank() &&
+                            !cleanResult.equals(cleanSrc, ignoreCase = true) &&
+                            !isExplanatoryOrMixed(cleanResult, tgtLang)
+                        ) {
+                            resultDeferred.complete(cleanResult)
+                        } else {
+                            resultDeferred.complete(null)
                         }
-                    )
-                    val prompt = "Texte à traduire du $srcLang vers le $tgtLang :\n$cleanSrc"
-                    val response = model.generateContent(prompt)
-                    val rawResult = response.text.orEmpty().trim()
-                    val cleanResult = extractCleanTranslation(rawResult, tgtLang)
-                    if (cleanResult.isNotBlank() &&
-                        !cleanResult.equals(cleanSrc, ignoreCase = true) &&
-                        !isExplanatoryOrMixed(cleanResult, tgtLang)
-                    ) {
-                        resultDeferred.complete(cleanResult)
-                    } else {
+                    } catch (e: Throwable) {
+                        Log.w(TAG, "Direct Google Gemini translation with $candidateModel failed: ${e.message}")
+                        if (e is MissingGeminiApiKeyException ||
+                            (e is GeminiApiHttpException && (e.httpCode == 401 || e.httpCode == 403))
+                        ) {
+                            isAuthAbort.set(true)
+                        }
                         resultDeferred.complete(null)
                     }
-                } catch (e: Throwable) {
-                    Log.w(TAG, "Firebase AI translation with $candidateModel failed: ${e.message}")
-                    resultDeferred.complete(null)
                 }
-            }
-            val fastAnswer = withTimeoutOrNull(callTimeout) {
-                resultDeferred.await()
-            }
-            if (!fastAnswer.isNullOrBlank()) {
-                return@withContext fastAnswer
-            } else {
-                aiJob.cancel()
+                val fastAnswer = withTimeoutOrNull(callTimeout) {
+                    resultDeferred.await()
+                }
+                if (!fastAnswer.isNullOrBlank()) {
+                    return@withContext fastAnswer
+                } else {
+                    aiJob.cancel()
+                    if (isAuthAbort.get()) break
+                }
             }
         }
 
@@ -358,15 +412,28 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         tgtLang: String
     ): String = withContext(Dispatchers.IO) {
         try {
-            val model = firebaseAi.generativeModel(modelName = DEFAULT_GEMINI_MODEL)
-            val inputContent = content {
-                image(bitmap)
-                text("Extrais tout le texte visible dans cette image et traduis-le fidèlement en $tgtLang. Si le texte est en Mooré ou Dioula, donne la traduction précise en Français.")
-            }
+            val apiKey = resolveApiKey()
+            val jpegBytes = bitmapToJpegBytes(bitmap)
+            val prompt =
+                "Extrais tout le texte visible dans cette image et traduis-le fidèlement en $tgtLang. " +
+                    "Si le texte est en Mooré ou Dioula, donne la traduction précise en Français."
+            val contents = listOf(
+                DirectContentInput(
+                    role = "user",
+                    parts = listOf(
+                        DirectPartInput(inlineDataBytes = jpegBytes, inlineMimeType = "image/jpeg"),
+                        DirectPartInput(text = prompt)
+                    )
+                )
+            )
             val response = withTimeout(AI_TIMEOUT_MS) {
-                model.generateContent(inputContent)
+                GoogleGeminiDirectClient.generateContent(
+                    apiKey = apiKey,
+                    model = DEFAULT_GEMINI_MODEL,
+                    contents = contents
+                )
             }
-            response.text?.trim() ?: "Aucun texte détecté."
+            response.text.trim().ifBlank { "Aucun texte détecté." }
         } catch (ce: CancellationException) {
             if (ce is TimeoutCancellationException) {
                 "Délai dépassé lors de l'analyse d'image. Veuillez réessayer."
@@ -375,7 +442,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             }
         } catch (e: Throwable) {
             Log.e(TAG, "Image translation failed", e)
-            "Erreur lors de l'analyse d'image : ${e.localizedMessage ?: "Veuillez réessayer"}"
+            GeminiErrorHandler.parse(e).userFriendlyMessage
         }
     }
 
@@ -394,15 +461,28 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                     translatedText = "Impossible de décoder l'image sélectionnée."
                 )
 
-            val model = firebaseAi.generativeModel(modelName = DEFAULT_GEMINI_MODEL)
-            val inputContent = content {
-                image(bitmap)
-                text("Extrais le texte visible et traduis-le de $sourceLang vers $targetLang. Réponds sous la forme: TEXTE EXTRAIT: [texte]\nTRADUCTION: [traduction]")
-            }
+            val resolvedKey = resolveApiKey(apiKey)
+            val jpegBytes = bitmapToJpegBytes(bitmap)
+            val prompt =
+                "Extrais le texte visible et traduis-le de $sourceLang vers $targetLang. " +
+                    "Réponds sous la forme: TEXTE EXTRAIT: [texte]\nTRADUCTION: [traduction]"
+            val contents = listOf(
+                DirectContentInput(
+                    role = "user",
+                    parts = listOf(
+                        DirectPartInput(inlineDataBytes = jpegBytes, inlineMimeType = "image/jpeg"),
+                        DirectPartInput(text = prompt)
+                    )
+                )
+            )
             val response = withTimeout(AI_TIMEOUT_MS) {
-                model.generateContent(inputContent)
+                GoogleGeminiDirectClient.generateContent(
+                    apiKey = resolvedKey,
+                    model = DEFAULT_GEMINI_MODEL,
+                    contents = contents
+                )
             }
-            val full = response.text.orEmpty()
+            val full = response.text
             val extracted = full.substringAfter("TEXTE EXTRAIT:").substringBefore("TRADUCTION:").trim()
             val translated = full.substringAfter("TRADUCTION:").trim()
             if (extracted.isNotBlank() && translated.isNotBlank()) {
@@ -423,7 +503,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             Log.e(TAG, "Base64 image translation failed", e)
             ImageTranslationResult(
                 extractedText = "",
-                translatedText = "Erreur OCR : ${e.localizedMessage ?: "Veuillez réessayer"}"
+                translatedText = GeminiErrorHandler.parse(e).userFriendlyMessage
             )
         }
     }
@@ -433,14 +513,17 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         systemPrompt: String = ""
     ): String = withContext(Dispatchers.IO) {
         try {
-            val model = firebaseAi.generativeModel(
-                modelName = DEFAULT_GEMINI_MODEL,
-                systemInstruction = if (systemPrompt.isNotBlank()) content { text(systemPrompt) } else null
-            )
+            val apiKey = resolveApiKey()
+            val contents = listOf(DirectContentInput(role = "user", parts = listOf(DirectPartInput(text = prompt))))
             val response = withTimeout(AI_TIMEOUT_MS) {
-                model.generateContent(prompt)
+                GoogleGeminiDirectClient.generateContent(
+                    apiKey = apiKey,
+                    model = DEFAULT_GEMINI_MODEL,
+                    contents = contents,
+                    systemInstruction = systemPrompt.takeIf { it.isNotBlank() }
+                )
             }
-            response.text?.trim().orEmpty()
+            response.text.trim()
         } catch (ce: CancellationException) {
             if (ce is TimeoutCancellationException) {
                 "Le serveur d'intelligence artificielle met trop de temps à répondre. Veuillez réessayer."
@@ -482,25 +565,20 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                 errorMessage = "Le message envoyé est vide."
             )
         }
-        val firebaseContents = nonBlankMessages.map { msg ->
+
+        val resolvedKey = resolveApiKey(apiKey)
+        val directContents = nonBlankMessages.map { msg ->
             val normalizedRole = if (msg.role.equals("user", ignoreCase = true)) "user" else "model"
-            content(role = normalizedRole) {
-                text(msg.content)
-            }
+            DirectContentInput(
+                role = normalizedRole,
+                parts = listOf(DirectPartInput(text = msg.content))
+            )
         }
-        val sysContent = if (systemInstruction.isNotBlank()) {
-            content { text(systemInstruction) }
-        } else {
-            null
-        }
-        val genConfig = generationConfig {
-            this.temperature = temperature.toFloat()
-            this.maxOutputTokens = maxOutputTokens
-        }
+        val sysText = systemInstruction.takeIf { it.isNotBlank() }
 
         var googleSearchAttempted = false
         var googleSearchFailed = false
-        var lastParsedError: com.example.util.ParsedGeminiError? = null
+        var lastParsedError: ParsedGeminiError? = null
         val requestStartMs = System.currentTimeMillis()
         val maxTotalBudgetMs = if (maxOutputTokens <= 500) 30_000L else 45_000L
 
@@ -509,22 +587,23 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             googleSearchAttempted = true
             val searchModel = modelsToTry.first()
             try {
-                val model = firebaseAi.generativeModel(
-                    modelName = searchModel,
-                    systemInstruction = sysContent,
-                    generationConfig = genConfig,
-                    tools = listOf(Tool.googleSearch())
-                )
                 val response = withTimeout(minOf(18_000L, maxTotalBudgetMs)) {
-                    model.generateContent(firebaseContents)
+                    GoogleGeminiDirectClient.generateContent(
+                        apiKey = resolvedKey,
+                        model = searchModel,
+                        contents = directContents,
+                        systemInstruction = sysText,
+                        enableGoogleSearch = true,
+                        temperature = temperature.toFloat(),
+                        maxOutputTokens = maxOutputTokens
+                    )
                 }
-                val text = response.text.orEmpty().trim()
-                val sources = extractGroundingSources(response)
+                val text = response.text.trim()
                 if (text.isNotBlank()) {
                     return@withContext GeminiRequestResult(
                         success = true,
                         text = text,
-                        sources = sources,
+                        sources = response.sources,
                         isSearchError = false
                     )
                 }
@@ -539,9 +618,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                 val parsed = GeminiErrorHandler.parse(e)
                 lastParsedError = parsed
                 Log.e(TAG, "Google Search on $searchModel failed: ${parsed.rawMessage ?: e.message}", e)
-                if (parsed.isAuthError || parsed.httpCode == 403 || parsed.httpCode == 401 ||
-                    e is com.google.firebase.ai.type.ServiceDisabledException
-                ) {
+                if (isFatalApiKeyError(parsed, e)) {
                     return@withContext GeminiRequestResult(
                         success = false,
                         text = "",
@@ -559,15 +636,18 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             if (remainingMs < 2_500L) break
             val attemptTimeoutMs = if (idx == 0) minOf(10_000L, remainingMs) else minOf(9_000L, remainingMs)
             try {
-                val model = firebaseAi.generativeModel(
-                    modelName = targetModel,
-                    systemInstruction = sysContent,
-                    generationConfig = genConfig
-                )
                 val response = withTimeout(attemptTimeoutMs) {
-                    model.generateContent(firebaseContents)
+                    GoogleGeminiDirectClient.generateContent(
+                        apiKey = resolvedKey,
+                        model = targetModel,
+                        contents = directContents,
+                        systemInstruction = sysText,
+                        enableGoogleSearch = false,
+                        temperature = temperature.toFloat(),
+                        maxOutputTokens = maxOutputTokens
+                    )
                 }
-                val text = response.text.orEmpty().trim()
+                val text = response.text.trim()
                 if (text.isNotBlank()) {
                     return@withContext GeminiRequestResult(
                         success = true,
@@ -579,17 +659,15 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             } catch (ce: CancellationException) {
                 if (ce is TimeoutCancellationException) {
                     lastParsedError = GeminiErrorHandler.parse(ce)
-                    Log.w(TAG, "Direct Firebase AI timeout on $targetModel")
+                    Log.w(TAG, "Direct Google Gemini timeout on $targetModel")
                 } else {
                     throw ce
                 }
             } catch (e: Throwable) {
                 val parsed = GeminiErrorHandler.parse(e)
                 lastParsedError = parsed
-                Log.e(TAG, "Direct Firebase AI on $targetModel failed: ${parsed.rawMessage ?: e.message}", e)
-                if (parsed.isAuthError || parsed.httpCode == 403 || parsed.httpCode == 401 ||
-                    e is com.google.firebase.ai.type.ServiceDisabledException
-                ) {
+                Log.e(TAG, "Direct Google Gemini on $targetModel failed: ${parsed.rawMessage ?: e.message}", e)
+                if (isFatalApiKeyError(parsed, e)) {
                     return@withContext GeminiRequestResult(
                         success = false,
                         text = "",
@@ -611,7 +689,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
     }
 
     /**
-     * Streaming temps réel via Firebase AI Logic avec repli non-streaming et remontée d'erreur explicite.
+     * Streaming temps réel via l'API directe Google Gemini (SSE) avec repli non-streaming et remontée d'erreur explicite.
      */
     suspend fun executeGeminiRequestStreaming(
         messages: List<ChatMessage>,
@@ -639,21 +717,16 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                 errorMessage = "Le message envoyé est vide."
             )
         }
-        val firebaseContents = nonBlankMessages.map { msg ->
+
+        val resolvedKey = resolveApiKey()
+        val directContents = nonBlankMessages.map { msg ->
             val normalizedRole = if (msg.role.equals("user", ignoreCase = true)) "user" else "model"
-            content(role = normalizedRole) {
-                text(msg.content)
-            }
+            DirectContentInput(
+                role = normalizedRole,
+                parts = listOf(DirectPartInput(text = msg.content))
+            )
         }
-        val sysContent = if (systemInstruction.isNotBlank()) {
-            content { text(systemInstruction) }
-        } else {
-            null
-        }
-        val genConfig = generationConfig {
-            this.temperature = temperature.toFloat()
-            this.maxOutputTokens = maxOutputTokens
-        }
+        val sysText = systemInstruction.takeIf { it.isNotBlank() }
 
         data class StreamAttemptResult(
             val text: String,
@@ -662,30 +735,37 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         )
 
         suspend fun streamFromModel(
-            model: com.google.firebase.ai.GenerativeModel,
+            targetModel: String,
+            useGoogleSearch: Boolean,
             firstChunkTimeoutMs: Long,
             totalStreamTimeoutMs: Long
         ): StreamAttemptResult {
             val acc = StringBuilder()
             val collectedSources = mutableListOf<WebSource>()
-            val firstTokenSignal = kotlinx.coroutines.CompletableDeferred<Boolean>()
-            val timedOutBeforeFirstToken = java.util.concurrent.atomic.AtomicBoolean(false)
-            val streamErrorRef = java.util.concurrent.atomic.AtomicReference<Throwable?>(null)
+            val firstTokenSignal = CompletableDeferred<Boolean>()
+            val timedOutBeforeFirstToken = AtomicBoolean(false)
+            val streamErrorRef = AtomicReference<Throwable?>(null)
 
-            val collectJob = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO).launch {
+            val collectJob = CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
                 try {
-                    model.generateContentStream(firebaseContents).collect { chunk ->
+                    GoogleGeminiDirectClient.streamGenerateContent(
+                        apiKey = resolvedKey,
+                        model = targetModel,
+                        contents = directContents,
+                        systemInstruction = sysText,
+                        enableGoogleSearch = useGoogleSearch,
+                        temperature = temperature.toFloat(),
+                        maxOutputTokens = maxOutputTokens
+                    ) { chunk ->
                         if (timedOutBeforeFirstToken.get()) {
                             throw CancellationException("FIRST_TOKEN_TIMEOUT")
                         }
-                        val chunkText = chunk.text.orEmpty()
-                        if (chunkText.isNotEmpty()) {
+                        if (chunk.text.isNotEmpty()) {
                             firstTokenSignal.complete(true)
-                            acc.append(chunkText)
+                            acc.append(chunk.text)
                             onPartialText(acc.toString())
                         }
-                        val chunkSources = extractGroundingSources(chunk)
-                        for (src in chunkSources) {
+                        for (src in chunk.sources) {
                             if (collectedSources.none { it.url == src.url }) {
                                 collectedSources.add(src)
                             }
@@ -732,16 +812,9 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             return StreamAttemptResult(acc.toString().trim(), collectedSources, streamErrorRef.get())
         }
 
-        fun isFatalProjectConfigError(parsed: com.example.util.ParsedGeminiError, raw: Throwable): Boolean {
-            return parsed.isAuthError ||
-                parsed.httpCode == 403 ||
-                parsed.httpCode == 401 ||
-                raw is com.google.firebase.ai.type.ServiceDisabledException
-        }
-
         var googleSearchAttempted = false
         var googleSearchFailed = false
-        var lastParsedError: com.example.util.ParsedGeminiError? = null
+        var lastParsedError: ParsedGeminiError? = null
         val streamStartMs = System.currentTimeMillis()
         val totalRequestBudgetMs = if (maxOutputTokens <= 500) 30_000L else 45_000L
 
@@ -751,14 +824,9 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             val remainingMs = totalRequestBudgetMs - (System.currentTimeMillis() - streamStartMs)
             if (remainingMs >= 3_000L) {
                 try {
-                    val model = firebaseAi.generativeModel(
-                        modelName = searchModel,
-                        systemInstruction = sysContent,
-                        generationConfig = genConfig,
-                        tools = listOf(Tool.googleSearch())
-                    )
                     val streamResult = streamFromModel(
-                        model = model,
+                        targetModel = searchModel,
+                        useGoogleSearch = true,
                         firstChunkTimeoutMs = minOf(15_000L, remainingMs),
                         totalStreamTimeoutMs = minOf(30_000L, remainingMs)
                     )
@@ -774,7 +842,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                         val parsed = GeminiErrorHandler.parse(streamResult.error)
                         lastParsedError = parsed
                         Log.e(TAG, "Streaming Google Search failed on $searchModel: ${parsed.rawMessage}", streamResult.error)
-                        if (isFatalProjectConfigError(parsed, streamResult.error)) {
+                        if (isFatalApiKeyError(parsed, streamResult.error)) {
                             return@withContext GeminiRequestResult(
                                 success = false,
                                 text = "",
@@ -789,7 +857,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                     val parsed = GeminiErrorHandler.parse(e)
                     lastParsedError = parsed
                     Log.e(TAG, "Streaming Google Search setup failed on $searchModel: ${parsed.rawMessage ?: e.message}", e)
-                    if (isFatalProjectConfigError(parsed, e)) {
+                    if (isFatalApiKeyError(parsed, e)) {
                         return@withContext GeminiRequestResult(
                             success = false,
                             text = "",
@@ -806,13 +874,9 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             val remainingMs = totalRequestBudgetMs - (System.currentTimeMillis() - streamStartMs)
             if (remainingMs < 2_500L) break
             try {
-                val model = firebaseAi.generativeModel(
-                    modelName = targetModel,
-                    systemInstruction = sysContent,
-                    generationConfig = genConfig
-                )
                 val streamResult = streamFromModel(
-                    model = model,
+                    targetModel = targetModel,
+                    useGoogleSearch = false,
                     firstChunkTimeoutMs = minOf(12_000L, remainingMs),
                     totalStreamTimeoutMs = minOf(30_000L, remainingMs)
                 )
@@ -827,14 +891,13 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                 val streamErr = streamResult.error
                 val isStreamTimeoutOrNetwork = streamErr is java.net.SocketTimeoutException ||
                     streamErr is TimeoutCancellationException ||
-                    streamErr is com.google.firebase.ai.type.RequestTimeoutException ||
                     streamErr is java.net.UnknownHostException ||
                     streamErr is java.net.ConnectException
                 if (streamErr != null) {
                     val parsed = GeminiErrorHandler.parse(streamErr)
                     lastParsedError = parsed
-                    Log.e(TAG, "Streaming Firebase AI failed on $targetModel: ${parsed.rawMessage}", streamErr)
-                    if (isFatalProjectConfigError(parsed, streamErr)) {
+                    Log.e(TAG, "Streaming Google Gemini failed on $targetModel: ${parsed.rawMessage}", streamErr)
+                    if (isFatalApiKeyError(parsed, streamErr)) {
                         return@withContext GeminiRequestResult(
                             success = false,
                             text = "",
@@ -848,7 +911,15 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                 val afterStreamRemainingMs = totalRequestBudgetMs - (System.currentTimeMillis() - streamStartMs)
                 if (!isStreamTimeoutOrNetwork && afterStreamRemainingMs >= 3_000L) {
                     val unaryResponse = withTimeoutOrNull(minOf(10_000L, afterStreamRemainingMs)) {
-                        model.generateContent(firebaseContents)
+                        GoogleGeminiDirectClient.generateContent(
+                            apiKey = resolvedKey,
+                            model = targetModel,
+                            contents = directContents,
+                            systemInstruction = sysText,
+                            enableGoogleSearch = false,
+                            temperature = temperature.toFloat(),
+                            maxOutputTokens = maxOutputTokens
+                        )
                     }
                     val unaryText = unaryResponse?.text.orEmpty().trim()
                     if (unaryText.isNotBlank()) {
@@ -856,7 +927,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                         return@withContext GeminiRequestResult(
                             success = true,
                             text = unaryText,
-                            sources = extractGroundingSources(unaryResponse!!),
+                            sources = unaryResponse?.sources.orEmpty(),
                             isSearchError = googleSearchAttempted && googleSearchFailed
                         )
                     }
@@ -866,8 +937,8 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             } catch (e: Throwable) {
                 val parsed = GeminiErrorHandler.parse(e)
                 lastParsedError = parsed
-                Log.e(TAG, "Firebase AI attempt failed on $targetModel: ${parsed.rawMessage ?: e.message}", e)
-                if (isFatalProjectConfigError(parsed, e)) {
+                Log.e(TAG, "Direct Google Gemini attempt failed on $targetModel: ${parsed.rawMessage ?: e.message}", e)
+                if (isFatalApiKeyError(parsed, e)) {
                     return@withContext GeminiRequestResult(
                         success = false,
                         text = "",
@@ -885,34 +956,5 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             errorMessage = lastParsedError?.userFriendlyMessage
                 ?: "Le service Sam AI n'a pas pu répondre. Veuillez vérifier votre connexion et réessayer."
         )
-    }
-
-    private fun extractGroundingSources(response: com.google.firebase.ai.type.GenerateContentResponse): List<WebSource> {
-        val sources = mutableListOf<WebSource>()
-        try {
-            val groundingChunks = response.candidates.firstOrNull()?.groundingMetadata?.groundingChunks.orEmpty()
-            groundingChunks.forEach { chunk ->
-                val web = chunk.web
-                val uri = web?.uri.orEmpty().trim()
-                val title = web?.title.orEmpty().trim()
-                val domain = web?.domain.orEmpty().trim().ifBlank {
-                    try {
-                        java.net.URI(uri).host?.removePrefix("www.").orEmpty()
-                    } catch (_: Throwable) { "" }
-                }
-                if (uri.isNotBlank() && sources.none { it.url == uri }) {
-                    sources.add(
-                        WebSource(
-                            title = title.ifBlank { domain.ifBlank { "Google Search" } },
-                            url = uri,
-                            domain = domain
-                        )
-                    )
-                }
-            }
-        } catch (e: Throwable) {
-            Log.w(TAG, "Grounding metadata extraction warning: ${e.message}")
-        }
-        return sources
     }
 }

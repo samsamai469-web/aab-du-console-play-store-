@@ -2,12 +2,8 @@ package com.example.data.remote
 
 import android.content.Context
 import android.util.Log
-import com.google.firebase.Firebase
-import com.google.firebase.ai.ai
-import com.google.firebase.ai.type.GenerativeBackend
-import com.google.firebase.ai.type.InlineDataPart
-import com.google.firebase.ai.type.content
-import com.google.firebase.ai.type.generationConfig
+import com.example.data.local.ApiKeyManager
+import com.example.util.GeminiErrorHandler
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -22,14 +18,11 @@ import java.util.Locale
 
 /**
  * Service de reconnaissance vocale et transcription audio haute précision propulsé
- * exclusivement par Google Gemini (Firebase AI Logic — gemini-3.8-flash / gemini-3.5-flash-lite).
- * (OpenAI Whisper est entièrement désactivé.)
+ * exclusivement par l'API directe Google Gemini (gemini-3.8-flash / gemini-3.5-flash-lite).
  */
-class OpenAiWhisperService(@Suppress("UNUSED_PARAMETER") context: Context) {
+class OpenAiWhisperService(context: Context) {
 
-    private val firebaseAi by lazy {
-        Firebase.ai(backend = GenerativeBackend.googleAI())
-    }
+    private val appContext: Context = context.applicationContext
 
     companion object {
         private const val TAG = "GoogleSpeechTranscribe"
@@ -113,6 +106,11 @@ class OpenAiWhisperService(@Suppress("UNUSED_PARAMETER") context: Context) {
             return@withContext Result.failure(IllegalArgumentException("Enregistrement audio trop court."))
         }
 
+        val apiKey = ApiKeyManager.resolveGeminiApiKey(appContext)
+        if (apiKey.isBlank()) {
+            return@withContext Result.failure(MissingGeminiApiKeyException())
+        }
+
         val systemGuideText = buildTranscriptionSystemInstruction(targetLangLabel, isMooreHint, isDioulaHint)
         val instruction = when {
             isMooreHint ->
@@ -132,25 +130,30 @@ class OpenAiWhisperService(@Suppress("UNUSED_PARAMETER") context: Context) {
             PRIMARY_TRANSCRIBE_MODEL to AFRICAN_TRANSCRIBE_TIMEOUT_MS
         )
 
+        val requestContents = listOf(
+            DirectContentInput(
+                role = "user",
+                parts = listOf(
+                    DirectPartInput(inlineDataBytes = audioBytes, inlineMimeType = mimeType),
+                    DirectPartInput(text = instruction)
+                )
+            )
+        )
+
         var lastError: Throwable? = null
         for ((modelId, timeoutMs) in modelsToTry) {
             val resultDeferred = CompletableDeferred<Result<String>>()
             val transcribeJob = CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
                 try {
-                    val model = firebaseAi.generativeModel(
-                        modelName = modelId,
-                        systemInstruction = content { text(systemGuideText) },
-                        generationConfig = generationConfig {
-                            temperature = 0.0f
-                            maxOutputTokens = 256
-                        }
+                    val response = GoogleGeminiDirectClient.generateContent(
+                        apiKey = apiKey,
+                        model = modelId,
+                        contents = requestContents,
+                        systemInstruction = systemGuideText,
+                        temperature = 0.0f,
+                        maxOutputTokens = 256
                     )
-                    val promptContent = content {
-                        part(InlineDataPart(audioBytes, mimeType))
-                        text(instruction)
-                    }
-                    val response = model.generateContent(promptContent)
-                    val rawText = response.text.orEmpty()
+                    val rawText = response.text
                         .trim()
                         .removeSurrounding("\"")
                         .removeSurrounding("«", "»")
@@ -191,21 +194,29 @@ class OpenAiWhisperService(@Suppress("UNUSED_PARAMETER") context: Context) {
                 }
                 lastError = err
                 Log.w(TAG, "Échec transcription audio sur $modelId: ${err?.message}", err)
+                if (err is MissingGeminiApiKeyException ||
+                    (err is GeminiApiHttpException && (err.httpCode == 401 || err.httpCode == 403))
+                ) {
+                    break
+                }
             }
         }
 
         val errMsg = when (lastError) {
+            null -> "Erreur temporaire de transcription audio."
             is TimeoutCancellationException,
             is java.util.concurrent.TimeoutException -> "Délai de transcription audio dépassé. Veuillez réessayer."
+            is MissingGeminiApiKeyException,
+            is GeminiApiHttpException -> GeminiErrorHandler.parse(lastError).userFriendlyMessage
             is java.net.UnknownHostException,
             is java.net.ConnectException,
             is java.net.NoRouteToHostException ->
-                if (com.example.data.local.ApiKeyManager.hasActiveInternetConnection()) {
+                if (ApiKeyManager.hasActiveInternetConnection()) {
                     "Service vocal Google temporairement inaccessible. Veuillez réessayer."
                 } else {
                     "Erreur de connexion : vérifiez votre réseau."
                 }
-            else -> "Erreur temporaire de transcription audio."
+            else -> GeminiErrorHandler.parse(lastError).userFriendlyMessage
         }
         Result.failure(Exception(errMsg, lastError))
     }

@@ -14,15 +14,11 @@ import android.os.Looper
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.util.Log
-import com.google.firebase.Firebase
-import com.google.firebase.ai.ai
-import com.google.firebase.ai.type.GenerativeBackend
-import com.google.firebase.ai.type.InlineDataPart
-import com.google.firebase.ai.type.PublicPreviewAPI
-import com.google.firebase.ai.type.ResponseModality
-import com.google.firebase.ai.type.SpeechConfig
-import com.google.firebase.ai.type.Voice
-import com.google.firebase.ai.type.generationConfig
+import com.example.data.local.ApiKeyManager
+import com.example.data.remote.DirectContentInput
+import com.example.data.remote.DirectPartInput
+import com.example.data.remote.DirectSpeechConfig
+import com.example.data.remote.GoogleGeminiDirectClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -73,13 +69,10 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     private var speechJob: Job? = null
     private val activeSpeechGeneration = AtomicLong(0L)
 
-    private val firebaseAi by lazy {
-        Firebase.ai(backend = GenerativeBackend.googleAI())
-    }
-
     companion object {
-        // Modèles Google Gemini TTS officiels supportés par Firebase AI Logic (voix masculine naturelle "Charon")
-        private const val PRIMARY_TTS_MODEL = "gemini-3.1-flash-tts-preview"
+        // Modèles Google Gemini TTS officiels via API directe Google (voix masculine naturelle "Charon")
+        private const val PRIMARY_TTS_MODEL = "gemini-3.8-flash-tts"
+        private const val FALLBACK_TTS_MODEL = "gemini-3.1-flash-tts-preview"
         private const val UNIFIED_GOOGLE_MALE_VOICE = "Charon"
         private const val CACHE_PREFIX = "sam_tts_google_v7_"
         private const val FIRST_CHUNK_TIMEOUT_MS = 700L
@@ -531,7 +524,6 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         } catch (_: Exception) {}
     }
 
-    @OptIn(PublicPreviewAPI::class)
     private suspend fun streamAndPlayNeuralVoice(
         spokenText: String,
         langCode: String,
@@ -541,19 +533,31 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         abortedByTimeout: AtomicBoolean,
         firstAudioSignal: CompletableDeferred<Boolean>
     ): Boolean = withContext(Dispatchers.IO) {
+        val apiKey = ApiKeyManager.resolveGeminiApiKey(appContext)
+        if (apiKey.isBlank()) {
+            firstAudioSignal.complete(false)
+            return@withContext false
+        }
+
         val ttsInput = ensureNaturalSentenceEnding(spokenText).take(2200)
         val prompt = buildHumanVoiceDirectorPrompt(langCode, ttsInput)
         val bcp47 = toBcp47LanguageCode(langCode)
-
-        val ttsConfig = generationConfig {
-            responseModalities = listOf(ResponseModality.AUDIO)
-            speechConfig = SpeechConfig(
-                voice = Voice(UNIFIED_GOOGLE_MALE_VOICE),
-                languageCode = bcp47
+        val speechConfig = DirectSpeechConfig(
+            voiceName = UNIFIED_GOOGLE_MALE_VOICE,
+            languageCode = bcp47
+        )
+        val requestContents = listOf(
+            DirectContentInput(
+                role = "user",
+                parts = listOf(DirectPartInput(text = prompt))
             )
-        }
+        )
 
-        val candidateModels = listOf(PRIMARY_TTS_MODEL)
+        val candidateModels = listOfNotNull(
+            preferredWorkingTtsModel,
+            PRIMARY_TTS_MODEL,
+            FALLBACK_TTS_MODEL
+        ).distinct()
 
         fun isRequestStillValid(): Boolean {
             return !abortedByTimeout.get() &&
@@ -578,30 +582,29 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             var lastChunkReceivedMs = System.currentTimeMillis()
 
             try {
-                val model = firebaseAi.generativeModel(
-                    modelName = modelName,
-                    generationConfig = ttsConfig
-                )
-
                 coroutineScope {
                     val streamJob = launch {
-                        model.generateContentStream(prompt).collect { chunk ->
+                        GoogleGeminiDirectClient.streamGenerateContent(
+                            apiKey = apiKey,
+                            model = modelName,
+                            contents = requestContents,
+                            responseModalities = listOf("AUDIO"),
+                            speechConfig = speechConfig
+                        ) { chunk ->
                             if (!isActive || !isRequestStillValid()) {
                                 throw CancellationException("TTS stopped or timed out")
                             }
-                            val parts = chunk.candidates.firstOrNull()?.content?.parts.orEmpty()
-                            for (part in parts) {
-                                if (part is InlineDataPart && part.inlineData.isNotEmpty()) {
+                            for ((partMime, rawBytes) in chunk.audioChunks) {
+                                if (rawBytes.isNotEmpty()) {
                                     lastChunkReceivedMs = System.currentTimeMillis()
                                     if (!receivedFirstAudio) {
                                         receivedFirstAudio = true
-                                        if (part.mimeType.isNotBlank()) {
-                                            detectedMimeType = part.mimeType
+                                        if (partMime.isNotBlank()) {
+                                            detectedMimeType = partMime
                                         }
                                         detectedSampleRate = parseSampleRateFromMimeType(detectedMimeType)
                                     }
 
-                                    val rawBytes = part.inlineData
                                     fullCacheStream.write(rawBytes)
 
                                     if (!startedStreamingTrack && compressedFallbackStream == null) {
@@ -940,7 +943,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             }
 
             // Course non-bloquante : si aucun octet audio n'arrive sous FIRST_CHUNK_TIMEOUT_MS (700 ms),
-            // on détache immédiatement le job sans attendre neuralJob.join() (qui pouvait bloquer 30-60s dans Firebase/AppCheck)
+            // on détache immédiatement le job sans attendre neuralJob.join()
             // et on bascule instantanément sur le moteur vocal local Android.
             neuralJob = scope.launch(Dispatchers.IO) {
                 try {
