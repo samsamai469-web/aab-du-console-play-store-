@@ -502,7 +502,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         var googleSearchFailed = false
         var lastParsedError: com.example.util.ParsedGeminiError? = null
         val requestStartMs = System.currentTimeMillis()
-        val maxTotalBudgetMs = if (maxOutputTokens <= 500) 18_000L else 28_000L
+        val maxTotalBudgetMs = if (maxOutputTokens <= 500) 30_000L else 45_000L
 
         // 1. Optional Google Search
         if (enableSearch) {
@@ -515,7 +515,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                     generationConfig = genConfig,
                     tools = listOf(Tool.googleSearch())
                 )
-                val response = withTimeout(minOf(12_000L, maxTotalBudgetMs)) {
+                val response = withTimeout(minOf(18_000L, maxTotalBudgetMs)) {
                     model.generateContent(firebaseContents)
                 }
                 val text = response.text.orEmpty().trim()
@@ -601,26 +601,6 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         }
 
         // 3. Surface real error transparently when all attempts fail
-        try {
-            val restFallbackText = callRestApiFallback(
-                targetModel = modelsToTry.first(),
-                messages = messages,
-                systemInstruction = systemInstruction,
-                temperature = temperature,
-                maxOutputTokens = maxOutputTokens
-            )
-            if (restFallbackText.isNotBlank()) {
-                return@withContext GeminiRequestResult(
-                    success = true,
-                    text = restFallbackText,
-                    sources = emptyList(),
-                    isSearchError = false
-                )
-            }
-        } catch (restErr: Throwable) {
-            Log.e(TAG, "REST API fallback failed in unary: ${restErr.message}", restErr)
-        }
-
         GeminiRequestResult(
             success = false,
             text = "",
@@ -763,7 +743,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         var googleSearchFailed = false
         var lastParsedError: com.example.util.ParsedGeminiError? = null
         val streamStartMs = System.currentTimeMillis()
-        val totalRequestBudgetMs = if (maxOutputTokens <= 500) 20_000L else 32_000L
+        val totalRequestBudgetMs = if (maxOutputTokens <= 500) 30_000L else 45_000L
 
         if (enableSearch) {
             googleSearchAttempted = true
@@ -779,8 +759,8 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                     )
                     val streamResult = streamFromModel(
                         model = model,
-                        firstChunkTimeoutMs = minOf(9_000L, remainingMs),
-                        totalStreamTimeoutMs = minOf(24_000L, remainingMs)
+                        firstChunkTimeoutMs = minOf(15_000L, remainingMs),
+                        totalStreamTimeoutMs = minOf(30_000L, remainingMs)
                     )
                     if (streamResult.text.isNotBlank()) {
                         return@withContext GeminiRequestResult(
@@ -833,8 +813,8 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                 )
                 val streamResult = streamFromModel(
                     model = model,
-                    firstChunkTimeoutMs = minOf(6_500L, remainingMs),
-                    totalStreamTimeoutMs = minOf(22_000L, remainingMs)
+                    firstChunkTimeoutMs = minOf(12_000L, remainingMs),
+                    totalStreamTimeoutMs = minOf(30_000L, remainingMs)
                 )
                 if (streamResult.text.isNotBlank()) {
                     return@withContext GeminiRequestResult(
@@ -898,27 +878,6 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             }
         }
 
-        try {
-            val restFallbackText = callRestApiFallback(
-                targetModel = modelsToTry.first(),
-                messages = messages,
-                systemInstruction = systemInstruction,
-                temperature = temperature,
-                maxOutputTokens = maxOutputTokens
-            )
-            if (restFallbackText.isNotBlank()) {
-                onPartialText(restFallbackText)
-                return@withContext GeminiRequestResult(
-                    success = true,
-                    text = restFallbackText,
-                    sources = emptyList(),
-                    isSearchError = false
-                )
-            }
-        } catch (restErr: Throwable) {
-            Log.e(TAG, "REST API fallback failed: ${restErr.message}", restErr)
-        }
-
         GeminiRequestResult(
             success = false,
             text = "",
@@ -926,44 +885,6 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             errorMessage = lastParsedError?.userFriendlyMessage
                 ?: "Le service Sam AI n'a pas pu répondre. Veuillez vérifier votre connexion et réessayer."
         )
-    }
-
-    private suspend fun callRestApiFallback(
-        targetModel: String,
-        messages: List<ChatMessage>,
-        systemInstruction: String,
-        temperature: Double,
-        maxOutputTokens: Int
-    ): String = withContext(Dispatchers.IO) {
-        val apiKey = apiKeyManager.getActiveGeminiApiKey().ifBlank { "AIzaSyCM2nqPMvLMYxCjHFlLiVXArBbxv1RtPNk" }
-        val remoteContents = messages.map { msg ->
-            val normalizedRole = if (msg.role.equals("user", ignoreCase = true)) "user" else "model"
-            com.example.data.remote.Content(
-                role = normalizedRole,
-                parts = listOf(com.example.data.remote.Part(text = msg.content))
-            )
-        }
-        val remoteSys = if (systemInstruction.isNotBlank()) {
-            com.example.data.remote.Content(
-                role = "user",
-                parts = listOf(com.example.data.remote.Part(text = systemInstruction))
-            )
-        } else null
-
-        val request = com.example.data.remote.GenerateContentRequest(
-            contents = remoteContents,
-            systemInstruction = remoteSys,
-            generationConfig = com.example.data.remote.GenerationConfig(
-                temperature = temperature.toFloat(),
-                maxOutputTokens = maxOutputTokens
-            )
-        )
-        val response = com.example.data.remote.RetrofitClient.geminiService.generateContent(
-            model = targetModel,
-            apiKey = apiKey,
-            request = request
-        )
-        response.candidates.firstOrNull()?.content?.parts?.firstOrNull()?.text.orEmpty().trim()
     }
 
     private fun extractGroundingSources(response: com.google.firebase.ai.type.GenerateContentResponse): List<WebSource> {
