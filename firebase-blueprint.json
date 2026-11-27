@@ -1,0 +1,48 @@
+{
+  "entities": {
+    "AdminAnnouncement": {
+      "title": "AdminAnnouncement",
+      "description": "Official broadcast announcement created by the app administrator and delivered via FCM push and background sync.",
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Notification title (3 to 80 characters)"
+        },
+        "message": {
+          "type": "string",
+          "description": "Broadcast message body (5 to 500 characters)"
+        },
+        "category": {
+          "type": "string",
+          "enum": ["info", "important", "update"],
+          "description": "Announcement priority category"
+        },
+        "targetUri": {
+          "type": "string",
+          "description": "Deep link URI opened when user taps the notification"
+        },
+        "authorEmail": {
+          "type": "string",
+          "description": "Verified administrator email"
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Whether the announcement is visible to users"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp written with FieldValue.serverTimestamp()"
+        }
+      },
+      "required": ["title", "message", "category", "targetUri", "authorEmail", "active", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/announcements/{announcementId}": {
+      "schema": { "$ref": "#/entities/AdminAnnouncement" },
+      "description": "Root collection storing admin broadcast messages pushed to all users."
+    }
+  }
+}

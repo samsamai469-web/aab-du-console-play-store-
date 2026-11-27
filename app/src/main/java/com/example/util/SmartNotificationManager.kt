@@ -36,6 +36,7 @@ object SmartNotificationManager {
     private const val KEY_RECENT_SENT_IDS = "smart_notif_recent_sent_ids"
     private const val KEY_LAST_ACTIVE_TIMESTAMP = "user_last_active_timestamp"
     private const val KEY_FIRST_PROMPT_DONE = "smart_notif_first_prompt_shown_v2"
+    const val ADMIN_BROADCAST_CHANNEL_ID = "sam_admin_announcements_v1"
 
     // Intervalles dynamiques adaptés selon la fréquence choisie par jour (1, 2, 3, ou 5 notifs/jour)
     fun getMinIntervalMillis(context: Context): Long {
@@ -263,13 +264,15 @@ object SmartNotificationManager {
             periodicWorkRequest
         )
 
-        // Active également la surveillance automatique en arrière-plan des actualités
+        // Active également la surveillance automatique en arrière-plan des actualités et des annonces admin
         NewsWatcherWorker.schedule(context)
+        AnnouncementWatcherWorker.schedule(context)
     }
 
     fun cancelSmartNotifications(context: Context) {
         WorkManager.getInstance(context).cancelUniqueWork(WORK_TAG)
         NewsWatcherWorker.cancel(context)
+        AnnouncementWatcherWorker.cancel(context)
     }
 
     /**
@@ -460,5 +463,125 @@ object SmartNotificationManager {
         )
         recordSentId(context, message.id)
         return postNotification(context, message, isTest = false)
+    }
+
+    /**
+     * Crée le canal haute priorité dédié aux annonces officielles envoyées par l'administrateur.
+     */
+    fun ensureAdminBroadcastChannel(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                val notificationManager =
+                    context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                if (notificationManager.getNotificationChannel(ADMIN_BROADCAST_CHANNEL_ID) == null) {
+                    val channel = NotificationChannel(
+                        ADMIN_BROADCAST_CHANNEL_ID,
+                        "Messages & Annonces Sam AI",
+                        NotificationManager.IMPORTANCE_HIGH
+                    ).apply {
+                        description = "Messages importants et annonces officielles envoyés à tous les utilisateurs"
+                        enableLights(true)
+                        lightColor = 0xFF0070FF.toInt()
+                        enableVibration(true)
+                        vibrationPattern = longArrayOf(0, 250, 150, 250)
+                        val defaultSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                        setSound(
+                            defaultSoundUri,
+                            AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION).build()
+                        )
+                    }
+                    notificationManager.createNotificationChannel(channel)
+                }
+            } catch (_: Throwable) {}
+        }
+    }
+
+    /**
+     * Affiche immédiatement une notification système issue d'un message de l'administrateur
+     * (reçu via FCM ou synchronisé en arrière-plan même quand l'application est fermée).
+     */
+    fun postAdminBroadcastNotification(
+        context: Context,
+        announcementId: String,
+        title: String,
+        body: String,
+        category: String = "info",
+        targetUri: String = "sam-ai://notifications",
+        bypassUserOptOutForTest: Boolean = false
+    ): Boolean {
+        if (!bypassUserOptOutForTest) {
+            if (!isNotificationsEnabled(context) || !areSystemNotificationsEnabled(context)) {
+                return false
+            }
+            val enabledCategories = getEnabledCategoryKeys(context)
+            if (!enabledCategories.contains(NotificationCategory.ANNOUNCEMENTS.key)) {
+                return false
+            }
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ActivityCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                return false
+            }
+        }
+
+        ensureAdminBroadcastChannel(context)
+
+        val soundEnabled = isSoundEnabled(context)
+        val vibrationEnabled = isVibrationEnabled(context)
+
+        val prefix = when (category.lowercase().trim()) {
+            "important", "urgent" -> "🚨 "
+            "update", "mise_a_jour" -> "🆕 "
+            else -> "📢 "
+        }
+        val finalTitle = if (title.startsWith("📢") || title.startsWith("🚨") || title.startsWith("🆕")) {
+            title
+        } else {
+            "$prefix$title"
+        }
+
+        val safeUri = if (targetUri.startsWith("sam-ai://")) targetUri else "sam-ai://notifications"
+        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(safeUri), context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("admin_announcement_id", announcementId)
+            putExtra("admin_announcement_uri", safeUri)
+        }
+        val requestCode = (announcementId.hashCode() and 0x7FFFFFFF).coerceAtLeast(1000)
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            requestCode,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val largeIconBitmap = getNotificationBitmap(context)
+        val builder = NotificationCompat.Builder(context, ADMIN_BROADCAST_CHANNEL_ID)
+            .setSmallIcon(com.example.R.drawable.sam_ai_logo)
+            .setColor(0xFF0070FF.toInt())
+            .setContentTitle(finalTitle)
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+
+        if (largeIconBitmap != null) {
+            builder.setLargeIcon(largeIconBitmap)
+        }
+        if (vibrationEnabled) {
+            builder.setVibrate(longArrayOf(0, 250, 150, 250))
+        } else {
+            builder.setVibrate(longArrayOf(0L))
+        }
+        if (!soundEnabled) {
+            builder.setSilent(true)
+        }
+
+        val notificationId = (announcementId.hashCode() and 0x7FFFFFFF).coerceAtLeast(1000)
+        NotificationManagerCompat.from(context).notify(notificationId, builder.build())
+        return true
     }
 }

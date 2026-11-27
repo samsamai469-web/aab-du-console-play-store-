@@ -1,0 +1,20 @@
+{
+  "name": "sam-traduction-functions",
+  "description": "Cloud Functions pour l'envoi de notifications push FCM depuis l'espace Admin Sam AI",
+  "scripts": {
+    "serve": "firebase emulators:start --only functions",
+    "shell": "firebase functions:shell",
+    "start": "npm run shell",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log"
+  },
+  "engines": {
+    "node": "20"
+  },
+  "main": "index.js",
+  "dependencies": {
+    "firebase-admin": "^13.0.1",
+    "firebase-functions": "^6.1.0"
+  },
+  "private": true
+}

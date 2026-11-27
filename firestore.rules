@@ -1,0 +1,81 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Couverture par défaut : tout refuser explicitement
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isCreatorAdmin() {
+      return isSignedIn() &&
+        request.auth.token.email == 'samsamai469@gmail.com' &&
+        request.auth.token.email_verified == true;
+    }
+
+    function isValidAnnouncement(data) {
+      return data.title is string && data.title.size() >= 3 && data.title.size() <= 80 &&
+        data.message is string && data.message.size() >= 5 && data.message.size() <= 500 &&
+        data.category is string && data.category in ['info', 'important', 'update'] &&
+        data.targetUri is string && data.targetUri.size() >= 8 && data.targetUri.size() <= 120 &&
+        data.targetUri.matches('^sam-ai://[a-zA-Z0-9_\\-/]+$') &&
+        data.authorEmail is string && data.authorEmail.size() >= 5 && data.authorEmail.size() <= 120 &&
+        data.active is bool;
+    }
+
+    // Annonces officielles envoyées par l'administrateur à tous les utilisateurs
+    match /announcements/{announcementId} {
+      allow get: if isValidId(announcementId) && (existing().active == true || isCreatorAdmin());
+      allow list: if existing().active == true || isCreatorAdmin();
+
+      allow create: if isCreatorAdmin() &&
+        isValidId(announcementId) &&
+        incoming().keys().hasAll(['title', 'message', 'category', 'targetUri', 'authorEmail', 'active', 'createdAt']) &&
+        incoming().keys().hasOnly(['title', 'message', 'category', 'targetUri', 'authorEmail', 'active', 'createdAt']) &&
+        isValidAnnouncement(incoming()) &&
+        incoming().createdAt is timestamp &&
+        incoming().createdAt <= request.time;
+
+      allow update: if isCreatorAdmin() &&
+        isValidId(announcementId) &&
+        isValidAnnouncement(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['title', 'message', 'category', 'targetUri', 'active']);
+
+      allow delete: if isCreatorAdmin() && isValidId(announcementId);
+    }
+
+    // Profils utilisateurs (isolés par UID)
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isCreatorAdmin());
+      allow list: if isSignedIn() && (existing().uid == request.auth.uid || isCreatorAdmin());
+      allow create, update: if isSignedIn() &&
+        isValidId(userId) &&
+        request.auth.uid == userId &&
+        (!('role' in incoming()) || incoming().role == 'user' || isCreatorAdmin());
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+    }
+
+    // Configuration publique lue par l'application (lecture seule)
+    match /app_config/{configId} {
+      allow get: if isValidId(configId);
+      allow write: if isCreatorAdmin();
+    }
+  }
+}

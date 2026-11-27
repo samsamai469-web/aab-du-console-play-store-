@@ -50,6 +50,24 @@ fun MainScreen(viewModel: SamAiViewModel, ttsManager: TtsManager) {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
     val appLanguage by viewModel.appLanguage.collectAsState()
+    val unreadAnnouncement by viewModel.unreadAnnouncement.collectAsState()
+    val pendingDeepLinkUri by viewModel.pendingDeepLinkUri.collectAsState()
+
+    LaunchedEffect(Unit) {
+        viewModel.refreshAnnouncements(context)
+    }
+
+    LaunchedEffect(pendingDeepLinkUri) {
+        val uri = pendingDeepLinkUri ?: return@LaunchedEffect
+        when {
+            uri.startsWith("sam-ai://notifications") -> navController.navigate(Screen.Notifications) { launchSingleTop = true }
+            uri.startsWith("sam-ai://news") -> navController.navigate(Screen.News) { launchSingleTop = true }
+            uri.startsWith("sam-ai://learning") -> navController.navigate(Screen.Learning) { launchSingleTop = true }
+            uri.startsWith("sam-ai://translation") -> navController.navigate(Screen.Translation()) { launchSingleTop = true }
+            uri.startsWith("sam-ai://home") -> navController.navigate(Screen.Home) { launchSingleTop = true }
+        }
+        viewModel.consumeDeepLink()
+    }
 
     LaunchedEffect(currentDestination) {
         ttsManager.stop()
@@ -162,7 +180,9 @@ fun MainScreen(viewModel: SamAiViewModel, ttsManager: TtsManager) {
                 composable<Screen.History>(deepLinks = listOf(navDeepLink { uriPattern = "sam-ai://history" })) { HistoryScreen(viewModel, ttsManager, navController) }
                 composable<Screen.Profile> { ProfileScreen(viewModel, navController) }
                 composable<Screen.Favorites> { com.example.ui.screens.FavoritesScreen(viewModel, ttsManager, navController) }
-                composable<Screen.Notifications> { com.example.ui.screens.NotificationsScreen(navController, viewModel) }
+                composable<Screen.Notifications>(
+                    deepLinks = listOf(navDeepLink { uriPattern = "sam-ai://notifications" })
+                ) { com.example.ui.screens.NotificationsScreen(navController, viewModel) }
                 composable<Screen.Storage> { com.example.ui.screens.StorageScreen(navController, viewModel) }
                 composable<Screen.Language> { com.example.ui.screens.LanguageScreen(navController, viewModel) }
                 composable<Screen.Support> { backStackEntry ->
@@ -172,6 +192,53 @@ fun MainScreen(viewModel: SamAiViewModel, ttsManager: TtsManager) {
                 composable<Screen.About> { AboutScreen(viewModel, navController) }
                 composable<Screen.AdminMoore> { AdminMooreScreen(viewModel, navController) }
             }
+        }
+
+        val currentUnread = unreadAnnouncement
+        if (currentUnread != null) {
+            AlertDialog(
+                onDismissRequest = {
+                    viewModel.dismissUnreadAnnouncement(context, currentUnread.id)
+                },
+                title = {
+                    val prefix = when (currentUnread.category.lowercase()) {
+                        "important", "urgent" -> "🚨 "
+                        "update", "mise_a_jour" -> "🆕 "
+                        else -> "📢 "
+                    }
+                    Text(
+                        text = "$prefix${currentUnread.title}",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                },
+                text = {
+                    Text(
+                        text = currentUnread.message,
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                },
+                confirmButton = {
+                    Button(
+                        onClick = {
+                            viewModel.dismissUnreadAnnouncement(context, currentUnread.id)
+                        }
+                    ) {
+                        Text("Compris")
+                    }
+                },
+                dismissButton = {
+                    TextButton(
+                        onClick = {
+                            viewModel.dismissUnreadAnnouncement(context, currentUnread.id)
+                            navController.navigate(Screen.Notifications) {
+                                launchSingleTop = true
+                            }
+                        }
+                    ) {
+                        Text("Voir les annonces")
+                    }
+                }
+            )
         }
     }
 }

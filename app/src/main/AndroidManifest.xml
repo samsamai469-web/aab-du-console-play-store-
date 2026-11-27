@@ -86,6 +86,21 @@
                 <data android:scheme="https" android:host="ais-pre-h5qu2a6gtl2p4qcuhid25d-151105670688.europe-west2.run.app" android:pathPrefix="/auth/callback" />
             </intent-filter>
         </activity>
+
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="sam_admin_announcements_v1" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/sam_ai_logo" />
+
+        <service
+            android:name=".service.SamAiFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
     </application>
 
 </manifest>

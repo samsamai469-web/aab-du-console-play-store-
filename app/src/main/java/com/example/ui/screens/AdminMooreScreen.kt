@@ -302,24 +302,30 @@ fun AdminMooreScreen(viewModel: SamAiViewModel, navController: NavController) {
                     Tab(
                         selected = currentTab == 1,
                         onClick = { currentTab = 1 },
-                        text = { Text("Traductions", maxLines = 1) },
-                        icon = { Icon(Icons.Default.Translate, contentDescription = null) }
+                        text = { Text("Messages Push", maxLines = 1) },
+                        icon = { Icon(Icons.Default.Campaign, contentDescription = null) }
                     )
                     Tab(
                         selected = currentTab == 2,
                         onClick = { currentTab = 2 },
-                        text = { Text("Dictionnaire", maxLines = 1) },
-                        icon = { Icon(Icons.Default.Book, contentDescription = null) }
+                        text = { Text("Traductions", maxLines = 1) },
+                        icon = { Icon(Icons.Default.Translate, contentDescription = null) }
                     )
                     Tab(
                         selected = currentTab == 3,
                         onClick = { currentTab = 3 },
-                        text = { Text("Audit & Logs", maxLines = 1) },
-                        icon = { Icon(Icons.Default.Policy, contentDescription = null) }
+                        text = { Text("Dictionnaire", maxLines = 1) },
+                        icon = { Icon(Icons.Default.Book, contentDescription = null) }
                     )
                     Tab(
                         selected = currentTab == 4,
                         onClick = { currentTab = 4 },
+                        text = { Text("Audit & Logs", maxLines = 1) },
+                        icon = { Icon(Icons.Default.Policy, contentDescription = null) }
+                    )
+                    Tab(
+                        selected = currentTab == 5,
+                        onClick = { currentTab = 5 },
                         text = { Text("Sécurité & Tests", maxLines = 1) },
                         icon = { Icon(Icons.Default.Shield, contentDescription = null) }
                     )
@@ -352,14 +358,25 @@ fun AdminMooreScreen(viewModel: SamAiViewModel, navController: NavController) {
                 when (currentTab) {
                     0 -> {
                         // --- ONGLET 0 : AUDIENCE & STATISTIQUES ANONYMES (EXCLUSIVITÉ CRÉATEUR) ---
-                        AudienceStatsTab(viewModel = viewModel, onNavigateToTranslations = { currentTab = 1 })
+                        AudienceStatsTab(viewModel = viewModel, onNavigateToTranslations = { currentTab = 2 })
                     }
                     1 -> {
-                        // --- ONGLET 1 : FLUX DIRECT DES TRADUCTIONS DES UTILISATEURS ---
-                        RealTranslationsFeedTab(viewModel = viewModel)
+                        // --- ONGLET 1 : DIFFUSION DE MESSAGES PUSH À TOUS LES UTILISATEURS ---
+                        AdminBroadcastTab(
+                            viewModel = viewModel,
+                            onNavigateToProfile = {
+                                navController.navigate(Screen.Profile) {
+                                    launchSingleTop = true
+                                }
+                            }
+                        )
                     }
                     2 -> {
-                        // --- ONGLET 2 : GESTION DU DICTIONNAIRE OFFICIEL ---
+                        // --- ONGLET 2 : FLUX DIRECT DES TRADUCTIONS DES UTILISATEURS ---
+                        RealTranslationsFeedTab(viewModel = viewModel)
+                    }
+                    3 -> {
+                        // --- ONGLET 3 : GESTION DU DICTIONNAIRE OFFICIEL ---
                         Column(modifier = Modifier.fillMaxSize()) {
                             Row(
                                 modifier = Modifier
@@ -430,8 +447,8 @@ fun AdminMooreScreen(viewModel: SamAiViewModel, navController: NavController) {
                             }
                         }
                     }
-                    3 -> {
-                        // --- ONGLET 3 : JOURNAUX D'AUDIT EN DIRECT ---
+                    4 -> {
+                        // --- ONGLET 4 : JOURNAUX D'AUDIT EN DIRECT ---
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()
@@ -474,8 +491,8 @@ fun AdminMooreScreen(viewModel: SamAiViewModel, navController: NavController) {
                             }
                         }
                     }
-                    4 -> {
-                        // --- ONGLET 4 : PENTEST & CONTRÔLE DES DÉFENSES EN PROFONDEUR ---
+                    5 -> {
+                        // --- ONGLET 5 : PENTEST & CONTRÔLE DES DÉFENSES EN PROFONDEUR ---
                         Column(
                             modifier = Modifier
                                 .fillMaxSize()

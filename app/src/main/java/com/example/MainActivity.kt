@@ -153,10 +153,14 @@ class MainActivity : ComponentActivity() {
       }
     } catch (_: Throwable) {}
 
-    // 3. Gestion sécurisée des notifications et services en tâche de fond
+    // 3. Gestion sécurisée des notifications, canal admin et abonnement push global FCM (all_users)
     try {
+      SmartNotificationManager.ensureAdminBroadcastChannel(this)
+      com.example.data.remote.AdminBroadcastRepository.subscribeToBroadcastTopic(this)
       if (SmartNotificationManager.isNotificationsEnabled(this)) {
         SmartNotificationManager.scheduleSmartNotifications(this)
+      } else {
+        com.example.util.AnnouncementWatcherWorker.schedule(this)
       }
     } catch (_: Throwable) {}
 
@@ -254,9 +258,27 @@ class MainActivity : ComponentActivity() {
   private fun handleIntent(intent: Intent?) {
       if (intent == null) return
       try {
+          // Si l'utilisateur ouvre l'app en cliquant sur une notification push FCM envoyée en arrière-plan
+          val fcmTargetUri = intent.getStringExtra("targetUri")
+              ?: intent.getStringExtra("admin_announcement_uri")
+          if (!fcmTargetUri.isNullOrBlank() && fcmTargetUri.startsWith("sam-ai://") && intent.data == null) {
+              intent.data = Uri.parse(fcmTargetUri)
+          }
+
           val data: Uri? = intent.data
           if (data != null) {
               val uriString = data.toString()
+
+              // Navigation directe depuis les notifications push / alertes Sam AI
+              if (uriString == "sam-ai://notifications" ||
+                  uriString == "sam-ai://news" ||
+                  uriString == "sam-ai://learning" ||
+                  uriString == "sam-ai://home" ||
+                  uriString == "sam-ai://translation"
+              ) {
+                  viewModel.triggerDeepLink(uriString)
+                  return
+              }
 
               // 1. Détection automatique du lien de connexion sans mot de passe Firebase (Email Link)
               if (com.example.data.remote.FirebaseAuthService.isSignInWithEmailLink(uriString) ||

@@ -3098,6 +3098,121 @@ class SamAiViewModel(
         }
     }
 
+    // --- MESSAGES & DIFFUSION PUSH ADMINISTRATEUR (MÊME APPLI FERMÉE) ---
+    private val _adminAnnouncements = MutableStateFlow<List<com.example.data.remote.AdminAnnouncement>>(emptyList())
+    val adminAnnouncements: StateFlow<List<com.example.data.remote.AdminAnnouncement>> = _adminAnnouncements.asStateFlow()
+
+    private val _isPublishingAnnouncement = MutableStateFlow(false)
+    val isPublishingAnnouncement: StateFlow<Boolean> = _isPublishingAnnouncement.asStateFlow()
+
+    private val _isLoadingAnnouncements = MutableStateFlow(false)
+    val isLoadingAnnouncements: StateFlow<Boolean> = _isLoadingAnnouncements.asStateFlow()
+
+    private val _unreadAnnouncement = MutableStateFlow<com.example.data.remote.AdminAnnouncement?>(null)
+    val unreadAnnouncement: StateFlow<com.example.data.remote.AdminAnnouncement?> = _unreadAnnouncement.asStateFlow()
+
+    private val _pendingDeepLinkUri = MutableStateFlow<String?>(null)
+    val pendingDeepLinkUri: StateFlow<String?> = _pendingDeepLinkUri.asStateFlow()
+
+    fun triggerDeepLink(uri: String) {
+        if (uri.startsWith("sam-ai://")) {
+            _pendingDeepLinkUri.value = uri
+        }
+    }
+
+    fun consumeDeepLink() {
+        _pendingDeepLinkUri.value = null
+    }
+
+    fun refreshAnnouncements(context: Context) {
+        val appCtx = context.applicationContext
+        viewModelScope.launch {
+            _isLoadingAnnouncements.value = true
+            val result = com.example.data.remote.AdminBroadcastRepository.fetchRecentAnnouncements(appCtx)
+            result.onSuccess { list ->
+                _adminAnnouncements.value = list
+                val baseline = com.example.data.remote.AdminBroadcastRepository.ensureBaselineInitialized(appCtx)
+                val firstUnread = list.firstOrNull { ann ->
+                    val createdMs = ann.createdAt?.toDate()?.time ?: System.currentTimeMillis()
+                    createdMs >= baseline &&
+                        !com.example.data.remote.AdminBroadcastRepository.isAnnouncementSeenInApp(appCtx, ann.id)
+                }
+                if (firstUnread != null) {
+                    _unreadAnnouncement.value = firstUnread
+                }
+            }
+            _isLoadingAnnouncements.value = false
+        }
+    }
+
+    fun dismissUnreadAnnouncement(context: Context, announcementId: String) {
+        com.example.data.remote.AdminBroadcastRepository.markAnnouncementSeenInApp(context.applicationContext, announcementId)
+        com.example.data.remote.AdminBroadcastRepository.markAnnouncementNotified(context.applicationContext, announcementId)
+        _unreadAnnouncement.value = null
+    }
+
+    fun publishAdminAnnouncement(
+        context: Context,
+        title: String,
+        message: String,
+        category: String = "info",
+        targetUri: String = "sam-ai://notifications",
+        onComplete: (Boolean, String) -> Unit
+    ) {
+        if (!SecurityUtils.verifyAdminToken(_adminAuthToken.value)) {
+            onComplete(false, "Session administrateur requise.")
+            return
+        }
+        val appCtx = context.applicationContext
+        viewModelScope.launch {
+            _isPublishingAnnouncement.value = true
+            val result = com.example.data.remote.AdminBroadcastRepository.publishAnnouncement(
+                context = appCtx,
+                title = title,
+                message = message,
+                category = category,
+                targetUri = targetUri
+            )
+            _isPublishingAnnouncement.value = false
+            result.fold(
+                onSuccess = { created ->
+                    _adminAnnouncements.value = listOf(created) + _adminAnnouncements.value.filterNot { it.id == created.id }
+                    auditLog("ADMIN_BROADCAST_SENT", "INFO", "Diffusion envoyée : ${created.title}")
+                    onComplete(true, "Message publié ! Les utilisateurs abonnés recevront la notification même si l'application est fermée.")
+                },
+                onFailure = { err ->
+                    auditLog("ADMIN_BROADCAST_FAILED", "WARN", "Échec diffusion : ${err.message}")
+                    onComplete(false, err.message ?: "Impossible d'envoyer le message.")
+                }
+            )
+        }
+    }
+
+    fun deleteAdminAnnouncement(
+        context: Context,
+        announcementId: String,
+        onComplete: (Boolean, String) -> Unit
+    ) {
+        if (!SecurityUtils.verifyAdminToken(_adminAuthToken.value)) {
+            onComplete(false, "Session administrateur requise.")
+            return
+        }
+        val appCtx = context.applicationContext
+        viewModelScope.launch {
+            val result = com.example.data.remote.AdminBroadcastRepository.deleteAnnouncement(appCtx, announcementId)
+            result.fold(
+                onSuccess = {
+                    _adminAnnouncements.value = _adminAnnouncements.value.filterNot { it.id == announcementId }
+                    auditLog("ADMIN_BROADCAST_DELETED", "INFO", "Annonce supprimée : $announcementId")
+                    onComplete(true, "Annonce supprimée avec succès.")
+                },
+                onFailure = { err ->
+                    onComplete(false, err.message ?: "Erreur lors de la suppression.")
+                }
+            )
+        }
+    }
+
     private fun findLocalKnowledgeAnswer(query: String): String {
         val qNorm = query.lowercase(java.util.Locale.ROOT)
             .replace("’", "'")
