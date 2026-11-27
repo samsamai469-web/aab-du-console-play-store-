@@ -849,7 +849,41 @@ fun SamAiGeminiAssistantModal(
                                     val query = inputText.trim()
                                     inputText = ""
                                     hideKeyboard()
-                                    viewModel.askSamAiGemini(query)
+                                    if (isVoiceCallActive) {
+                                        liveCallState = VoiceCallState.THINKING
+                                        viewModel.askSamAiGemini(
+                                            userQuestion = query,
+                                            isVoiceCall = true,
+                                            onReply = { botReply ->
+                                                if (isVoiceCallActive) {
+                                                    liveCallState = VoiceCallState.SAM_SPEAKING
+                                                    ttsManager.speakWithCallback(
+                                                        text = botReply,
+                                                        language = "Français",
+                                                        onStart = { liveCallState = VoiceCallState.SAM_SPEAKING },
+                                                        onDone = {
+                                                            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                                                                if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking()) {
+                                                                    liveCallState = VoiceCallState.USER_SPEAKING
+                                                                    if (isUsingFallbackRest) listenFallbackTurn()
+                                                                }
+                                                            }, 300L)
+                                                        },
+                                                        onError = {
+                                                            liveCallState = VoiceCallState.USER_SPEAKING
+                                                            if (isVoiceCallActive && isUsingFallbackRest) listenFallbackTurn()
+                                                        }
+                                                    )
+                                                }
+                                            },
+                                            onError = { errMsg ->
+                                                Toast.makeText(context, errMsg, Toast.LENGTH_SHORT).show()
+                                                liveCallState = VoiceCallState.USER_SPEAKING
+                                            }
+                                        )
+                                    } else {
+                                        viewModel.askSamAiGemini(query)
+                                    }
                                 }
                             }
 

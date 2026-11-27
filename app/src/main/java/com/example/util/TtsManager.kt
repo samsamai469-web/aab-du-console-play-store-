@@ -75,9 +75,9 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         private const val FALLBACK_TTS_MODEL = "gemini-3.1-flash-tts-preview"
         private const val UNIFIED_GOOGLE_MALE_VOICE = "Charon"
         private const val CACHE_PREFIX = "sam_tts_google_v7_"
-        private const val FIRST_CHUNK_TIMEOUT_MS = 700L
+        private const val FIRST_CHUNK_TIMEOUT_MS = 1200L
         private const val INTER_CHUNK_STALL_TIMEOUT_MS = 3_500L
-        private const val NEURAL_COOLDOWN_MS = 180_000L
+        private const val NEURAL_COOLDOWN_MS = 30_000L
         private const val MAX_CONSECUTIVE_NEURAL_FAILURES = 1
 
         @Volatile
@@ -356,36 +356,13 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         isGlobalTtsSpeaking = true
         SpeechRecognitionManager.pauseAllActiveRecognizersForTts()
 
-        val naturalSpeed = computeNaturalSpeed(rate)
-        val cachedFile = getCachedVoiceFile(spokenText, langCode, naturalSpeed)
-        if (cachedAudioFileNames.contains(cachedFile.name) && cachedFile.exists() && cachedFile.length() >= 200L) {
-            speechJob = scope.launch {
-                val ok = playAudioFileWithMediaPlayer(
-                    audioFileToPlay = cachedFile,
-                    cachedFile = cachedFile,
-                    naturalSpeed = naturalSpeed,
-                    spokenText = spokenText,
-                    langCode = langCode,
-                    rawRate = rate
-                )
-                if (!ok && isActive && requestGeneration == activeSpeechGeneration.get() && isGlobalTtsSpeaking) {
-                    withContext(Dispatchers.Main) {
-                        if (requestGeneration == activeSpeechGeneration.get() && isGlobalTtsSpeaking) {
-                            speakWithLocalAndroidTts(spokenText, langCode, rate)
-                        }
+        speechJob = scope.launch {
+            val ok = trySpeakWithNeuralVoice(spokenText, langCode, rate, requestGeneration)
+            if (!ok && isActive && requestGeneration == activeSpeechGeneration.get() && isGlobalTtsSpeaking) {
+                withContext(Dispatchers.Main) {
+                    if (requestGeneration == activeSpeechGeneration.get() && isGlobalTtsSpeaking) {
+                        speakWithLocalAndroidTts(spokenText, langCode, rate)
                     }
-                }
-            }
-            return
-        }
-
-        // Prononciation locale instantanée (<30ms) sans aucun blocage réseau de 700ms
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            speakWithLocalAndroidTts(spokenText, langCode, rate)
-        } else {
-            mainHandler.post {
-                if (requestGeneration == activeSpeechGeneration.get() && isGlobalTtsSpeaking) {
-                    speakWithLocalAndroidTts(spokenText, langCode, rate)
                 }
             }
         }

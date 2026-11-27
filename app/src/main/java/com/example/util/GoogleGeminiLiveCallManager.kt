@@ -10,6 +10,7 @@ import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -177,9 +178,22 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                 if (am.mode != AudioManager.MODE_NORMAL) {
                     am.mode = AudioManager.MODE_NORMAL
                 }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    val attrs = AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                        .build()
+                    val req = android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                        .setAudioAttributes(attrs)
+                        .build()
+                    am.requestAudioFocus(req)
+                } else {
+                    @Suppress("DEPRECATION")
+                    am.requestAudioFocus(null, AudioManager.STREAM_MUSIC, AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                }
             }
         } catch (e: Exception) {
-            Log.w(TAG, "AudioManager mode notice: ${e.message}")
+            Log.w(TAG, "AudioManager mode/focus notice: ${e.message}")
         }
 
         initAudioTrack()
@@ -834,6 +848,8 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         try {
             audioManager?.let { am ->
                 am.mode = previousAudioMode
+                @Suppress("DEPRECATION")
+                am.abandonAudioFocus(null)
             }
         } catch (_: Exception) {}
     }

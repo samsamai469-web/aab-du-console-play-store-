@@ -273,10 +273,10 @@ class SpeechRecognitionManager(private val context: Context) {
                     // 680 ms en Mooré/Dioula (respecte les prolongations & tons), 520 ms en Français/Anglais/etc.
                     // + Garde anti-blocage : si aucun pic vocal franc depuis 950 ms après 220 ms de parole, on conclut immédiatement.
                     val isAfrican = isAfricanLanguage(language)
-                    val requiredSilenceMs = if (isAfrican) 680L else 520L
-                    val minVoicedMs = if (isAfrican) 45L else 55L
+                    val requiredSilenceMs = if (isAfrican) 380L else 280L
+                    val minVoicedMs = if (isAfrican) 35L else 40L
                     val silenceReached = speechDetected && voicedDuration >= minVoicedMs &&
-                        (silenceDuration >= requiredSilenceMs || (voicedDuration >= 220L && weakTailDuration >= 950L))
+                        (silenceDuration >= requiredSilenceMs || (voicedDuration >= 180L && weakTailDuration >= 450L))
                     if (silenceReached || (speechDetected && totalSpeechDuration >= 9500L)) {
                         withContext(Dispatchers.Main) {
                             stopWhisperRecognition(onFinished = null, manualStop = false)
