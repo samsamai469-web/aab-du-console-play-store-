@@ -111,6 +111,7 @@ fun SamAiGeminiAssistantModal(
     var isUsingFallbackRest by remember { mutableStateOf(false) }
     var liveUserDraft by remember { mutableStateOf("") }
     var liveAiDraft by remember { mutableStateOf("") }
+    var liveCallStatusNotice by remember { mutableStateOf<String?>(null) }
     var showHistoryDialog by remember { mutableStateOf(false) }
 
     var dialogRootView by remember { mutableStateOf<android.view.View?>(null) }
@@ -141,7 +142,7 @@ fun SamAiGeminiAssistantModal(
     var fallbackConsecutiveErrors by remember { mutableIntStateOf(0) }
 
     fun listenFallbackTurn() {
-        if (!isVoiceCallActive || isLiveMicMuted || !isUsingFallbackRest || ttsManager.isSpeaking() || TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) return
+        if (!isVoiceCallActive || isLiveMicMuted || !isUsingFallbackRest || ttsManager.isSpeaking() || TtsManager.isAnyTtsSpeakingOrCoolingDown(350L)) return
         if (liveCallState == VoiceCallState.SAM_SPEAKING || liveCallState == VoiceCallState.THINKING) return
         liveCallState = VoiceCallState.USER_SPEAKING
         speechManager.startListening(
@@ -151,6 +152,7 @@ fun SamAiGeminiAssistantModal(
                 val clean = recognizedText.trim()
                 if (clean.isNotBlank() && isVoiceCallActive && !isLiveMicMuted) {
                     fallbackConsecutiveErrors = 0
+                    liveCallStatusNotice = null
                     speechManager.reset()
                     liveUserDraft = clean
                     liveAiDraft = ""
@@ -164,6 +166,7 @@ fun SamAiGeminiAssistantModal(
                             liveUserDraft = ""
                             if (isVoiceCallActive) {
                                 speechManager.reset()
+                                liveAiDraft = botReply
                                 liveCallState = VoiceCallState.SAM_SPEAKING
                                 ttsManager.speakWithCallback(
                                     text = botReply,
@@ -174,21 +177,27 @@ fun SamAiGeminiAssistantModal(
                                     },
                                     onDone = {
                                         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                            if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) {
+                                            if (isVoiceCallActive) {
+                                                liveAiDraft = ""
+                                            }
+                                            if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(350L)) {
                                                 speechManager.reset()
                                                 liveCallState = VoiceCallState.USER_SPEAKING
                                                 listenFallbackTurn()
                                             }
-                                        }, 320L)
+                                        }, 280L)
                                     },
                                     onError = {
                                         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                            if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) {
+                                            if (isVoiceCallActive) {
+                                                liveAiDraft = ""
+                                            }
+                                            if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(350L)) {
                                                 speechManager.reset()
                                                 liveCallState = VoiceCallState.USER_SPEAKING
                                                 listenFallbackTurn()
                                             }
-                                        }, 320L)
+                                        }, 280L)
                                     }
                                 )
                             }
@@ -196,19 +205,19 @@ fun SamAiGeminiAssistantModal(
                         onError = { errMsg ->
                             liveUserDraft = ""
                             if (isVoiceCallActive) {
-                                Toast.makeText(context, errMsg, Toast.LENGTH_SHORT).show()
+                                liveCallStatusNotice = errMsg
                                 liveCallState = VoiceCallState.USER_SPEAKING
                                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                                    if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) {
+                                    if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(350L)) {
                                         listenFallbackTurn()
                                     }
-                                }, 450L)
+                                }, 500L)
                             }
                         }
                     )
                 } else if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking()) {
                     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                        if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L) && liveCallState == VoiceCallState.USER_SPEAKING) {
+                        if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(350L) && liveCallState == VoiceCallState.USER_SPEAKING) {
                             listenFallbackTurn()
                         }
                     }, 220L)
@@ -220,16 +229,19 @@ fun SamAiGeminiAssistantModal(
                     err.contains("Haut-parleur actif", ignoreCase = true)
                 if (!isNormalSilenceOrCooldown) {
                     fallbackConsecutiveErrors++
-                    if (fallbackConsecutiveErrors == 1 || fallbackConsecutiveErrors % 3 == 0) {
-                        Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
-                    }
+                    liveCallStatusNotice = err
                 } else {
                     fallbackConsecutiveErrors = 0
+                    liveCallStatusNotice = null
                 }
-                val retryDelayMs = if (isNormalSilenceOrCooldown) 350L else minOf(1500L, 450L * fallbackConsecutiveErrors.coerceAtLeast(1))
-                if (!ttsManager.isSpeaking() && fallbackConsecutiveErrors < 6) {
+                val retryDelayMs = if (isNormalSilenceOrCooldown) {
+                    320L
+                } else {
+                    minOf(3_500L, 450L * fallbackConsecutiveErrors.coerceAtLeast(1))
+                }
+                if (!ttsManager.isSpeaking()) {
                     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                        if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L) && liveCallState == VoiceCallState.USER_SPEAKING) {
+                        if (isVoiceCallActive && !isLiveMicMuted && !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(350L) && liveCallState == VoiceCallState.USER_SPEAKING) {
                             listenFallbackTurn()
                         }
                     }, retryDelayMs)
@@ -246,13 +258,19 @@ fun SamAiGeminiAssistantModal(
             onTurnCompleted = { userText, aiText ->
                 liveUserDraft = ""
                 liveAiDraft = ""
+                liveCallStatusNotice = null
                 viewModel.recordRealtimeCallTurn(userText, aiText)
             },
-            onFallbackRequired = { _ ->
+            onFallbackRequired = { reason ->
                 if (isVoiceCallActive && !isUsingFallbackRest) {
                     isUsingFallbackRest = true
                     liveCallState = VoiceCallState.USER_SPEAKING
-                    startFallbackListening.value()
+                    liveCallStatusNotice = reason.takeIf { it.isNotBlank() }?.let { "Mode vocal standard : $it" }
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        if (isVoiceCallActive && !isLiveMicMuted && isUsingFallbackRest) {
+                            startFallbackListening.value()
+                        }
+                    }, 220L)
                 }
             }
         )
@@ -314,10 +332,12 @@ fun SamAiGeminiAssistantModal(
         speechManager.reset()
         ttsManager.stop()
         hideKeyboard()
+        fallbackConsecutiveErrors = 0
         isUsingFallbackRest = false
         isLiveMicMuted = false
         liveUserDraft = ""
         liveAiDraft = ""
+        liveCallStatusNotice = null
         liveCallState = VoiceCallState.CONNECTING
         isVoiceCallMinimized = false
         isVoiceCallActive = true
@@ -329,8 +349,10 @@ fun SamAiGeminiAssistantModal(
         isVoiceCallMinimized = false
         isUsingFallbackRest = false
         isLiveMicMuted = false
+        fallbackConsecutiveErrors = 0
         liveUserDraft = ""
         liveAiDraft = ""
+        liveCallStatusNotice = null
         realtimeManager.stopCall()
         speechManager.reset()
         ttsManager.stop()
@@ -352,29 +374,31 @@ fun SamAiGeminiAssistantModal(
     fun interruptAndResumeFallbackListening() {
         ttsManager.stop()
         speechManager.reset()
+        liveAiDraft = ""
+        liveCallStatusNotice = null
         if (!isVoiceCallActive || isLiveMicMuted || !isUsingFallbackRest) return
         liveCallState = VoiceCallState.USER_SPEAKING
         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
             if (isVoiceCallActive && !isLiveMicMuted && isUsingFallbackRest &&
-                !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(480L) &&
+                !ttsManager.isSpeaking() && !TtsManager.isAnyTtsSpeakingOrCoolingDown(350L) &&
                 liveCallState == VoiceCallState.USER_SPEAKING
             ) {
                 listenFallbackTurn()
             }
-        }, 520L)
+        }, 380L)
     }
 
     val handleSaturnOrbTap = {
         if (isUsingFallbackRest) {
             when (liveCallState) {
                 VoiceCallState.USER_SPEAKING -> speechManager.stopListening()
-                VoiceCallState.SAM_SPEAKING -> interruptAndResumeFallbackListening()
+                VoiceCallState.SAM_SPEAKING, VoiceCallState.THINKING -> interruptAndResumeFallbackListening()
                 else -> {}
             }
         } else {
             when (liveCallState) {
                 VoiceCallState.USER_SPEAKING -> realtimeManager.commitUserSpeechNow()
-                VoiceCallState.SAM_SPEAKING -> realtimeManager.interruptAiSpeech()
+                VoiceCallState.SAM_SPEAKING, VoiceCallState.THINKING -> realtimeManager.interruptAiSpeech()
                 else -> {}
             }
         }
@@ -1020,16 +1044,23 @@ fun SamAiGeminiAssistantModal(
                 callState = liveCallState,
                 isMicMuted = isLiveMicMuted,
                 activeSoundLevel = activeLiveSoundLevel,
+                userTranscript = liveUserDraft,
+                aiTranscript = liveAiDraft,
+                statusNotice = liveCallStatusNotice,
                 onOrbTap = handleSaturnOrbTap,
                 onToggleMute = toggleLiveMicMute,
                 onInterruptOrSpeak = {
                     if (isUsingFallbackRest) {
-                        interruptAndResumeFallbackListening()
-                    } else {
                         if (liveCallState == VoiceCallState.USER_SPEAKING) {
-                            realtimeManager.commitUserSpeechNow()
+                            speechManager.stopListening()
                         } else {
-                            realtimeManager.interruptAiSpeech()
+                            interruptAndResumeFallbackListening()
+                        }
+                    } else {
+                        when (liveCallState) {
+                            VoiceCallState.USER_SPEAKING -> realtimeManager.commitUserSpeechNow()
+                            VoiceCallState.SAM_SPEAKING, VoiceCallState.THINKING -> realtimeManager.interruptAiSpeech()
+                            else -> {}
                         }
                     }
                 },
@@ -2224,6 +2255,9 @@ fun SamAiVoiceCallFullScreenOverlay(
     callState: VoiceCallState,
     isMicMuted: Boolean,
     activeSoundLevel: Float,
+    userTranscript: String = "",
+    aiTranscript: String = "",
+    statusNotice: String? = null,
     onOrbTap: () -> Unit,
     onToggleMute: () -> Unit,
     onInterruptOrSpeak: () -> Unit,
@@ -2239,6 +2273,21 @@ fun SamAiVoiceCallFullScreenOverlay(
     val dragProgress = (dragOffsetY.value / dragThresholdPx).coerceIn(0f, 1.5f)
     val backdropAlpha = (1f - (dragProgress * 0.28f)).coerceIn(0.60f, 1f)
     val orbDragScale = (1f - (dragProgress * 0.18f)).coerceIn(0.72f, 1f)
+
+    val statusLabel = when {
+        isMicMuted -> "Micro coupé"
+        callState == VoiceCallState.CONNECTING -> "Connexion vocale en direct..."
+        callState == VoiceCallState.SAM_SPEAKING -> "Sam AI vous répond..."
+        callState == VoiceCallState.THINKING -> "Sam AI réfléchit..."
+        else -> "À l'écoute • Parlez maintenant"
+    }
+    val statusPillColor = when {
+        isMicMuted -> Color(0xFFD32F2F).copy(alpha = 0.25f)
+        callState == VoiceCallState.SAM_SPEAKING -> Color(0xFFFFB300).copy(alpha = 0.22f)
+        callState == VoiceCallState.THINKING -> Color(0xFF1E88E5).copy(alpha = 0.25f)
+        callState == VoiceCallState.USER_SPEAKING -> Color(0xFF009639).copy(alpha = 0.24f)
+        else -> Color.White.copy(alpha = 0.12f)
+    }
 
     Dialog(
         onDismissRequest = { onMinimizeToChat() },
@@ -2259,6 +2308,38 @@ fun SamAiVoiceCallFullScreenOverlay(
                     .padding(horizontal = 20.dp, vertical = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = statusPillColor,
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.14f))
+                ) {
+                    Text(
+                        text = statusLabel,
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold),
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                    )
+                }
+
+                if (!statusNotice.isNullOrBlank()) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFFD32F2F).copy(alpha = 0.22f),
+                        border = BorderStroke(1.dp, Color(0xFFEF5350).copy(alpha = 0.45f))
+                    ) {
+                        Text(
+                            text = statusNotice,
+                            color = Color(0xFFFFCDD2),
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+
                 // ==========================================
                 // ZONE CENTRALE : PLANÈTE SATURNE AU MILIEU DE L'ÉCRAN
                 // (glissement vers le bas pour descendre dans le chat)
@@ -2324,6 +2405,25 @@ fun SamAiVoiceCallFullScreenOverlay(
                             onClick = onOrbTap
                         )
                     }
+                }
+
+                val activeCaption = when {
+                    aiTranscript.isNotBlank() -> aiTranscript
+                    userTranscript.isNotBlank() -> "« $userTranscript »"
+                    else -> ""
+                }
+                if (activeCaption.isNotBlank()) {
+                    Text(
+                        text = activeCaption,
+                        color = Color.White.copy(alpha = 0.88f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = TextAlign.Center,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp)
+                    )
                 }
 
                 // ==========================================

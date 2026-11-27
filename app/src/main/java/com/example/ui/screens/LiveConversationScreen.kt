@@ -404,10 +404,11 @@ fun LiveConversationScreen(
                         onError = { user2Status = "Prêt" }
                     )
                 } else {
-                    user2ReceivedText = "Traduction indisponible"
-                    user2Transcript = "Traduction indisponible"
+                    user2ReceivedText = ""
+                    user2Transcript = ""
                     user1Status = "Prêt"
                     user2Status = "Prêt"
+                    errorMessage = "Traduction indisponible pour le moment. Vérifiez votre connexion et réessayez."
                 }
             } catch (ce: kotlinx.coroutines.CancellationException) {
                 throw ce
@@ -482,10 +483,11 @@ fun LiveConversationScreen(
                         onError = { user1Status = "Prêt" }
                     )
                 } else {
-                    user1ReceivedText = "Traduction indisponible"
-                    user1Transcript = "Traduction indisponible"
+                    user1ReceivedText = ""
+                    user1Transcript = ""
                     user1Status = "Prêt"
                     user2Status = "Prêt"
+                    errorMessage = "Traduction indisponible pour le moment. Vérifiez votre connexion et réessayez."
                 }
             } catch (ce: kotlinx.coroutines.CancellationException) {
                 throw ce
@@ -678,6 +680,7 @@ fun LiveConversationScreen(
         val text = ConversationCleaner.cleanVoiceTranscript(raw, senderLang).ifBlank { raw }
 
         typedMessage = ""
+        errorMessage = null
         keyboardController?.hide()
 
         if (typedSenderIsUser1) {
@@ -728,9 +731,10 @@ fun LiveConversationScreen(
                             onError = { user2Status = "Prêt" }
                         )
                     } else {
-                        user2ReceivedText = "Traduction indisponible"
-                        user2Transcript = "Traduction indisponible"
+                        user2ReceivedText = ""
+                        user2Transcript = ""
                         user2Status = "Prêt"
+                        errorMessage = "Traduction indisponible pour le moment. Vérifiez votre connexion et réessayez."
                     }
                 } catch (ce: kotlinx.coroutines.CancellationException) {
                     throw ce
@@ -788,9 +792,10 @@ fun LiveConversationScreen(
                             onError = { user1Status = "Prêt" }
                         )
                     } else {
-                        user1ReceivedText = "Traduction indisponible"
-                        user1Transcript = "Traduction indisponible"
+                        user1ReceivedText = ""
+                        user1Transcript = ""
                         user1Status = "Prêt"
+                        errorMessage = "Traduction indisponible pour le moment. Vérifiez votre connexion et réessayez."
                     }
                 } catch (ce: kotlinx.coroutines.CancellationException) {
                     throw ce

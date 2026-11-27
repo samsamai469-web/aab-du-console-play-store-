@@ -3026,17 +3026,22 @@ class SamAiViewModel(
 
             val candidate = output.translatedText.trim()
             val areLanguagesDifferent = !sourceLang.equals(targetLang, ignoreCase = true)
+            if (!areLanguagesDifferent) {
+                return@withContext sanitized
+            }
             val isCandidateValid = candidate.isNotBlank() &&
-                (!areLanguagesDifferent || !candidate.equals(sanitized, ignoreCase = true)) &&
+                !candidate.equals(sanitized, ignoreCase = true) &&
                 !candidate.contains("non disponible hors-ligne")
 
             if (isCandidateValid) {
                 candidate
             } else {
-                candidate.ifBlank { sanitized }
+                ""
             }
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
         } catch (_: Exception) {
-            sanitized
+            ""
         }
     }
 

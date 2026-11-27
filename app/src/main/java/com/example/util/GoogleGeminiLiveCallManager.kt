@@ -113,6 +113,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     private var receiveJob: Job? = null
     private var playbackJob: Job? = null
     private var playbackEndCheckJob: Job? = null
+    private var thinkingWatchdogJob: Job? = null
 
     private val isActiveCall = AtomicBoolean(false)
     private val isMuted = AtomicBoolean(false)
@@ -130,7 +131,10 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     @Volatile
     private var playbackFinishTimeMs: Long = 0L
 
-    private val postPlaybackEchoGuardMs = 260L
+    @Volatile
+    private var cancelledAtMs: Long = 0L
+
+    private val postPlaybackEchoGuardMs = 240L
 
     private val _callState = MutableStateFlow(VoiceCallState.CONNECTING)
     val callState: StateFlow<VoiceCallState> = _callState.asStateFlow()
@@ -144,10 +148,14 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     private val _aiTranscript = MutableStateFlow("")
     val aiTranscript: StateFlow<String> = _aiTranscript.asStateFlow()
 
+    private val _lastConnectionError = MutableStateFlow<String?>(null)
+    val lastConnectionError: StateFlow<String?> = _lastConnectionError.asStateFlow()
+
     private val currentUserTranscriptBuilder = StringBuilder()
     private val currentAiTranscriptBuilder = StringBuilder()
 
     private val audioManager = context.applicationContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    private var audioFocusRequest: android.media.AudioFocusRequest? = null
     private var previousAudioMode: Int = AudioManager.MODE_NORMAL
 
     fun startCall() {
@@ -160,6 +168,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         acceptingAiAudio.set(false)
         isPlaybackWorkerWriting.set(false)
         isPlaybackManuallyCancelled.set(false)
+        cancelledAtMs = 0L
         pcmPlaybackQueue.clear()
         sessionReadyAtMs = 0L
         playbackFinishTimeMs = 0L
@@ -169,6 +178,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         _callState.value = VoiceCallState.CONNECTING
         _userTranscript.value = ""
         _aiTranscript.value = ""
+        _lastConnectionError.value = null
         _soundLevel.value = 0f
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -186,6 +196,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                     val req = android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
                         .setAudioAttributes(attrs)
                         .build()
+                    audioFocusRequest = req
                     am.requestAudioFocus(req)
                 } else {
                     @Suppress("DEPRECATION")
@@ -203,7 +214,8 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             val liveHeadlines = LiveNewsFeedService.getInstantCachedSummary()
             val connected = connectLiveSession(liveHeadlines)
             if (!connected && isActiveCall.get()) {
-                notifyFallback("Session Google Gemini Live indisponible")
+                val reason = _lastConnectionError.value ?: "Session Google Gemini Live indisponible"
+                notifyFallback(reason)
             }
         }
     }
@@ -223,6 +235,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     private suspend fun connectLiveSession(liveHeadlines: String): Boolean {
         val apiKey = apiKeyManager.getActiveGeminiLiveApiKey()
         if (apiKey.isBlank()) {
+            _lastConnectionError.value = "Clé API Google Gemini manquante."
             Log.w(TAG, "Clé API Google Gemini manquante pour l'appel Live")
             return false
         }
@@ -233,44 +246,60 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             LIVE_MODEL_PRIMARY,
             LIVE_MODEL_FALLBACK
         ).distinct()
+        var lastError: Throwable? = null
         for (modelName in modelsToTry) {
             if (!isActiveCall.get()) return false
-            try {
-                Log.d(TAG, "Connexion Google Gemini Live direct avec $modelName...")
-                val session = GoogleGeminiDirectClient.connectLiveSession(
-                    apiKey = apiKey,
-                    model = modelName,
-                    systemInstruction = systemInstructionText,
-                    voiceName = LIVE_VOICE,
-                    enableGoogleSearch = true,
-                    setupTimeoutMs = 4_000L
-                )
-                if (!isActiveCall.get()) {
-                    try { session.close() } catch (_: Throwable) {}
-                    return false
-                }
-                preferredWorkingLiveModel = modelName
-                liveSession = session
-                sessionReadyAtMs = System.currentTimeMillis()
-                isSessionReady.set(true)
-                _callState.value = VoiceCallState.USER_SPEAKING
-                Log.d(TAG, "Google Gemini Live direct connecté ($modelName)")
+            for (useSearchTool in listOf(true, false)) {
+                if (!isActiveCall.get()) return false
+                try {
+                    Log.d(TAG, "Connexion Google Gemini Live direct avec $modelName (search=$useSearchTool)...")
+                    val session = GoogleGeminiDirectClient.connectLiveSession(
+                        apiKey = apiKey,
+                        model = modelName,
+                        systemInstruction = systemInstructionText,
+                        voiceName = LIVE_VOICE,
+                        enableGoogleSearch = useSearchTool,
+                        setupTimeoutMs = 7_500L
+                    )
+                    if (!isActiveCall.get()) {
+                        try { session.close() } catch (_: Throwable) {}
+                        return false
+                    }
+                    preferredWorkingLiveModel = modelName
+                    liveSession = session
+                    sessionReadyAtMs = System.currentTimeMillis()
+                    isSessionReady.set(true)
+                    _lastConnectionError.value = null
+                    _callState.value = VoiceCallState.USER_SPEAKING
+                    Log.d(TAG, "Google Gemini Live direct connecté ($modelName, search=$useSearchTool)")
 
-                startReceivingLoop(session)
-                startMicrophoneStreaming(session)
-                return true
-            } catch (tce: TimeoutCancellationException) {
-                Log.w(TAG, "Timeout connexion Live sur $modelName (4s)")
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (e: Throwable) {
-                Log.w(TAG, "Échec connexion Live sur $modelName : ${e.message}", e)
-                if (e is MissingGeminiApiKeyException ||
-                    (e is GeminiApiHttpException && (e.httpCode == 401 || e.httpCode == 403))
-                ) {
-                    return false
+                    startReceivingLoop(session)
+                    startMicrophoneStreaming(session)
+                    return true
+                } catch (tce: TimeoutCancellationException) {
+                    lastError = tce
+                    Log.w(TAG, "Timeout connexion Live sur $modelName (7.5s)")
+                    break
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Throwable) {
+                    lastError = e
+                    Log.w(TAG, "Échec connexion Live sur $modelName (search=$useSearchTool): ${e.message}", e)
+                    if (e is MissingGeminiApiKeyException ||
+                        (e is GeminiApiHttpException && (e.httpCode == 401 || e.httpCode == 403))
+                    ) {
+                        _lastConnectionError.value = GeminiErrorHandler.parse(e).userFriendlyMessage
+                        return false
+                    }
+                    // Ne réessaie sans outil Google Search que sur erreur de configuration 400
+                    if (!(e is GeminiApiHttpException && e.httpCode == 400 && useSearchTool)) {
+                        break
+                    }
                 }
             }
+        }
+        if (lastError != null) {
+            _lastConnectionError.value = GeminiErrorHandler.parse(lastError).userFriendlyMessage
         }
         return false
     }
@@ -297,9 +326,32 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         }
     }
 
+    private fun resetCancellationIfExpired(now: Long = System.currentTimeMillis()) {
+        if (isPlaybackManuallyCancelled.get() && (now - cancelledAtMs) > 950L) {
+            isPlaybackManuallyCancelled.set(false)
+        }
+    }
+
+    private fun startThinkingWatchdog() {
+        thinkingWatchdogJob?.cancel()
+        thinkingWatchdogJob = scope.launch {
+            delay(6_000L)
+            if (isActiveCall.get() &&
+                _callState.value == VoiceCallState.THINKING &&
+                !isResponseInProgress.get() &&
+                !acceptingAiAudio.get()
+            ) {
+                Log.w(TAG, "THINKING watchdog expiré (6s) -> retour à l'écoute")
+                _callState.value = VoiceCallState.USER_SPEAKING
+            }
+        }
+    }
+
     private fun handleLiveServerContent(msg: DirectLiveServerEvent) {
         if (msg.interrupted) {
-            isPlaybackManuallyCancelled.set(true)
+            thinkingWatchdogJob?.cancel()
+            isPlaybackManuallyCancelled.set(false)
+            cancelledAtMs = 0L
             acceptingAiAudio.set(false)
             isResponseInProgress.set(false)
             stopAndFlushPlayback()
@@ -311,6 +363,10 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
 
         val inputChunk = msg.inputTranscription
         if (inputChunk.isNotEmpty() && !isAiSpeakingOrEchoGuardActive()) {
+            if (!isResponseInProgress.get() && !acceptingAiAudio.get()) {
+                isPlaybackManuallyCancelled.set(false)
+                thinkingWatchdogJob?.cancel()
+            }
             currentUserTranscriptBuilder.append(inputChunk)
             val candidateUser = currentUserTranscriptBuilder.toString().trim()
             if (candidateUser.isNotBlank() && !isHallucinatedOrNoiseTranscript(candidateUser)) {
@@ -318,8 +374,11 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             }
         }
 
+        resetCancellationIfExpired()
+
         val outputChunk = msg.outputTranscription
         if (outputChunk.isNotEmpty() && !isPlaybackManuallyCancelled.get()) {
+            thinkingWatchdogJob?.cancel()
             if (!isResponseInProgress.get()) {
                 currentAiTranscriptBuilder.clear()
                 isResponseInProgress.set(true)
@@ -331,6 +390,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
 
         for (pcmBytes in msg.audioChunks) {
             if (pcmBytes.isNotEmpty() && !isPlaybackManuallyCancelled.get()) {
+                thinkingWatchdogJob?.cancel()
                 isResponseInProgress.set(true)
                 acceptingAiAudio.set(true)
                 _callState.value = VoiceCallState.SAM_SPEAKING
@@ -339,6 +399,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         }
 
         if (msg.turnComplete) {
+            thinkingWatchdogJob?.cancel()
             isResponseInProgress.set(false)
             val rawUser = currentUserTranscriptBuilder.toString().trim()
             val finalUser = if (rawUser.isNotBlank() && !isHallucinatedOrNoiseTranscript(rawUser)) rawUser else ""
@@ -360,6 +421,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             currentUserTranscriptBuilder.clear()
             currentAiTranscriptBuilder.clear()
             isPlaybackManuallyCancelled.set(false)
+            cancelledAtMs = 0L
             scheduleReturnToListeningState()
         }
     }
@@ -378,7 +440,6 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             isPlaybackWorkerWriting.get() ||
             pcmPlaybackQueue.isNotEmpty() ||
             _callState.value == VoiceCallState.SAM_SPEAKING ||
-            _callState.value == VoiceCallState.THINKING ||
             (playbackFinishTimeMs > 0L && now < (playbackFinishTimeMs + postPlaybackEchoGuardMs))
     }
 
@@ -476,7 +537,11 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             var postAiFlushFramesRemaining = 0
             var ambientFloor = 45.0
             var voiceHoldFrames = 0
+            var speechFramesInTurn = 0
+            var sentAnyAudioInTurn = false
+            var consecutiveSendFailures = 0
             var consecutiveZeroOrErrFrames = 0
+            val preRollQueue = ArrayDeque<ByteArray>(6)
 
             while (isActive && isActiveCall.get()) {
                 val readBytes = recorder.read(frameBuffer, 0, frameBuffer.size)
@@ -501,6 +566,9 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                     if (isMuted.get() || !isSessionReady.get()) {
                         _soundLevel.value = 0f
                         voiceHoldFrames = 0
+                        speechFramesInTurn = 0
+                        sentAnyAudioInTurn = false
+                        preRollQueue.clear()
                         continue
                     }
 
@@ -516,6 +584,9 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                             _soundLevel.value = 0f
                         }
                         voiceHoldFrames = 0
+                        speechFramesInTurn = 0
+                        sentAnyAudioInTurn = false
+                        preRollQueue.clear()
                         wasAiSpeakingOrGuarded = true
                         continue
                     } else if (wasAiSpeakingOrGuarded) {
@@ -523,6 +594,9 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                         postAiFlushFramesRemaining = 3
                         _soundLevel.value = 0f
                         voiceHoldFrames = 0
+                        speechFramesInTurn = 0
+                        sentAnyAudioInTurn = false
+                        preRollQueue.clear()
                         continue
                     }
 
@@ -542,10 +616,10 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                         val rawSample = (high shl 8) or low
                         rawSumSquares += (rawSample * rawSample).toDouble()
 
-                        val boosted = (rawSample * 33) / 20
+                        val boosted = (rawSample * 5) / 4
                         val outSample = when {
-                            boosted > 24000 -> (24000 + (boosted - 24000) / 3).coerceAtMost(Short.MAX_VALUE.toInt())
-                            boosted < -24000 -> (-24000 + (boosted + 24000) / 3).coerceAtLeast(Short.MIN_VALUE.toInt())
+                            boosted > 26000 -> (26000 + (boosted - 26000) / 3).coerceAtMost(Short.MAX_VALUE.toInt())
+                            boosted < -26000 -> (-26000 + (boosted + 26000) / 3).coerceAtLeast(Short.MIN_VALUE.toInt())
                             else -> boosted
                         }
                         processedBuffer[j] = (outSample and 0xFF).toByte()
@@ -555,34 +629,85 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
 
                     val rawRms = if (sampleCount > 0) sqrt(rawSumSquares / sampleCount) else 0.0
                     if (voiceHoldFrames == 0 && rawRms in 1.0..120.0) {
-                        ambientFloor = ((ambientFloor * 0.92) + (rawRms * 0.08)).coerceIn(35.0, 120.0)
+                        ambientFloor = ((ambientFloor * 0.92) + (rawRms * 0.08)).coerceIn(30.0, 115.0)
                     }
-                    val vocalGate = maxOf(70.0, ambientFloor * 1.32).coerceAtMost(155.0)
+                    val vocalGate = maxOf(62.0, ambientFloor * 1.30).coerceAtMost(150.0)
                     val isVoiceFrame = rawRms >= vocalGate
                     if (isVoiceFrame) {
-                        voiceHoldFrames = 18
+                        voiceHoldFrames = 32 // ~640 ms de maintien après chaque syllabe
+                        speechFramesInTurn++
+                        if (_callState.value == VoiceCallState.THINKING) {
+                            thinkingWatchdogJob?.cancel()
+                            _callState.value = VoiceCallState.USER_SPEAKING
+                        }
                     } else if (voiceHoldFrames > 0) {
                         voiceHoldFrames--
                     }
 
-                    val visualGate = maxOf(65.0, ambientFloor * 1.18)
+                    val visualGate = maxOf(58.0, ambientFloor * 1.15)
                     val normalizedLevel = if (rawRms >= visualGate || isVoiceFrame || voiceHoldFrames > 0) {
-                        val linear = ((rawRms - ambientFloor * 0.88).coerceAtLeast(0.0) / 1400.0).coerceIn(0.0, 1.0)
+                        val linear = ((rawRms - ambientFloor * 0.85).coerceAtLeast(0.0) / 1350.0).coerceIn(0.0, 1.0)
                         sqrt(linear).toFloat().coerceIn(0f, 1f)
                     } else {
                         0f
                     }
                     _soundLevel.value = normalizedLevel
 
-                    try {
-                        session.sendAudioRealtime(
-                            pcmBytes = processedBuffer,
-                            mimeType = "audio/pcm;rate=$INPUT_SAMPLE_RATE"
-                        )
-                    } catch (ce: CancellationException) {
-                        throw ce
-                    } catch (e: Throwable) {
-                        Log.w(TAG, "Envoi audio Live échoué : ${e.message}")
+                    if (isVoiceFrame || voiceHoldFrames > 0) {
+                        try {
+                            if (!sentAnyAudioInTurn && preRollQueue.isNotEmpty()) {
+                                while (preRollQueue.isNotEmpty()) {
+                                    val preFrame = preRollQueue.removeFirst()
+                                    val okPre = session.sendAudioRealtime(
+                                        pcmBytes = preFrame,
+                                        mimeType = "audio/pcm;rate=$INPUT_SAMPLE_RATE"
+                                    )
+                                    if (!okPre) consecutiveSendFailures++ else consecutiveSendFailures = 0
+                                }
+                            }
+                            val ok = session.sendAudioRealtime(
+                                pcmBytes = processedBuffer,
+                                mimeType = "audio/pcm;rate=$INPUT_SAMPLE_RATE"
+                            )
+                            sentAnyAudioInTurn = true
+                            if (!ok) {
+                                consecutiveSendFailures++
+                                if (consecutiveSendFailures >= 8) {
+                                    Log.w(TAG, "WebSocket audio send échoué 8x -> bascule fallback")
+                                    notifyFallback("Connexion vocale Live instable")
+                                    break
+                                }
+                            } else {
+                                consecutiveSendFailures = 0
+                            }
+                        } catch (ce: CancellationException) {
+                            throw ce
+                        } catch (e: Throwable) {
+                            Log.w(TAG, "Envoi audio Live échoué : ${e.message}")
+                        }
+                    } else {
+                        if (preRollQueue.size >= 6) {
+                            preRollQueue.removeFirst()
+                        }
+                        preRollQueue.addLast(processedBuffer)
+
+                        if (sentAnyAudioInTurn) {
+                            if (speechFramesInTurn >= 8) {
+                                try {
+                                    session.sendAudioStreamEnd()
+                                    if (!isResponseInProgress.get() && _callState.value == VoiceCallState.USER_SPEAKING) {
+                                        _callState.value = VoiceCallState.THINKING
+                                        startThinkingWatchdog()
+                                    }
+                                } catch (ce: CancellationException) {
+                                    throw ce
+                                } catch (e: Throwable) {
+                                    Log.w(TAG, "Envoi audioStreamEnd échoué : ${e.message}")
+                                }
+                            }
+                            sentAnyAudioInTurn = false
+                            speechFramesInTurn = 0
+                        }
                     }
                 }
             }
@@ -713,18 +838,33 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     }
 
     fun interruptAiSpeech() {
-        isPlaybackManuallyCancelled.set(true)
+        val wasAiActuallySpeaking = isResponseInProgress.get() ||
+            acceptingAiAudio.get() ||
+            isPlaybackWorkerWriting.get() ||
+            pcmPlaybackQueue.isNotEmpty() ||
+            _callState.value == VoiceCallState.SAM_SPEAKING
+
+        thinkingWatchdogJob?.cancel()
+        if (wasAiActuallySpeaking) {
+            isPlaybackManuallyCancelled.set(true)
+            cancelledAtMs = System.currentTimeMillis()
+        } else {
+            isPlaybackManuallyCancelled.set(false)
+            cancelledAtMs = 0L
+        }
         acceptingAiAudio.set(false)
         isResponseInProgress.set(false)
         isPlaybackWorkerWriting.set(false)
         stopAndFlushPlayback()
         currentAiTranscriptBuilder.clear()
+        _aiTranscript.value = ""
         _callState.value = VoiceCallState.USER_SPEAKING
     }
 
     fun commitUserSpeechNow() {
         if (!isResponseInProgress.get() && isActiveCall.get()) {
             _callState.value = VoiceCallState.THINKING
+            startThinkingWatchdog()
             scope.launch(Dispatchers.IO) {
                 try {
                     liveSession?.sendAudioStreamEnd()
@@ -804,6 +944,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             recordingJob?.cancel()
             playbackJob?.cancel()
             playbackEndCheckJob?.cancel()
+            thinkingWatchdogJob?.cancel()
             val sessionToClose = liveSession
             liveSession = null
             if (sessionToClose != null) {
@@ -848,8 +989,13 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         try {
             audioManager?.let { am ->
                 am.mode = previousAudioMode
-                @Suppress("DEPRECATION")
-                am.abandonAudioFocus(null)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
+                    audioFocusRequest = null
+                } else {
+                    @Suppress("DEPRECATION")
+                    am.abandonAudioFocus(null)
+                }
             }
         } catch (_: Exception) {}
     }

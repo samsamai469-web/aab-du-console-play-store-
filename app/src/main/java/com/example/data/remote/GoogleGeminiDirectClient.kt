@@ -604,7 +604,12 @@ object GoogleGeminiDirectClient {
             req,
             object : WebSocketListener() {
                 override fun onOpen(webSocket: WebSocket, response: Response) {
-                    webSocket.send(setupJson)
+                    val sent = webSocket.send(setupJson)
+                    if (!sent && !setupReady.isCompleted) {
+                        setupReady.completeExceptionally(
+                            IOException("Échec d'envoi de la configuration Live WebSocket.")
+                        )
+                    }
                 }
 
                 override fun onMessage(webSocket: WebSocket, text: String) {
@@ -618,7 +623,8 @@ object GoogleGeminiDirectClient {
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     val code = response?.code
                     val err = if (code != null) {
-                        GeminiApiHttpException(code, null, t.message, null)
+                        val body = try { response.body?.string() } catch (_: Throwable) { null }
+                        parseHttpError(code, body ?: t.message)
                     } else {
                         t
                     }
@@ -690,13 +696,22 @@ object GoogleGeminiDirectClient {
             val interrupted = serverContent["interrupted"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
             val turnComplete = serverContent["turnComplete"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
             val inputTx = serverContent["inputTranscription"]?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull.orEmpty()
-            val outputTx = serverContent["outputTranscription"]?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull.orEmpty()
+            var outputTx = serverContent["outputTranscription"]?.jsonObject?.get("text")?.jsonPrimitive?.contentOrNull.orEmpty()
 
             val audioList = mutableListOf<ByteArray>()
+            val fallbackTextBuilder = StringBuilder()
             val parts = serverContent["modelTurn"]?.jsonObject?.get("parts") as? JsonArray
             if (parts != null) {
                 for (el in parts) {
-                    val inlineData = el.jsonObject["inlineData"]?.jsonObject ?: continue
+                    val partObj = el.jsonObject
+                    val isThought = partObj["thought"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() ?: false
+                    if (!isThought) {
+                        val partText = partObj["text"]?.jsonPrimitive?.contentOrNull
+                        if (!partText.isNullOrEmpty()) {
+                            fallbackTextBuilder.append(partText)
+                        }
+                    }
+                    val inlineData = partObj["inlineData"]?.jsonObject ?: continue
                     val b64 = inlineData["data"]?.jsonPrimitive?.contentOrNull.orEmpty()
                     if (b64.isNotBlank()) {
                         try {
@@ -705,6 +720,9 @@ object GoogleGeminiDirectClient {
                         } catch (_: Throwable) {}
                     }
                 }
+            }
+            if (outputTx.isEmpty() && fallbackTextBuilder.isNotEmpty()) {
+                outputTx = fallbackTextBuilder.toString()
             }
 
             if (interrupted || turnComplete || inputTx.isNotEmpty() || outputTx.isNotEmpty() || audioList.isNotEmpty()) {

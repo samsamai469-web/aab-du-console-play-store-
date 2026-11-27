@@ -25,6 +25,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -63,6 +64,7 @@ class AiRepository(
     companion object {
         private const val TAG = "AiRepository"
         const val DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+        const val FALLBACK_FLASH_MODEL = "gemini-3.6-flash"
         const val REASONING_GEMINI_MODEL = "gemini-4-argon"
         const val LITE_GEMINI_MODEL = "gemini-3.5-flash-lite"
         private const val AI_TIMEOUT_MS = 10_000L
@@ -103,6 +105,22 @@ class AiRepository(
             parsed.httpCode == 403 ||
             parsed.httpCode == 401 ||
             raw is MissingGeminiApiKeyException
+    }
+
+    private fun isRetryableTransientError(err: Throwable?): Boolean {
+        if (err == null) return false
+        if (err is TimeoutCancellationException ||
+            err is java.net.SocketTimeoutException ||
+            err is java.util.concurrent.TimeoutException
+        ) {
+            return true
+        }
+        val parsed = GeminiErrorHandler.parse(err)
+        return parsed.isTemporaryOverload ||
+            parsed.isRateLimited ||
+            parsed.httpCode == 503 ||
+            parsed.httpCode == 500 ||
+            parsed.httpCode == 429
     }
 
     fun getConversationsForUser(userId: String): Flow<List<ConversationEntity>> {
@@ -294,58 +312,96 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             } catch (_: Throwable) {}
         }
 
-        // 1. Moteur IA Google Gemini direct (gemini-3.5-flash-lite -> gemini-3.8-flash)
+        // 1. Moteur IA Google Gemini direct (gemini-3.5-flash-lite -> gemini-3.8-flash -> gemini-3.6-flash) avec retry 503/429
         val apiKey = resolveApiKey()
         if (apiKey.isNotBlank()) {
-            val candidateModels = listOf(LITE_GEMINI_MODEL, DEFAULT_GEMINI_MODEL).distinct()
+            val candidateModels = listOf(LITE_GEMINI_MODEL, DEFAULT_GEMINI_MODEL, FALLBACK_FLASH_MODEL).distinct()
             val prompt = "Texte à traduire du $srcLang vers le $tgtLang :\n$cleanSrc"
             val contents = listOf(DirectContentInput(role = "user", parts = listOf(DirectPartInput(text = prompt))))
             val translateStartMs = System.currentTimeMillis()
-            for (candidateModel in candidateModels) {
-                val elapsed = System.currentTimeMillis() - translateStartMs
-                val remaining = 8_500L - elapsed
-                if (remaining < 1_200L) break
-                val callTimeout = minOf(4_500L, remaining)
-                val resultDeferred = CompletableDeferred<String?>()
-                val isAuthAbort = AtomicBoolean(false)
-                val aiJob = CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-                    try {
-                        val response = GoogleGeminiDirectClient.generateContent(
-                            apiKey = apiKey,
-                            model = candidateModel,
-                            contents = contents,
-                            systemInstruction = systemInstructionText,
-                            temperature = 0.1f,
-                            maxOutputTokens = 600
-                        )
-                        val rawResult = response.text.trim()
-                        val cleanResult = extractCleanTranslation(rawResult, tgtLang)
-                        if (cleanResult.isNotBlank() &&
-                            !cleanResult.equals(cleanSrc, ignoreCase = true) &&
-                            !isExplanatoryOrMixed(cleanResult, tgtLang)
-                        ) {
-                            resultDeferred.complete(cleanResult)
-                        } else {
-                            resultDeferred.complete(null)
-                        }
-                    } catch (e: Throwable) {
-                        Log.w(TAG, "Direct Google Gemini translation with $candidateModel failed: ${e.message}")
-                        if (e is MissingGeminiApiKeyException ||
-                            (e is GeminiApiHttpException && (e.httpCode == 401 || e.httpCode == 403))
-                        ) {
-                            isAuthAbort.set(true)
-                        }
-                        resultDeferred.complete(null)
+            val translateBudgetMs = 12_500L
+            val unavailableModels = HashSet<String>()
+            var lastError: Throwable? = null
+            var authAborted = false
+
+            for (round in 0..1) {
+                if (authAborted) break
+                if (round > 0) {
+                    val elapsed = System.currentTimeMillis() - translateStartMs
+                    if (!isRetryableTransientError(lastError) || (translateBudgetMs - elapsed) < 2_500L) {
+                        break
                     }
+                    delay(400L)
                 }
-                val fastAnswer = withTimeoutOrNull(callTimeout) {
-                    resultDeferred.await()
-                }
-                if (!fastAnswer.isNullOrBlank()) {
-                    return@withContext fastAnswer
-                } else {
-                    aiJob.cancel()
-                    if (isAuthAbort.get()) break
+
+                for (candidateModel in candidateModels) {
+                    if (candidateModel in unavailableModels) continue
+                    val elapsed = System.currentTimeMillis() - translateStartMs
+                    val remaining = translateBudgetMs - elapsed
+                    if (remaining < 1_500L) break
+                    val callTimeout = minOf(4_500L, remaining)
+                    val resultDeferred = CompletableDeferred<Result<String?>>()
+                    val isAuthAbort = AtomicBoolean(false)
+                    val aiJob = CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                        try {
+                            val response = GoogleGeminiDirectClient.generateContent(
+                                apiKey = apiKey,
+                                model = candidateModel,
+                                contents = contents,
+                                systemInstruction = systemInstructionText,
+                                temperature = 0.1f,
+                                maxOutputTokens = 600
+                            )
+                            val rawResult = response.text.trim()
+                            val cleanResult = extractCleanTranslation(rawResult, tgtLang)
+                            if (cleanResult.isNotBlank() &&
+                                !cleanResult.equals(cleanSrc, ignoreCase = true) &&
+                                !isExplanatoryOrMixed(cleanResult, tgtLang)
+                            ) {
+                                resultDeferred.complete(Result.success(cleanResult))
+                            } else {
+                                resultDeferred.complete(Result.success(null))
+                            }
+                        } catch (e: Throwable) {
+                            Log.w(TAG, "Direct Google Gemini translation with $candidateModel failed: ${e.message}")
+                            if (e is MissingGeminiApiKeyException ||
+                                (e is GeminiApiHttpException && (e.httpCode == 401 || e.httpCode == 403))
+                            ) {
+                                isAuthAbort.set(true)
+                            }
+                            resultDeferred.complete(Result.failure(e))
+                        }
+                    }
+                    val outcome = withTimeoutOrNull(callTimeout) {
+                        resultDeferred.await()
+                    }
+                    if (outcome == null) {
+                        aiJob.cancel()
+                        lastError = java.util.concurrent.TimeoutException("Timeout translation on $candidateModel")
+                        if (isAuthAbort.get()) {
+                            authAborted = true
+                            break
+                        }
+                        continue
+                    }
+
+                    if (outcome.isSuccess) {
+                        val fastAnswer = outcome.getOrNull()
+                        if (!fastAnswer.isNullOrBlank()) {
+                            return@withContext fastAnswer
+                        }
+                    } else {
+                        aiJob.cancel()
+                        val err = outcome.exceptionOrNull()
+                        lastError = err
+                        if (isAuthAbort.get()) {
+                            authAborted = true
+                            break
+                        }
+                        if (err is GeminiApiHttpException && err.httpCode == 404) {
+                            unavailableModels.add(candidateModel)
+                        }
+                    }
                 }
             }
         }
@@ -551,10 +607,11 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         val baseModels = listOfNotNull(
             preferredWorkingChatModel,
             LITE_GEMINI_MODEL,
-            DEFAULT_GEMINI_MODEL
+            DEFAULT_GEMINI_MODEL,
+            FALLBACK_FLASH_MODEL
         ).distinct()
         val cleanPreferred = preferredModel.trim()
-        val allowedNewModels = setOf(DEFAULT_GEMINI_MODEL, REASONING_GEMINI_MODEL, LITE_GEMINI_MODEL)
+        val allowedNewModels = setOf(DEFAULT_GEMINI_MODEL, FALLBACK_FLASH_MODEL, REASONING_GEMINI_MODEL, LITE_GEMINI_MODEL)
         val modelsToTry = if (cleanPreferred in allowedNewModels) {
             (listOf(cleanPreferred) + baseModels).distinct()
         } else {
@@ -709,10 +766,11 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
         val baseModels = listOfNotNull(
             preferredWorkingChatModel,
             LITE_GEMINI_MODEL,
-            DEFAULT_GEMINI_MODEL
+            DEFAULT_GEMINI_MODEL,
+            FALLBACK_FLASH_MODEL
         ).distinct()
         val cleanPreferred = preferredModel.trim()
-        val allowedNewModels = setOf(DEFAULT_GEMINI_MODEL, REASONING_GEMINI_MODEL, LITE_GEMINI_MODEL)
+        val allowedNewModels = setOf(DEFAULT_GEMINI_MODEL, FALLBACK_FLASH_MODEL, REASONING_GEMINI_MODEL, LITE_GEMINI_MODEL)
         val modelsToTry = if (cleanPreferred in allowedNewModels) {
             (listOf(cleanPreferred) + baseModels).distinct()
         } else {
@@ -881,35 +939,93 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             googleSearchFailed = true
         }
 
-        for (targetModel in modelsToTry) {
-            val remainingMs = totalRequestBudgetMs - (System.currentTimeMillis() - streamStartMs)
-            if (remainingMs < 2_500L) break
-            try {
-                val streamResult = streamFromModel(
-                    targetModel = targetModel,
-                    useGoogleSearch = false,
-                    firstChunkTimeoutMs = minOf(5_500L, remainingMs),
-                    totalStreamTimeoutMs = minOf(25_000L, remainingMs)
-                )
-                if (streamResult.text.isNotBlank()) {
-                    preferredWorkingChatModel = targetModel
-                    return@withContext GeminiRequestResult(
-                        success = true,
-                        text = streamResult.text,
-                        sources = streamResult.sources,
-                        isSearchError = googleSearchAttempted && googleSearchFailed
-                    )
+        val unavailableStreamModels = HashSet<String>()
+        var lastRawStreamError: Throwable? = null
+        for (round in 0..1) {
+            if (round > 0) {
+                val remAfterPass = totalRequestBudgetMs - (System.currentTimeMillis() - streamStartMs)
+                if (!isRetryableTransientError(lastRawStreamError) || remAfterPass < 4_000L) {
+                    break
                 }
-                val streamErr = streamResult.error
-                val isStreamTimeoutOrNetwork = streamErr is java.net.SocketTimeoutException ||
-                    streamErr is TimeoutCancellationException ||
-                    streamErr is java.net.UnknownHostException ||
-                    streamErr is java.net.ConnectException
-                if (streamErr != null) {
-                    val parsed = GeminiErrorHandler.parse(streamErr)
+                delay(450L)
+            }
+            for (targetModel in modelsToTry) {
+                if (targetModel in unavailableStreamModels) continue
+                val remainingMs = totalRequestBudgetMs - (System.currentTimeMillis() - streamStartMs)
+                if (remainingMs < 2_500L) break
+                try {
+                    val streamResult = streamFromModel(
+                        targetModel = targetModel,
+                        useGoogleSearch = false,
+                        firstChunkTimeoutMs = minOf(5_500L, remainingMs),
+                        totalStreamTimeoutMs = minOf(25_000L, remainingMs)
+                    )
+                    if (streamResult.text.isNotBlank()) {
+                        preferredWorkingChatModel = targetModel
+                        return@withContext GeminiRequestResult(
+                            success = true,
+                            text = streamResult.text,
+                            sources = streamResult.sources,
+                            isSearchError = googleSearchAttempted && googleSearchFailed
+                        )
+                    }
+                    val streamErr = streamResult.error
+                    val isStreamTimeoutOrNetwork = streamErr is java.net.SocketTimeoutException ||
+                        streamErr is TimeoutCancellationException ||
+                        streamErr is java.net.UnknownHostException ||
+                        streamErr is java.net.ConnectException
+                    if (streamErr != null) {
+                        lastRawStreamError = streamErr
+                        val parsed = GeminiErrorHandler.parse(streamErr)
+                        lastParsedError = parsed
+                        Log.e(TAG, "Streaming Google Gemini failed on $targetModel: ${parsed.rawMessage}", streamErr)
+                        if (isFatalApiKeyError(parsed, streamErr)) {
+                            return@withContext GeminiRequestResult(
+                                success = false,
+                                text = "",
+                                isSearchError = googleSearchAttempted && googleSearchFailed,
+                                errorMessage = parsed.userFriendlyMessage
+                            )
+                        }
+                        if (streamErr is GeminiApiHttpException && streamErr.httpCode == 404) {
+                            unavailableStreamModels.add(targetModel)
+                        }
+                    }
+
+                    // Repli unary uniquement si le flux a échoué pour une raison non-timeout/non-réseau et qu'il reste du budget
+                    val afterStreamRemainingMs = totalRequestBudgetMs - (System.currentTimeMillis() - streamStartMs)
+                    if (!isStreamTimeoutOrNetwork && afterStreamRemainingMs >= 3_000L && targetModel !in unavailableStreamModels) {
+                        val unaryResponse = withTimeoutOrNull(minOf(6_500L, afterStreamRemainingMs)) {
+                            GoogleGeminiDirectClient.generateContent(
+                                apiKey = resolvedKey,
+                                model = targetModel,
+                                contents = directContents,
+                                systemInstruction = sysText,
+                                enableGoogleSearch = false,
+                                temperature = temperature.toFloat(),
+                                maxOutputTokens = maxOutputTokens
+                            )
+                        }
+                        val unaryText = unaryResponse?.text.orEmpty().trim()
+                        if (unaryText.isNotBlank()) {
+                            preferredWorkingChatModel = targetModel
+                            onPartialText(unaryText)
+                            return@withContext GeminiRequestResult(
+                                success = true,
+                                text = unaryText,
+                                sources = unaryResponse?.sources.orEmpty(),
+                                isSearchError = googleSearchAttempted && googleSearchFailed
+                            )
+                        }
+                    }
+                } catch (ce: CancellationException) {
+                    throw ce
+                } catch (e: Throwable) {
+                    lastRawStreamError = e
+                    val parsed = GeminiErrorHandler.parse(e)
                     lastParsedError = parsed
-                    Log.e(TAG, "Streaming Google Gemini failed on $targetModel: ${parsed.rawMessage}", streamErr)
-                    if (isFatalApiKeyError(parsed, streamErr)) {
+                    Log.e(TAG, "Direct Google Gemini attempt failed on $targetModel: ${parsed.rawMessage ?: e.message}", e)
+                    if (isFatalApiKeyError(parsed, e)) {
                         return@withContext GeminiRequestResult(
                             success = false,
                             text = "",
@@ -917,47 +1033,9 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                             errorMessage = parsed.userFriendlyMessage
                         )
                     }
-                }
-
-                // Repli unary uniquement si le flux a échoué pour une raison non-timeout/non-réseau et qu'il reste du budget
-                val afterStreamRemainingMs = totalRequestBudgetMs - (System.currentTimeMillis() - streamStartMs)
-                if (!isStreamTimeoutOrNetwork && afterStreamRemainingMs >= 3_000L) {
-                    val unaryResponse = withTimeoutOrNull(minOf(6_500L, afterStreamRemainingMs)) {
-                        GoogleGeminiDirectClient.generateContent(
-                            apiKey = resolvedKey,
-                            model = targetModel,
-                            contents = directContents,
-                            systemInstruction = sysText,
-                            enableGoogleSearch = false,
-                            temperature = temperature.toFloat(),
-                            maxOutputTokens = maxOutputTokens
-                        )
+                    if (e is GeminiApiHttpException && e.httpCode == 404) {
+                        unavailableStreamModels.add(targetModel)
                     }
-                    val unaryText = unaryResponse?.text.orEmpty().trim()
-                    if (unaryText.isNotBlank()) {
-                        preferredWorkingChatModel = targetModel
-                        onPartialText(unaryText)
-                        return@withContext GeminiRequestResult(
-                            success = true,
-                            text = unaryText,
-                            sources = unaryResponse?.sources.orEmpty(),
-                            isSearchError = googleSearchAttempted && googleSearchFailed
-                        )
-                    }
-                }
-            } catch (ce: CancellationException) {
-                throw ce
-            } catch (e: Throwable) {
-                val parsed = GeminiErrorHandler.parse(e)
-                lastParsedError = parsed
-                Log.e(TAG, "Direct Google Gemini attempt failed on $targetModel: ${parsed.rawMessage ?: e.message}", e)
-                if (isFatalApiKeyError(parsed, e)) {
-                    return@withContext GeminiRequestResult(
-                        success = false,
-                        text = "",
-                        isSearchError = googleSearchAttempted && googleSearchFailed,
-                        errorMessage = parsed.userFriendlyMessage
-                    )
                 }
             }
         }

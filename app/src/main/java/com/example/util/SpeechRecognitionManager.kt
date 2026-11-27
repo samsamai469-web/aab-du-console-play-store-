@@ -53,12 +53,14 @@ class SpeechRecognitionManager(private val context: Context) {
 
     private var speechRecognizer: SpeechRecognizer? = null
     private var isUsingNativeRecognizer = false
+    private var nativeTimeoutRunnable: Runnable? = null
 
     private var activeOnResult: ((String) -> Unit)? = null
     private var activeOnError: ((String) -> Unit)? = null
     private var pendingStopCallback: ((String) -> Unit)? = null
     private var activeLanguage: String = "Français"
     private var isContinuousSession: Boolean = false
+    private var nativeSessionToken: Long = 0L
     @Volatile
     private var hasDetectedSpeechInSession: Boolean = false
     @Volatile
@@ -127,7 +129,7 @@ class SpeechRecognitionManager(private val context: Context) {
     ) {
         // En mode continu automatique (appel vocal de secours / conversation live), si SAM AI est
         // en train de parler en haut-parleur ou dans sa garde acoustique, on refuse d'ouvrir le micro
-        if (continuousMode && TtsManager.isAnyTtsSpeakingOrCoolingDown(480L)) {
+        if (continuousMode && TtsManager.isAnyTtsSpeakingOrCoolingDown(350L)) {
             reset()
             onError("Haut-parleur actif")
             return
@@ -137,6 +139,7 @@ class SpeechRecognitionManager(private val context: Context) {
         }
 
         cancelCurrentJobs()
+        destroyNativeRecognizer()
         activeOnResult = onResult
         activeOnError = onError
         activeLanguage = language
@@ -147,8 +150,217 @@ class SpeechRecognitionManager(private val context: Context) {
         _soundLevel.value = 0f
         _state.value = State.Listening
 
-        // Capture directe PCM 16kHz sans perte + transcription Google Gemini (multilingue dont Mooré, Dioula, Haoussa, Français)
-        startWhisperRecognition(language)
+        val canUseNative = !isAfricanLanguage(language) &&
+            try {
+                SpeechRecognizer.isRecognitionAvailable(context)
+            } catch (_: Throwable) {
+                false
+            }
+
+        if (canUseNative) {
+            startNativeRecognition(language)
+        } else {
+            startWhisperRecognition(language)
+        }
+    }
+
+    private fun startNativeRecognition(language: String) {
+        isUsingNativeRecognizer = true
+        val token = ++nativeSessionToken
+        val langTag = getLanguageTag(language)
+
+        mainHandler.post {
+            if (_state.value !is State.Listening || token != nativeSessionToken) return@post
+            try {
+                try {
+                    speechRecognizer?.destroy()
+                } catch (_: Exception) {}
+                val recognizer = SpeechRecognizer.createSpeechRecognizer(context.applicationContext)
+                speechRecognizer = recognizer
+
+                recognizer.setRecognitionListener(object : RecognitionListener {
+                    override fun onReadyForSpeech(params: Bundle?) {
+                        if (token != nativeSessionToken) return
+                        _soundLevel.value = 0f
+                    }
+
+                    override fun onBeginningOfSpeech() {
+                        if (token != nativeSessionToken) return
+                        hasDetectedSpeechInSession = true
+                    }
+
+                    override fun onRmsChanged(rmsdB: Float) {
+                        if (token != nativeSessionToken || _state.value !is State.Listening) return
+                        val normalized = ((rmsdB + 2f) / 12f).coerceIn(0f, 1f)
+                        _soundLevel.value = normalized
+                    }
+
+                    override fun onBufferReceived(buffer: ByteArray?) {}
+
+                    override fun onEndOfSpeech() {
+                        if (token != nativeSessionToken) return
+                        _soundLevel.value = 0f
+                        scheduleNativeResultWatchdog(token, 1_500L)
+                    }
+
+                    override fun onError(error: Int) {
+                        if (token != nativeSessionToken) return
+                        clearNativeTimeout()
+                        _soundLevel.value = 0f
+
+                        if (error == SpeechRecognizer.ERROR_NO_MATCH ||
+                            error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT
+                        ) {
+                            val partial = _partialText.value.trim()
+                            if (partial.isNotBlank()) {
+                                deliverSuccess(partial)
+                            } else {
+                                val err = "Aucune parole détectée."
+                                _state.value = State.Error(err)
+                                val stopCb = pendingStopCallback
+                                val errCb = activeOnError
+                                pendingStopCallback = null
+                                activeOnError = null
+                                activeOnResult = null
+                                destroyNativeRecognizer()
+                                errCb?.invoke(err)
+                                stopCb?.invoke("")
+                            }
+                            return
+                        }
+
+                        if (error == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+                            val err = "Permission micro requise pour parler."
+                            _state.value = State.Error(err)
+                            val stopCb = pendingStopCallback
+                            val errCb = activeOnError
+                            pendingStopCallback = null
+                            activeOnError = null
+                            activeOnResult = null
+                            destroyNativeRecognizer()
+                            errCb?.invoke(err)
+                            stopCb?.invoke("")
+                            return
+                        }
+
+                        val partial = _partialText.value.trim()
+                        if (partial.isNotBlank()) {
+                            deliverSuccess(partial)
+                            return
+                        }
+
+                        Log.w(TAG, "SpeechRecognizer natif erreur ($error) -> bascule capture Gemini PCM")
+                        try {
+                            speechRecognizer?.cancel()
+                            speechRecognizer?.destroy()
+                        } catch (_: Exception) {}
+                        speechRecognizer = null
+
+                        if (pendingStopCallback != null) {
+                            val err = "Aucune parole détectée."
+                            _state.value = State.Error(err)
+                            val stopCb = pendingStopCallback
+                            val errCb = activeOnError
+                            pendingStopCallback = null
+                            activeOnError = null
+                            activeOnResult = null
+                            errCb?.invoke(err)
+                            stopCb?.invoke("")
+                            return
+                        }
+
+                        if (_state.value is State.Listening || _state.value is State.Processing) {
+                            _state.value = State.Listening
+                            mainHandler.postDelayed({
+                                if (token == nativeSessionToken && _state.value is State.Listening) {
+                                    startWhisperRecognition(activeLanguage)
+                                }
+                            }, 120L)
+                        }
+                    }
+
+                    override fun onResults(results: Bundle?) {
+                        if (token != nativeSessionToken) return
+                        clearNativeTimeout()
+                        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        val best = matches?.firstOrNull { !it.isNullOrBlank() }?.trim()
+                            ?: _partialText.value.trim()
+                        destroyNativeRecognizer()
+                        if (best.isNotBlank()) {
+                            deliverSuccess(best)
+                        } else {
+                            val err = "Aucune parole détectée."
+                            _state.value = State.Error(err)
+                            val stopCb = pendingStopCallback
+                            val errCb = activeOnError
+                            pendingStopCallback = null
+                            activeOnError = null
+                            activeOnResult = null
+                            errCb?.invoke(err)
+                            stopCb?.invoke("")
+                        }
+                    }
+
+                    override fun onPartialResults(partialResults: Bundle?) {
+                        if (token != nativeSessionToken) return
+                        val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                        val partial = matches?.firstOrNull { !it.isNullOrBlank() }?.trim().orEmpty()
+                        if (partial.isNotBlank()) {
+                            hasDetectedSpeechInSession = true
+                            _partialText.value = partial
+                        }
+                    }
+
+                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                })
+
+                val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE, langTag)
+                    putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, langTag)
+                    putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                    putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+                    putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+                }
+                recognizer.startListening(intent)
+            } catch (e: Exception) {
+                Log.w(TAG, "Échec démarrage SpeechRecognizer natif: ${e.message} -> bascule PCM")
+                destroyNativeRecognizer()
+                if (_state.value is State.Listening) {
+                    startWhisperRecognition(language)
+                }
+            }
+        }
+    }
+
+    private fun clearNativeTimeout() {
+        nativeTimeoutRunnable?.let { mainHandler.removeCallbacks(it) }
+        nativeTimeoutRunnable = null
+    }
+
+    private fun scheduleNativeResultWatchdog(token: Long, delayMs: Long) {
+        clearNativeTimeout()
+        val runnable = Runnable {
+            if (token != nativeSessionToken) return@Runnable
+            if (_state.value !is State.Listening && _state.value !is State.Processing) return@Runnable
+            val partial = _partialText.value.trim()
+            destroyNativeRecognizer()
+            if (partial.isNotBlank()) {
+                deliverSuccess(partial)
+            } else {
+                val err = "Aucune parole détectée."
+                _state.value = State.Error(err)
+                val stopCb = pendingStopCallback
+                val errCb = activeOnError
+                pendingStopCallback = null
+                activeOnError = null
+                activeOnResult = null
+                errCb?.invoke(err)
+                stopCb?.invoke("")
+            }
+        }
+        nativeTimeoutRunnable = runnable
+        mainHandler.postDelayed(runnable, delayMs)
     }
 
     private fun startWhisperRecognition(language: String) {
@@ -254,8 +466,8 @@ class SpeechRecognitionManager(private val context: Context) {
                     val voicedDuration = if (speechDetected) (lastSoundTime - speechStartTime) else 0L
                     val totalSpeechDuration = if (speechDetected) (now - speechStartTime) else 0L
 
-                    // Réarme si un simple bruit bref (< 40 ms) a déclenché l'écoute puis s'est arrêté
-                    if (speechDetected && voicedDuration < 40L && silenceDuration >= 200L) {
+                    // Réarme si un simple bruit bref (< 80 ms) a déclenché l'écoute puis s'est arrêté
+                    if (speechDetected && voicedDuration < 80L && silenceDuration >= 240L) {
                         speechDetected = false
                         hasDetectedSpeechInSession = false
                         peakSpeechAmp = 0
@@ -271,12 +483,12 @@ class SpeechRecognitionManager(private val context: Context) {
 
                     // Détection rapide et naturelle de fin de phrase :
                     // 680 ms en Mooré/Dioula (respecte les prolongations & tons), 520 ms en Français/Anglais/etc.
-                    // + Garde anti-blocage : si aucun pic vocal franc depuis 950 ms après 220 ms de parole, on conclut immédiatement.
+                    // + Garde anti-blocage : si aucun pic vocal franc depuis 850 ms après 240 ms de parole, on conclut.
                     val isAfrican = isAfricanLanguage(language)
-                    val requiredSilenceMs = if (isAfrican) 380L else 280L
-                    val minVoicedMs = if (isAfrican) 35L else 40L
+                    val requiredSilenceMs = if (isAfrican) 680L else 520L
+                    val minVoicedMs = if (isAfrican) 120L else 100L
                     val silenceReached = speechDetected && voicedDuration >= minVoicedMs &&
-                        (silenceDuration >= requiredSilenceMs || (voicedDuration >= 180L && weakTailDuration >= 450L))
+                        (silenceDuration >= requiredSilenceMs || (voicedDuration >= 240L && weakTailDuration >= 850L))
                     if (silenceReached || (speechDetected && totalSpeechDuration >= 9500L)) {
                         withContext(Dispatchers.Main) {
                             stopWhisperRecognition(onFinished = null, manualStop = false)
@@ -344,15 +556,19 @@ class SpeechRecognitionManager(private val context: Context) {
         }
 
         if (isUsingNativeRecognizer) {
+            _soundLevel.value = 0f
+            _state.value = State.Processing
+            if (onFinished != null) {
+                pendingStopCallback = onFinished
+                activeOnResult = onFinished
+            }
+            val token = nativeSessionToken
             mainHandler.post {
                 try {
                     speechRecognizer?.stopListening()
                 } catch (_: Exception) {}
             }
-            val current = _partialText.value.trim()
-            if (current.isNotBlank()) {
-                deliverSuccess(current, onFinished)
-            }
+            scheduleNativeResultWatchdog(token, 850L)
         } else {
             stopWhisperRecognition(onFinished, manualStop = true)
         }
@@ -442,6 +658,7 @@ class SpeechRecognitionManager(private val context: Context) {
     }
 
     fun reset() {
+        nativeSessionToken++
         cancelCurrentJobs()
         destroyNativeRecognizer()
         audioRecorder.cancel()
@@ -458,6 +675,7 @@ class SpeechRecognitionManager(private val context: Context) {
     }
 
     private fun cancelCurrentJobs() {
+        clearNativeTimeout()
         amplitudeJob?.cancel()
         amplitudeJob = null
         transcriptionJob?.cancel()

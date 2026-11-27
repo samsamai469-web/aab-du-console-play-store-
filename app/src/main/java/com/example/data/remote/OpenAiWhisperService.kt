@@ -28,8 +28,10 @@ class OpenAiWhisperService(context: Context) {
         private const val TAG = "GoogleSpeechTranscribe"
         private const val PRIMARY_TRANSCRIBE_MODEL = "gemini-3.8-flash"
         private const val FALLBACK_TRANSCRIBE_MODEL = "gemini-3.5-flash-lite"
-        private const val FAST_TRANSCRIBE_TIMEOUT_MS = 3_800L
-        private const val AFRICAN_TRANSCRIBE_TIMEOUT_MS = 4_800L
+        private const val TERTIARY_TRANSCRIBE_MODEL = "gemini-3.6-flash"
+        private const val FAST_TRANSCRIBE_TIMEOUT_MS = 5_500L
+        private const val AFRICAN_TRANSCRIBE_TIMEOUT_MS = 6_800L
+        private const val TOTAL_TRANSCRIBE_BUDGET_MS = 16_000L
 
         @Volatile
         private var preferredWorkingTranscribeModel: String? = null
@@ -57,6 +59,22 @@ class OpenAiWhisperService(context: Context) {
             "transcris exactement",
             "burkina faso, ouagadougou, bobo-dioulasso"
         )
+    }
+
+    private fun isRetryableTranscribeError(err: Throwable?): Boolean {
+        if (err == null) return false
+        if (err is TimeoutCancellationException ||
+            err is java.util.concurrent.TimeoutException ||
+            err is java.net.SocketTimeoutException
+        ) {
+            return true
+        }
+        val parsed = GeminiErrorHandler.parse(err)
+        return parsed.isTemporaryOverload ||
+            parsed.isRateLimited ||
+            parsed.httpCode == 503 ||
+            parsed.httpCode == 500 ||
+            parsed.httpCode == 429
     }
 
     suspend fun transcribeAudio(
@@ -130,7 +148,8 @@ class OpenAiWhisperService(context: Context) {
 
         val baseModels = listOf(
             FALLBACK_TRANSCRIBE_MODEL to FAST_TRANSCRIBE_TIMEOUT_MS,
-            PRIMARY_TRANSCRIBE_MODEL to AFRICAN_TRANSCRIBE_TIMEOUT_MS
+            PRIMARY_TRANSCRIBE_MODEL to AFRICAN_TRANSCRIBE_TIMEOUT_MS,
+            TERTIARY_TRANSCRIBE_MODEL to AFRICAN_TRANSCRIBE_TIMEOUT_MS
         )
         val modelsToTry = preferredWorkingTranscribeModel?.let { pref ->
             baseModels.sortedByDescending { it.first == pref }
@@ -147,64 +166,89 @@ class OpenAiWhisperService(context: Context) {
         )
 
         var lastError: Throwable? = null
-        for ((modelId, timeoutMs) in modelsToTry) {
-            val resultDeferred = CompletableDeferred<Result<String>>()
-            val transcribeJob = CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
-                try {
-                    val response = GoogleGeminiDirectClient.generateContent(
-                        apiKey = apiKey,
-                        model = modelId,
-                        contents = requestContents,
-                        systemInstruction = systemGuideText,
-                        temperature = 0.0f,
-                        maxOutputTokens = 256
-                    )
-                    val rawText = response.text
-                        .trim()
-                        .removeSurrounding("\"")
-                        .removeSurrounding("«", "»")
-                        .trim()
+        var authAbort = false
+        val startMs = System.currentTimeMillis()
+        val unavailableModels = HashSet<String>()
 
-                    if (rawText.isBlank() || isHallucinationOrPromptEcho(rawText)) {
-                        resultDeferred.complete(Result.success(""))
-                    } else {
-                        val postProcessed = when {
-                            isMooreHint -> applyMoorePhoneticCorrections(rawText, isMooreHint = true)
-                            isDioulaHint -> applyDioulaPhoneticCorrections(rawText, isDioulaHint = true)
-                            else -> rawText
-                        }
-                        Log.d(TAG, "Transcription Google ($modelId / $targetLangLabel) -> \"$postProcessed\" (raw=\"$rawText\")")
-                        resultDeferred.complete(Result.success(postProcessed))
-                    }
-                } catch (e: Throwable) {
-                    resultDeferred.complete(Result.failure(e))
-                }
-            }
-
-            val outcome = withTimeoutOrNull(timeoutMs) {
-                resultDeferred.await()
-            }
-            if (outcome == null) {
-                transcribeJob.cancel(CancellationException("TRANSCRIBE_TIMEOUT"))
-                Log.w(TAG, "Timeout transcription audio sur $modelId (${timeoutMs}ms)")
-                lastError = java.util.concurrent.TimeoutException("Timeout transcription audio sur $modelId")
-                continue
-            }
-
-            if (outcome.isSuccess) {
-                preferredWorkingTranscribeModel = modelId
-                return@withContext outcome
-            } else {
-                val err = outcome.exceptionOrNull()
-                if (err is CancellationException && err !is TimeoutCancellationException) {
-                    throw err
-                }
-                lastError = err
-                Log.w(TAG, "Échec transcription audio sur $modelId: ${err?.message}", err)
-                if (err is MissingGeminiApiKeyException ||
-                    (err is GeminiApiHttpException && (err.httpCode == 401 || err.httpCode == 403))
-                ) {
+        for (round in 0..1) {
+            if (authAbort) break
+            if (round > 0) {
+                val elapsed = System.currentTimeMillis() - startMs
+                if (!isRetryableTranscribeError(lastError) || elapsed > TOTAL_TRANSCRIBE_BUDGET_MS - 3_500L) {
                     break
+                }
+                kotlinx.coroutines.delay(450L)
+            }
+
+            for ((modelId, baseTimeoutMs) in modelsToTry) {
+                if (modelId in unavailableModels) continue
+                val elapsed = System.currentTimeMillis() - startMs
+                val remaining = TOTAL_TRANSCRIBE_BUDGET_MS - elapsed
+                if (remaining < 1_800L) break
+                val timeoutMs = minOf(baseTimeoutMs, remaining)
+
+                val resultDeferred = CompletableDeferred<Result<String>>()
+                val transcribeJob = CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+                    try {
+                        val response = GoogleGeminiDirectClient.generateContent(
+                            apiKey = apiKey,
+                            model = modelId,
+                            contents = requestContents,
+                            systemInstruction = systemGuideText,
+                            temperature = 0.0f,
+                            maxOutputTokens = 256
+                        )
+                        val rawText = response.text
+                            .trim()
+                            .removeSurrounding("\"")
+                            .removeSurrounding("«", "»")
+                            .trim()
+
+                        if (rawText.isBlank() || isHallucinationOrPromptEcho(rawText)) {
+                            resultDeferred.complete(Result.success(""))
+                        } else {
+                            val postProcessed = when {
+                                isMooreHint -> applyMoorePhoneticCorrections(rawText, isMooreHint = true)
+                                isDioulaHint -> applyDioulaPhoneticCorrections(rawText, isDioulaHint = true)
+                                else -> rawText
+                            }
+                            Log.d(TAG, "Transcription Google ($modelId / $targetLangLabel) -> \"$postProcessed\" (raw=\"$rawText\")")
+                            resultDeferred.complete(Result.success(postProcessed))
+                        }
+                    } catch (e: Throwable) {
+                        resultDeferred.complete(Result.failure(e))
+                    }
+                }
+
+                val outcome = withTimeoutOrNull(timeoutMs) {
+                    resultDeferred.await()
+                }
+                if (outcome == null) {
+                    transcribeJob.cancel(CancellationException("TRANSCRIBE_TIMEOUT"))
+                    Log.w(TAG, "Timeout transcription audio sur $modelId (${timeoutMs}ms)")
+                    lastError = java.util.concurrent.TimeoutException("Timeout transcription audio sur $modelId")
+                    continue
+                }
+
+                if (outcome.isSuccess) {
+                    preferredWorkingTranscribeModel = modelId
+                    return@withContext outcome
+                } else {
+                    val err = outcome.exceptionOrNull()
+                    if (err is CancellationException && err !is TimeoutCancellationException) {
+                        throw err
+                    }
+                    lastError = err
+                    Log.w(TAG, "Échec transcription audio sur $modelId (round=$round): ${err?.message}", err)
+                    if (err is MissingGeminiApiKeyException ||
+                        (err is GeminiApiHttpException && (err.httpCode == 401 || err.httpCode == 403))
+                    ) {
+                        authAbort = true
+                        break
+                    }
+                    if (err is GeminiApiHttpException && err.httpCode == 404) {
+                        unavailableModels.add(modelId)
+                    }
                 }
             }
         }

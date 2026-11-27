@@ -75,10 +75,10 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         private const val FALLBACK_TTS_MODEL = "gemini-3.1-flash-tts-preview"
         private const val UNIFIED_GOOGLE_MALE_VOICE = "Charon"
         private const val CACHE_PREFIX = "sam_tts_google_v7_"
-        private const val FIRST_CHUNK_TIMEOUT_MS = 1200L
+        private const val FIRST_CHUNK_TIMEOUT_MS = 2_800L
         private const val INTER_CHUNK_STALL_TIMEOUT_MS = 3_500L
         private const val NEURAL_COOLDOWN_MS = 30_000L
-        private const val MAX_CONSECUTIVE_NEURAL_FAILURES = 1
+        private const val MAX_CONSECUTIVE_NEURAL_FAILURES = 2
 
         @Volatile
         private var preferredWorkingTtsModel: String? = null
@@ -127,6 +127,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     private var activeOnStartCallback: (() -> Unit)? = null
     private var pendingSpeech: (() -> Unit)? = null
     private var pendingInitWatchdog: Runnable? = null
+    private var localTtsWatchdog: Runnable? = null
     @Volatile
     private var activeUtteranceId: String? = null
     private val cachedVoicesByLang = java.util.concurrent.ConcurrentHashMap<String, android.speech.tts.Voice>()
@@ -247,12 +248,16 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
                     override fun onDone(utteranceId: String?) {
                         if (utteranceId != null && activeUtteranceId != null && utteranceId != activeUtteranceId) return
+                        clearLocalTtsWatchdog()
                         activeUtteranceId = null
                         isGlobalTtsSpeaking = false
                         _ttsSoundLevel.value = 0f
                         lastGlobalTtsEndTimeMs = System.currentTimeMillis()
+                        abandonPlaybackAudioFocus()
                         val callback = activeOnDoneCallback
                         activeOnDoneCallback = null
+                        activeOnErrorCallback = null
+                        activeOnStartCallback = null
                         mainHandler.post {
                             callback?.invoke()
                         }
@@ -260,12 +265,16 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
                     override fun onError(utteranceId: String?) {
                         if (utteranceId != null && activeUtteranceId != null && utteranceId != activeUtteranceId) return
+                        clearLocalTtsWatchdog()
                         activeUtteranceId = null
                         isGlobalTtsSpeaking = false
                         _ttsSoundLevel.value = 0f
                         lastGlobalTtsEndTimeMs = System.currentTimeMillis()
+                        abandonPlaybackAudioFocus()
                         val callback = activeOnErrorCallback
                         activeOnErrorCallback = null
+                        activeOnDoneCallback = null
+                        activeOnStartCallback = null
                         mainHandler.post {
                             callback?.invoke()
                         }
@@ -1162,23 +1171,55 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             }
             val utteranceId = "sam_tts_${System.nanoTime()}"
             activeUtteranceId = utteranceId
+            clearLocalTtsWatchdog()
             val result = tts?.speak(ensureNaturalSentenceEnding(spokenText), TextToSpeech.QUEUE_FLUSH, params, utteranceId)
             if (result == TextToSpeech.ERROR) {
+                activeUtteranceId = null
                 isGlobalTtsSpeaking = false
                 abandonPlaybackAudioFocus()
                 val errCb = activeOnErrorCallback
                 activeOnErrorCallback = null
                 activeOnDoneCallback = null
+                activeOnStartCallback = null
                 errCb?.invoke()
+            } else {
+                val watchdogTimeoutMs = maxOf(5_000L, spokenText.length * 115L).coerceAtMost(25_000L)
+                val watchdog = Runnable {
+                    if (activeUtteranceId == utteranceId) {
+                        Log.w("TtsManager", "Watchdog TTS local expiré (${watchdogTimeoutMs}ms) -> libération état micro")
+                        activeUtteranceId = null
+                        isGlobalTtsSpeaking = false
+                        _ttsSoundLevel.value = 0f
+                        lastGlobalTtsEndTimeMs = System.currentTimeMillis()
+                        abandonPlaybackAudioFocus()
+                        try { tts?.stop() } catch (_: Exception) {}
+                        val doneCb = activeOnDoneCallback
+                        val errCb = activeOnErrorCallback
+                        activeOnDoneCallback = null
+                        activeOnErrorCallback = null
+                        activeOnStartCallback = null
+                        (doneCb ?: errCb)?.invoke()
+                    }
+                }
+                localTtsWatchdog = watchdog
+                mainHandler.postDelayed(watchdog, watchdogTimeoutMs)
             }
         } catch (_: Exception) {
+            clearLocalTtsWatchdog()
+            activeUtteranceId = null
             isGlobalTtsSpeaking = false
             abandonPlaybackAudioFocus()
             val errCb = activeOnErrorCallback
             activeOnErrorCallback = null
             activeOnDoneCallback = null
+            activeOnStartCallback = null
             errCb?.invoke()
         }
+    }
+
+    private fun clearLocalTtsWatchdog() {
+        localTtsWatchdog?.let { mainHandler.removeCallbacks(it) }
+        localTtsWatchdog = null
     }
 
     private fun prepareSpokenText(rawText: String, langCode: String): String {
@@ -1731,6 +1772,9 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         try {
             activeSpeechGeneration.incrementAndGet()
             activeUtteranceId = null
+            clearLocalTtsWatchdog()
+            pendingInitWatchdog?.let { mainHandler.removeCallbacks(it) }
+            pendingInitWatchdog = null
             if (isNeuralPlaying || isGlobalTtsSpeaking || (tts?.isSpeaking == true)) {
                 lastGlobalTtsEndTimeMs = System.currentTimeMillis()
             }
