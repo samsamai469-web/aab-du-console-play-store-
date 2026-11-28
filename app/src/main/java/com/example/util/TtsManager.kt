@@ -73,10 +73,12 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         // Modèles Google Gemini TTS officiels via API directe Google (voix masculine naturelle "Charon")
         private const val PRIMARY_TTS_MODEL = "gemini-3.8-flash-tts"
         private const val SECONDARY_TTS_MODEL = "gemini-3.8-flash-lite-tts"
+        private const val TERTIARY_TTS_MODEL = "gemini-3.1-flash-tts-preview"
         private const val FALLBACK_TTS_MODEL = "gemini-2.5-flash-preview-tts"
         private const val UNIFIED_GOOGLE_MALE_VOICE = "Charon"
-        private const val CACHE_PREFIX = "sam_tts_google_v8_"
-        private const val FIRST_CHUNK_TIMEOUT_MS = 3_400L
+        private const val CACHE_PREFIX = "sam_tts_google_v9_"
+        private const val FIRST_CHUNK_TIMEOUT_MS = 10_500L
+        private const val PER_MODEL_FIRST_CHUNK_TIMEOUT_MS = 2_400L
         private const val INTER_CHUNK_STALL_TIMEOUT_MS = 4_000L
         private const val NEURAL_COOLDOWN_MS = 30_000L
         private const val MAX_CONSECUTIVE_NEURAL_FAILURES = 2
@@ -120,6 +122,36 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                     instance.stop()
                 } catch (_: Exception) {}
             }
+        }
+
+        internal fun cleanSpeechText(rawText: String): String {
+            val step1 = rawText
+                .replace(Regex("(?i)\\[[^\\]]{1,80}\\]"), " ")
+                .replace(Regex("(?i)\\([^)]*(voix|phon[ée]tique|prononciation|masculin|didascalie|ton\\s+chaleureux)[^)]*\\)"), " ")
+                .replace(Regex("(?i)\\bChatGPT\\b"), "Sam AI")
+                .replace(Regex("(?i)\\bOpenAI\\b"), "Sam AI")
+                .replace(Regex("(?i)\\b(je\\s+m'appelle|je\\s+suis|mon\\s+nom\\s+est|il\\s+s'appelle)\\s+Nova\\b"), "$1 Sam AI")
+                .replace(Regex("(?i)\\bvoix\\s+(masculine|d'homme)(\\s+claire)?(\\s+et\\s+phon[ée]tiques?)?(\\s*,\\s*(naturelle|pos[ée]e|chaleureuse|en\\s+fran[çc]ais[^:\\n]*))?\\s*[:\\-,]?\\s*"), "")
+                .replace(Regex("(?i)\\blis\\s+cette\\s+phon[ée]tique[^:\\n]*[:\\-,]?\\s*"), "")
+                .replace(Regex("(?i)(?:^|\\n)\\s*(phon[ée]tiques?|prononciation|didascalie)\\s*[:\\-,]?\\s*"), " ")
+
+            val filtered = buildString(step1.length) {
+                for (ch in step1) {
+                    when {
+                        Character.isSurrogate(ch) -> append(' ')
+                        ch in '\u2600'..'\u27BF' -> append(' ')
+                        ch in "*#_~`^[]{}<>|\\«»\"“”•" -> append(' ')
+                        else -> append(ch)
+                    }
+                }
+            }
+
+            return filtered
+                .replace(Regex("([^.!?…,;:])\\s*\\n+\\s*"), "$1, ")
+                .replace(Regex("\\s*/\\s*"), ", ")
+                .replace("...", ", ")
+                .replace(Regex("\\s+"), " ")
+                .trim()
         }
     }
 
@@ -548,10 +580,6 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
         val ttsInput = ensureNaturalSentenceEnding(spokenText).take(2200)
         val bcp47 = toBcp47LanguageCode(langCode)
-        val speechConfig = DirectSpeechConfig(
-            voiceName = UNIFIED_GOOGLE_MALE_VOICE,
-            languageCode = bcp47
-        )
         // Envoyer UNIQUEMENT le texte exact à prononcer : Gemini TTS lit littéralement tout texte présent dans parts[].text
         val requestContents = listOf(
             DirectContentInput(
@@ -564,6 +592,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             preferredWorkingTtsModel,
             PRIMARY_TTS_MODEL,
             SECONDARY_TTS_MODEL,
+            TERTIARY_TTS_MODEL,
             FALLBACK_TTS_MODEL
         ).distinct()
 
@@ -588,6 +617,12 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             var totalPcmBytesWritten = 0L
             var pendingOddByte: Byte? = null
             var lastChunkReceivedMs = System.currentTimeMillis()
+            val modelAttemptStartMs = lastChunkReceivedMs
+            var streamTimedOutOrStalled = false
+            val modelSpeechConfig = DirectSpeechConfig(
+                voiceName = UNIFIED_GOOGLE_MALE_VOICE,
+                languageCode = if (modelName == FALLBACK_TTS_MODEL) null else bcp47
+            )
 
             try {
                 coroutineScope {
@@ -597,7 +632,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                             model = modelName,
                             contents = requestContents,
                             responseModalities = listOf("AUDIO"),
-                            speechConfig = speechConfig
+                            speechConfig = modelSpeechConfig
                         ) { chunk ->
                             if (!isActive || !isRequestStillValid()) {
                                 throw CancellationException("TTS stopped or timed out")
@@ -707,13 +742,21 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
                     val stallWatchdogJob = launch {
                         while (isActive) {
-                            delay(200L)
+                            delay(150L)
                             if (!isRequestStillValid()) {
                                 streamJob.cancel(CancellationException("TTS_ABORTED"))
                                 break
                             }
-                            if (receivedFirstAudio && (System.currentTimeMillis() - lastChunkReceivedMs) > INTER_CHUNK_STALL_TIMEOUT_MS) {
+                            val nowMs = System.currentTimeMillis()
+                            if (!receivedFirstAudio && (nowMs - modelAttemptStartMs) > PER_MODEL_FIRST_CHUNK_TIMEOUT_MS) {
+                                Log.w("TtsManager", "Timeout premier chunk sur $modelName (${nowMs - modelAttemptStartMs}ms)")
+                                streamTimedOutOrStalled = true
+                                streamJob.cancel(CancellationException("MODEL_FIRST_CHUNK_TIMEOUT"))
+                                break
+                            }
+                            if (receivedFirstAudio && (nowMs - lastChunkReceivedMs) > INTER_CHUNK_STALL_TIMEOUT_MS) {
                                 Log.w("TtsManager", "Stall inter-chunk sur $modelName")
+                                streamTimedOutOrStalled = true
                                 streamJob.cancel(CancellationException("INTER_CHUNK_STALL"))
                                 break
                             }
@@ -779,9 +822,40 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
                     firstAudioSignal.complete(true)
                     return@withContext playAudioFileWithMediaPlayer(cachedFile, cachedFile, naturalSpeed, spokenText, langCode, naturalSpeed)
                 }
+
+                // Repli unary rapide uniquement si le flux a répondu sans audio (sans timeout/stall)
+                if (!startedStreamingTrack && !streamTimedOutOrStalled && isRequestStillValid()) {
+                    val unaryRes = withTimeoutOrNull(1_800L) {
+                        GoogleGeminiDirectClient.generateContent(
+                            apiKey = apiKey,
+                            model = modelName,
+                            contents = requestContents,
+                            responseModalities = listOf("AUDIO"),
+                            speechConfig = modelSpeechConfig
+                        )
+                    }
+                    val firstUnary = unaryRes?.audioChunks?.firstOrNull { it.second.size >= 200 }
+                    if (firstUnary != null && isRequestStillValid()) {
+                        preferredWorkingTtsModel = modelName
+                        val (unaryMime, unaryBytes) = firstUnary
+                        val unaryRate = parseSampleRateFromMimeType(unaryMime)
+                        val playableBytes = if (hasRiffWavHeader(unaryBytes)) {
+                            unaryBytes
+                        } else {
+                            wrapPcm24kMono16BitAsWav(unaryBytes, unaryRate)
+                        }
+                        FileOutputStream(cachedFile).use { it.write(playableBytes) }
+                        cachedAudioFileNames.add(cachedFile.name)
+                        firstAudioSignal.complete(true)
+                        return@withContext playAudioFileWithMediaPlayer(cachedFile, cachedFile, naturalSpeed, spokenText, langCode, naturalSpeed)
+                    }
+                }
             } catch (ce: CancellationException) {
-                firstAudioSignal.complete(false)
-                throw ce
+                if (!isRequestStillValid()) {
+                    firstAudioSignal.complete(false)
+                    throw ce
+                }
+                Log.w("TtsManager", "Flux Google Gemini TTS $modelName annulé (${ce.message}), essai modèle suivant")
             } catch (e: Throwable) {
                 Log.w("TtsManager", "Google Gemini TTS $modelName indisponible: ${e.message}")
             } finally {
@@ -1721,20 +1795,8 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         return text.replace(Regex("\\s+"), " ").trim()
     }
 
-    private fun cleanGeneralTextForSpeech(rawText: String): String {
-        return rawText
-            .replace(Regex("(?i)\\bChatGPT\\b"), "Sam AI")
-            .replace(Regex("(?i)\\bOpenAI\\b"), "Sam AI")
-            .replace(Regex("(?i)\\b(je\\s+m'appelle|je\\s+suis|mon\\s+nom\\s+est|il\\s+s'appelle)\\s+Nova\\b"), "$1 Sam AI")
-            .replace(Regex("(?i)^\\s*(voix\\s+masculine[^:\\n]*:|lis\\s+cette\\s+phon[ée]tique[^:\\n]*:|phon[ée]tique\\s*:|prononciation\\s*:)\\s*"), "")
-            .replace(Regex("[\\uD83C-\\uDBFF\\uDC00-\\uDFFF]+"), " ")
-            .replace(Regex("[\\u2600-\\u27BF]"), " ")
-            .replace(Regex("[*#_~`^\\[\\]{}<>|\\\\«»\"“”•]"), " ")
-            .replace(Regex("([^.!?…,;:])\\s*\\n+\\s*"), "$1, ")
-            .replace(Regex("\\s*/\\s*"), ", ")
-            .replace("...", ", ")
-            .replace(Regex("\\s+"), " ")
-            .trim()
+    internal fun cleanGeneralTextForSpeech(rawText: String): String {
+        return cleanSpeechText(rawText)
     }
 
     private fun releaseMediaPlayer() {

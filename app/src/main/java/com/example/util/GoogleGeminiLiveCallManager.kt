@@ -79,9 +79,9 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
 2. OBÉISSANCE EXACTE ET LITTÉRALE À CE QUE L'UTILISATEUR DEMANDE DE DIRE OU DE FAIRE :
    - Si l'utilisateur te demande de DIRE, RÉPÉTER, PRONONCER ou LIRE quelque chose de précis (ex : « Dis ... », « Répète ... », « Prononce ... »), prononce EXACTEMENT et UNIQUEMENT les mots demandés par l'utilisateur, mot pour mot, sans ajouter « Bonjour », « D'accord » ni « Bien sûr ».
    - Si l'utilisateur te demande de FAIRE quelque chose (répondre à une question, expliquer, calculer, traduire, rechercher une information d'actualité en direct), réponds avec précision dès la première phrase.
-3. VOIX D'HOMME HUMAINE NATURELLE ET 100 % FRANÇAIS (AUCUNE DIDASCALIE) :
-   - Tu es un homme : utilise toujours les accords masculins ("je suis attentif", "je suis prêt").
-   - Ne prononce JAMAIS d'indications de style, de timbre ou de phonétique (ne dis jamais « voix masculine claire », « phonétique », ni aucun texte entre crochets).
+3. TON NATUREL ET FRANÇAIS FLUIDE :
+   - Tu es un homme : utilise toujours les accords masculins (« je suis attentif », « je suis prêt »).
+   - Réponds uniquement avec les mots destinés à l'interlocuteur, sans décrire ta voix ni ton style et sans rien mettre entre crochets.
    - Parle en français clair, fluide et naturel (sauf si l'utilisateur te demande explicitement de dire ou traduire une phrase dans une autre langue).
 4. ACTUALITÉS & IDENTITÉ EXCLUSIVE SAM AI :
    - Utilise Google Search en direct dès qu'une question porte sur l'actualité récente, les résultats sportifs, la politique, la météo ou des faits récents, sans jamais dire que tes connaissances s'arrêtent en 2023, 2024 ou 2025.
@@ -116,6 +116,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     private var playbackJob: Job? = null
     private var playbackEndCheckJob: Job? = null
     private var thinkingWatchdogJob: Job? = null
+    private var aiResponseWatchdogJob: Job? = null
 
     private val isActiveCall = AtomicBoolean(false)
     private val isMuted = AtomicBoolean(false)
@@ -135,6 +136,9 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
 
     @Volatile
     private var cancelledAtMs: Long = 0L
+
+    @Volatile
+    private var lastAiServerActivityMs: Long = 0L
 
     private val postPlaybackEchoGuardMs = 240L
 
@@ -262,7 +266,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         ).distinct()
         var lastError: Throwable? = null
         val connectStartMs = System.currentTimeMillis()
-        val totalConnectBudgetMs = 22_000L
+        val totalConnectBudgetMs = 13_500L
 
         for ((modelIdx, modelName) in modelsToTry.withIndex()) {
             if (!isActiveCall.get()) return false
@@ -270,11 +274,11 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             for (useSearchTool in searchOptions) {
                 if (!isActiveCall.get()) return false
                 val remainingBudgetMs = totalConnectBudgetMs - (System.currentTimeMillis() - connectStartMs)
-                if (remainingBudgetMs < 3_000L) break
+                if (remainingBudgetMs < 2_000L) break
                 val attemptTimeoutMs = if (modelIdx == 0 && useSearchTool) {
-                    minOf(10_000L, remainingBudgetMs)
+                    minOf(3_500L, remainingBudgetMs)
                 } else {
-                    minOf(7_500L, remainingBudgetMs)
+                    minOf(2_800L, remainingBudgetMs)
                 }
                 try {
                     Log.d(TAG, "Connexion Google Gemini Live direct avec $modelName (search=$useSearchTool, timeout=${attemptTimeoutMs}ms)...")
@@ -364,14 +368,49 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     private fun startThinkingWatchdog() {
         thinkingWatchdogJob?.cancel()
         thinkingWatchdogJob = scope.launch {
-            delay(6_000L)
+            delay(5_500L)
             if (isActiveCall.get() &&
                 _callState.value == VoiceCallState.THINKING &&
                 !isResponseInProgress.get() &&
                 !acceptingAiAudio.get()
             ) {
-                Log.w(TAG, "THINKING watchdog expiré (6s) -> retour à l'écoute")
+                Log.w(TAG, "THINKING watchdog expiré (5.5s) -> retour à l'écoute")
                 _callState.value = VoiceCallState.USER_SPEAKING
+            }
+        }
+    }
+
+    private fun startAiResponseStallWatchdog() {
+        aiResponseWatchdogJob?.cancel()
+        aiResponseWatchdogJob = scope.launch {
+            while (isActive && isActiveCall.get() && (isResponseInProgress.get() || acceptingAiAudio.get())) {
+                delay(750L)
+                val now = System.currentTimeMillis()
+                val idleSinceLastServerChunk = now - lastAiServerActivityMs
+                val audioFinished = !isPlaybackWorkerWriting.get() &&
+                    pcmPlaybackQueue.isEmpty() &&
+                    now >= playbackFinishTimeMs
+                if (idleSinceLastServerChunk >= 4_500L && audioFinished) {
+                    Log.w(TAG, "AI response stall watchdog (${idleSinceLastServerChunk}ms sans turnComplete) -> déblocage micro")
+                    isResponseInProgress.set(false)
+                    acceptingAiAudio.set(false)
+                    playbackFinishTimeMs = 0L
+                    val rawUser = currentUserTranscriptBuilder.toString().trim()
+                    val finalUser = if (rawUser.isNotBlank() && !isHallucinatedOrNoiseTranscript(rawUser)) rawUser else ""
+                    val finalAiRaw = currentAiTranscriptBuilder.toString().trim()
+                    val finalAi = if (finalAiRaw.isNotBlank()) sanitizeSamAiPersona(finalAiRaw) else ""
+                    currentUserTranscriptBuilder.clear()
+                    currentAiTranscriptBuilder.clear()
+                    mainHandler.post {
+                        if (finalAi.isNotBlank()) {
+                            onTurnCompleted(finalUser, finalAi)
+                        }
+                        _userTranscript.value = ""
+                        _aiTranscript.value = ""
+                    }
+                    _callState.value = VoiceCallState.USER_SPEAKING
+                    break
+                }
             }
         }
     }
@@ -379,6 +418,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     private fun handleLiveServerContent(msg: DirectLiveServerEvent) {
         if (msg.interrupted) {
             thinkingWatchdogJob?.cancel()
+            aiResponseWatchdogJob?.cancel()
             isPlaybackManuallyCancelled.set(false)
             cancelledAtMs = 0L
             acceptingAiAudio.set(false)
@@ -408,10 +448,12 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         val outputChunk = msg.outputTranscription
         if (outputChunk.isNotEmpty() && !isPlaybackManuallyCancelled.get()) {
             thinkingWatchdogJob?.cancel()
+            lastAiServerActivityMs = System.currentTimeMillis()
             if (!isResponseInProgress.get()) {
                 currentAiTranscriptBuilder.clear()
                 isResponseInProgress.set(true)
                 acceptingAiAudio.set(true)
+                startAiResponseStallWatchdog()
             }
             currentAiTranscriptBuilder.append(outputChunk)
             _aiTranscript.value = sanitizeSamAiPersona(currentAiTranscriptBuilder.toString())
@@ -420,8 +462,13 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         for (pcmBytes in msg.audioChunks) {
             if (pcmBytes.isNotEmpty() && !isPlaybackManuallyCancelled.get()) {
                 thinkingWatchdogJob?.cancel()
+                lastAiServerActivityMs = System.currentTimeMillis()
+                val startedNew = !isResponseInProgress.get()
                 isResponseInProgress.set(true)
                 acceptingAiAudio.set(true)
+                if (startedNew) {
+                    startAiResponseStallWatchdog()
+                }
                 _callState.value = VoiceCallState.SAM_SPEAKING
                 enqueuePcmForPlayback(pcmBytes)
             }
@@ -429,6 +476,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
 
         if (msg.turnComplete) {
             thinkingWatchdogJob?.cancel()
+            aiResponseWatchdogJob?.cancel()
             isResponseInProgress.set(false)
             val rawUser = currentUserTranscriptBuilder.toString().trim()
             val finalUser = if (rawUser.isNotBlank() && !isHallucinatedOrNoiseTranscript(rawUser)) rawUser else ""
@@ -564,13 +612,13 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             var initialFramesSkipped = 0
             var wasAiSpeakingOrGuarded = false
             var postAiFlushFramesRemaining = 0
-            var ambientFloor = 45.0
+            var ambientFloor = 24.0
             var voiceHoldFrames = 0
             var speechFramesInTurn = 0
             var sentAnyAudioInTurn = false
             var consecutiveSendFailures = 0
             var consecutiveZeroOrErrFrames = 0
-            val preRollQueue = ArrayDeque<ByteArray>(6)
+            val preRollQueue = ArrayDeque<ByteArray>(12)
 
             while (isActive && isActiveCall.get()) {
                 val readBytes = recorder.read(frameBuffer, 0, frameBuffer.size)
@@ -657,13 +705,13 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                     }
 
                     val rawRms = if (sampleCount > 0) sqrt(rawSumSquares / sampleCount) else 0.0
-                    if (voiceHoldFrames == 0 && rawRms in 1.0..120.0) {
-                        ambientFloor = ((ambientFloor * 0.92) + (rawRms * 0.08)).coerceIn(30.0, 115.0)
+                    if (voiceHoldFrames == 0 && rawRms in 1.0..65.0) {
+                        ambientFloor = ((ambientFloor * 0.90) + (rawRms * 0.10)).coerceIn(12.0, 65.0)
                     }
-                    val vocalGate = maxOf(62.0, ambientFloor * 1.30).coerceAtMost(150.0)
+                    val vocalGate = maxOf(18.0, ambientFloor * 1.12).coerceAtMost(75.0)
                     val isVoiceFrame = rawRms >= vocalGate
                     if (isVoiceFrame) {
-                        voiceHoldFrames = 32 // ~640 ms de maintien après chaque syllabe
+                        voiceHoldFrames = 42 // ~840 ms de maintien après chaque syllabe
                         speechFramesInTurn++
                         if (_callState.value == VoiceCallState.THINKING) {
                             thinkingWatchdogJob?.cancel()
@@ -673,9 +721,9 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                         voiceHoldFrames--
                     }
 
-                    val visualGate = maxOf(58.0, ambientFloor * 1.15)
+                    val visualGate = maxOf(16.0, ambientFloor * 1.05)
                     val normalizedLevel = if (rawRms >= visualGate || isVoiceFrame || voiceHoldFrames > 0) {
-                        val linear = ((rawRms - ambientFloor * 0.85).coerceAtLeast(0.0) / 1350.0).coerceIn(0.0, 1.0)
+                        val linear = ((rawRms - ambientFloor * 0.70).coerceAtLeast(0.0) / 1100.0).coerceIn(0.0, 1.0)
                         sqrt(linear).toFloat().coerceIn(0f, 1f)
                     } else {
                         0f
@@ -715,13 +763,13 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                             Log.w(TAG, "Envoi audio Live échoué : ${e.message}")
                         }
                     } else {
-                        if (preRollQueue.size >= 6) {
+                        if (preRollQueue.size >= 12) {
                             preRollQueue.removeFirst()
                         }
                         preRollQueue.addLast(processedBuffer)
 
                         if (sentAnyAudioInTurn) {
-                            if (speechFramesInTurn >= 8) {
+                            if (speechFramesInTurn >= 6) {
                                 try {
                                     session.sendAudioStreamEnd()
                                     if (!isResponseInProgress.get() && _callState.value == VoiceCallState.USER_SPEAKING) {
@@ -929,11 +977,15 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
 
     private fun sanitizeSamAiPersona(raw: String): String {
         var cleaned = raw
+            .replace(Regex("(?i)\\[[^\\]]{1,60}\\]"), " ")
+            .replace(Regex("(?i)\\bvoix\\s+masculine(\\s+claire)?(\\s+et\\s+phon[ée]tiques?)?\\s*[:\\-,]?\\s*"), "")
+            .replace(Regex("(?i)^\\s*(phon[ée]tiques?|didascalie)\\s*[:\\-,]?\\s*"), "")
             .replace(Regex("(?i)\\bChatGPT\\b"), "Sam AI")
             .replace(Regex("(?i)\\bGemini\\b"), "Sam AI")
             .replace(Regex("(?i)\\bGoogle AI\\b"), "Sam AI")
             .replace(Regex("(?i)\\bOpenAI\\b"), "Sam AI")
             .replace(Regex("(?i)\\bNova\\b"), "Sam AI")
+            .replace(Regex("\\s+"), " ")
             .trim()
 
         val userSpoken = _userTranscript.value
@@ -974,6 +1026,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
             playbackJob?.cancel()
             playbackEndCheckJob?.cancel()
             thinkingWatchdogJob?.cancel()
+            aiResponseWatchdogJob?.cancel()
             val sessionToClose = liveSession
             liveSession = null
             if (sessionToClose != null) {

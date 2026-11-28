@@ -29,9 +29,11 @@ class OpenAiWhisperService(context: Context) {
         private const val PRIMARY_TRANSCRIBE_MODEL = "gemini-3.8-flash"
         private const val FALLBACK_TRANSCRIBE_MODEL = "gemini-3.5-flash-lite"
         private const val TERTIARY_TRANSCRIBE_MODEL = "gemini-3.6-flash"
-        private const val FAST_TRANSCRIBE_TIMEOUT_MS = 5_500L
-        private const val AFRICAN_TRANSCRIBE_TIMEOUT_MS = 6_800L
-        private const val TOTAL_TRANSCRIBE_BUDGET_MS = 16_000L
+        private const val PREVIEW_TRANSCRIBE_MODEL = "gemini-3-flash-preview"
+        private const val STABLE_LITE_TRANSCRIBE_MODEL = "gemini-2.5-flash-lite"
+        private const val FAST_TRANSCRIBE_TIMEOUT_MS = 4_800L
+        private const val AFRICAN_TRANSCRIBE_TIMEOUT_MS = 5_800L
+        private const val TOTAL_TRANSCRIBE_BUDGET_MS = 20_000L
 
         @Volatile
         private var preferredWorkingTranscribeModel: String? = null
@@ -149,7 +151,9 @@ class OpenAiWhisperService(context: Context) {
         val baseModels = listOf(
             FALLBACK_TRANSCRIBE_MODEL to FAST_TRANSCRIBE_TIMEOUT_MS,
             PRIMARY_TRANSCRIBE_MODEL to AFRICAN_TRANSCRIBE_TIMEOUT_MS,
-            TERTIARY_TRANSCRIBE_MODEL to AFRICAN_TRANSCRIBE_TIMEOUT_MS
+            TERTIARY_TRANSCRIBE_MODEL to AFRICAN_TRANSCRIBE_TIMEOUT_MS,
+            PREVIEW_TRANSCRIBE_MODEL to FAST_TRANSCRIBE_TIMEOUT_MS,
+            STABLE_LITE_TRANSCRIBE_MODEL to FAST_TRANSCRIBE_TIMEOUT_MS
         )
         val modelsToTry = preferredWorkingTranscribeModel?.let { pref ->
             baseModels.sortedByDescending { it.first == pref }

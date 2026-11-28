@@ -67,6 +67,8 @@ class AiRepository(
         const val FALLBACK_FLASH_MODEL = "gemini-3.6-flash"
         const val REASONING_GEMINI_MODEL = "gemini-4-argon"
         const val LITE_GEMINI_MODEL = "gemini-3.5-flash-lite"
+        const val PREVIEW_FLASH_FALLBACK_MODEL = "gemini-3-flash-preview"
+        const val STABLE_LITE_FALLBACK_MODEL = "gemini-2.5-flash-lite"
         private const val AI_TIMEOUT_MS = 10_000L
 
         @Volatile
@@ -312,14 +314,20 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             } catch (_: Throwable) {}
         }
 
-        // 1. Moteur IA Google Gemini direct (gemini-3.5-flash-lite -> gemini-3.8-flash -> gemini-3.6-flash) avec retry 503/429
+        // 1. Moteur IA Google Gemini direct avec repli multi-modèles anti-503/429
         val apiKey = resolveApiKey()
         if (apiKey.isNotBlank()) {
-            val candidateModels = listOf(LITE_GEMINI_MODEL, DEFAULT_GEMINI_MODEL, FALLBACK_FLASH_MODEL).distinct()
+            val candidateModels = listOf(
+                LITE_GEMINI_MODEL,
+                DEFAULT_GEMINI_MODEL,
+                FALLBACK_FLASH_MODEL,
+                PREVIEW_FLASH_FALLBACK_MODEL,
+                STABLE_LITE_FALLBACK_MODEL
+            ).distinct()
             val prompt = "Texte à traduire du $srcLang vers le $tgtLang :\n$cleanSrc"
             val contents = listOf(DirectContentInput(role = "user", parts = listOf(DirectPartInput(text = prompt))))
             val translateStartMs = System.currentTimeMillis()
-            val translateBudgetMs = 12_500L
+            val translateBudgetMs = 16_000L
             val unavailableModels = HashSet<String>()
             var lastError: Throwable? = null
             var authAborted = false
@@ -339,7 +347,7 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
                     val elapsed = System.currentTimeMillis() - translateStartMs
                     val remaining = translateBudgetMs - elapsed
                     if (remaining < 1_500L) break
-                    val callTimeout = minOf(4_500L, remaining)
+                    val callTimeout = minOf(4_000L, remaining)
                     val resultDeferred = CompletableDeferred<Result<String?>>()
                     val isAuthAbort = AtomicBoolean(false)
                     val aiJob = CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
@@ -608,10 +616,19 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             preferredWorkingChatModel,
             LITE_GEMINI_MODEL,
             DEFAULT_GEMINI_MODEL,
-            FALLBACK_FLASH_MODEL
+            FALLBACK_FLASH_MODEL,
+            PREVIEW_FLASH_FALLBACK_MODEL,
+            STABLE_LITE_FALLBACK_MODEL
         ).distinct()
         val cleanPreferred = preferredModel.trim()
-        val allowedNewModels = setOf(DEFAULT_GEMINI_MODEL, FALLBACK_FLASH_MODEL, REASONING_GEMINI_MODEL, LITE_GEMINI_MODEL)
+        val allowedNewModels = setOf(
+            DEFAULT_GEMINI_MODEL,
+            FALLBACK_FLASH_MODEL,
+            REASONING_GEMINI_MODEL,
+            LITE_GEMINI_MODEL,
+            PREVIEW_FLASH_FALLBACK_MODEL,
+            STABLE_LITE_FALLBACK_MODEL
+        )
         val modelsToTry = if (cleanPreferred in allowedNewModels) {
             (listOf(cleanPreferred) + baseModels).distinct()
         } else {
@@ -767,10 +784,19 @@ ${if (localContext.isNotBlank()) "Lexique de référence :\n$localContext" else 
             preferredWorkingChatModel,
             LITE_GEMINI_MODEL,
             DEFAULT_GEMINI_MODEL,
-            FALLBACK_FLASH_MODEL
+            FALLBACK_FLASH_MODEL,
+            PREVIEW_FLASH_FALLBACK_MODEL,
+            STABLE_LITE_FALLBACK_MODEL
         ).distinct()
         val cleanPreferred = preferredModel.trim()
-        val allowedNewModels = setOf(DEFAULT_GEMINI_MODEL, FALLBACK_FLASH_MODEL, REASONING_GEMINI_MODEL, LITE_GEMINI_MODEL)
+        val allowedNewModels = setOf(
+            DEFAULT_GEMINI_MODEL,
+            FALLBACK_FLASH_MODEL,
+            REASONING_GEMINI_MODEL,
+            LITE_GEMINI_MODEL,
+            PREVIEW_FLASH_FALLBACK_MODEL,
+            STABLE_LITE_FALLBACK_MODEL
+        )
         val modelsToTry = if (cleanPreferred in allowedNewModels) {
             (listOf(cleanPreferred) + baseModels).distinct()
         } else {

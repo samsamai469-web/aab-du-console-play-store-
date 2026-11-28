@@ -273,7 +273,12 @@ class SpeechRecognitionManager(private val context: Context) {
                             _state.value = State.Listening
                             mainHandler.postDelayed({
                                 if (token == nativeSessionToken && _state.value is State.Listening) {
-                                    startWhisperRecognition(activeLanguage)
+                                    if (isContinuousSession && TtsManager.isAnyTtsSpeakingOrCoolingDown(350L)) {
+                                        reset()
+                                        activeOnError?.invoke("Haut-parleur actif")
+                                    } else {
+                                        startWhisperRecognition(activeLanguage)
+                                    }
                                 }
                             }, 120L)
                         }

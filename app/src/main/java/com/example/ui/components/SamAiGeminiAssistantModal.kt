@@ -232,8 +232,13 @@ fun SamAiGeminiAssistantModal(
                     err.contains("Haut-parleur actif", ignoreCase = true)
                 if (!isNormalSilenceOrCooldown) {
                     fallbackConsecutiveErrors++
-                    isCallNoticeError = true
-                    liveCallStatusNotice = err
+                    val isPermissionOrHardwareError = err.contains("Permission", ignoreCase = true) ||
+                        err.contains("Microphone", ignoreCase = true) ||
+                        err.contains("Clé API", ignoreCase = true)
+                    if (isPermissionOrHardwareError || fallbackConsecutiveErrors >= 2) {
+                        isCallNoticeError = true
+                        liveCallStatusNotice = err
+                    }
                 } else {
                     fallbackConsecutiveErrors = 0
                     if (isCallNoticeError) {
@@ -284,7 +289,7 @@ fun SamAiGeminiAssistantModal(
                         liveCallStatusNotice = reason
                     } else {
                         isCallNoticeError = false
-                        liveCallStatusNotice = "Mode vocal standard actif • Parlez maintenant"
+                        liveCallStatusNotice = null
                     }
                     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                         if (isVoiceCallActive && !isLiveMicMuted && isUsingFallbackRest) {
