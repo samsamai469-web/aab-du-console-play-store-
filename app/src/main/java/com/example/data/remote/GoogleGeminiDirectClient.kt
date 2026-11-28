@@ -183,10 +183,12 @@ object GoogleGeminiDirectClient {
     private val liveWsClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .dns(ipv4PreferredDns)
-            .connectTimeout(12, TimeUnit.SECONDS)
+            .connectionPool(ConnectionPool(4, 3, TimeUnit.MINUTES))
+            .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(0, TimeUnit.MILLISECONDS)
             .writeTimeout(15, TimeUnit.SECONDS)
             .pingInterval(20, TimeUnit.SECONDS)
+            .retryOnConnectionFailure(true)
             .build()
     }
 

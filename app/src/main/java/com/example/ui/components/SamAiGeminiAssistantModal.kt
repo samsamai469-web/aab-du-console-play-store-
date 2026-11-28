@@ -112,6 +112,7 @@ fun SamAiGeminiAssistantModal(
     var liveUserDraft by remember { mutableStateOf("") }
     var liveAiDraft by remember { mutableStateOf("") }
     var liveCallStatusNotice by remember { mutableStateOf<String?>(null) }
+    var isCallNoticeError by remember { mutableStateOf(false) }
     var showHistoryDialog by remember { mutableStateOf(false) }
 
     var dialogRootView by remember { mutableStateOf<android.view.View?>(null) }
@@ -153,6 +154,7 @@ fun SamAiGeminiAssistantModal(
                 if (clean.isNotBlank() && isVoiceCallActive && !isLiveMicMuted) {
                     fallbackConsecutiveErrors = 0
                     liveCallStatusNotice = null
+                    isCallNoticeError = false
                     speechManager.reset()
                     liveUserDraft = clean
                     liveAiDraft = ""
@@ -205,6 +207,7 @@ fun SamAiGeminiAssistantModal(
                         onError = { errMsg ->
                             liveUserDraft = ""
                             if (isVoiceCallActive) {
+                                isCallNoticeError = true
                                 liveCallStatusNotice = errMsg
                                 liveCallState = VoiceCallState.USER_SPEAKING
                                 android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
@@ -229,10 +232,14 @@ fun SamAiGeminiAssistantModal(
                     err.contains("Haut-parleur actif", ignoreCase = true)
                 if (!isNormalSilenceOrCooldown) {
                     fallbackConsecutiveErrors++
+                    isCallNoticeError = true
                     liveCallStatusNotice = err
                 } else {
                     fallbackConsecutiveErrors = 0
-                    liveCallStatusNotice = null
+                    if (isCallNoticeError) {
+                        liveCallStatusNotice = null
+                        isCallNoticeError = false
+                    }
                 }
                 val retryDelayMs = if (isNormalSilenceOrCooldown) {
                     320L
@@ -259,13 +266,26 @@ fun SamAiGeminiAssistantModal(
                 liveUserDraft = ""
                 liveAiDraft = ""
                 liveCallStatusNotice = null
+                isCallNoticeError = false
                 viewModel.recordRealtimeCallTurn(userText, aiText)
             },
             onFallbackRequired = { reason ->
                 if (isVoiceCallActive && !isUsingFallbackRest) {
                     isUsingFallbackRest = true
                     liveCallState = VoiceCallState.USER_SPEAKING
-                    liveCallStatusNotice = reason.takeIf { it.isNotBlank() }?.let { "Mode vocal standard : $it" }
+                    val isFatalReason = !com.example.data.local.ApiKeyManager.hasActiveInternetConnection() ||
+                        reason.contains("Clé API", ignoreCase = true) ||
+                        reason.contains("401") ||
+                        reason.contains("403") ||
+                        reason.contains("non activée", ignoreCase = true) ||
+                        reason.contains("Microphone", ignoreCase = true)
+                    if (isFatalReason) {
+                        isCallNoticeError = true
+                        liveCallStatusNotice = reason
+                    } else {
+                        isCallNoticeError = false
+                        liveCallStatusNotice = "Mode vocal standard actif • Parlez maintenant"
+                    }
                     android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
                         if (isVoiceCallActive && !isLiveMicMuted && isUsingFallbackRest) {
                             startFallbackListening.value()
@@ -338,6 +358,7 @@ fun SamAiGeminiAssistantModal(
         liveUserDraft = ""
         liveAiDraft = ""
         liveCallStatusNotice = null
+        isCallNoticeError = false
         liveCallState = VoiceCallState.CONNECTING
         isVoiceCallMinimized = false
         isVoiceCallActive = true
@@ -353,9 +374,19 @@ fun SamAiGeminiAssistantModal(
         liveUserDraft = ""
         liveAiDraft = ""
         liveCallStatusNotice = null
+        isCallNoticeError = false
         realtimeManager.stopCall()
         speechManager.reset()
         ttsManager.stop()
+    }
+
+    LaunchedEffect(liveCallStatusNotice, isCallNoticeError, isVoiceCallActive) {
+        if (isVoiceCallActive && !isCallNoticeError && !liveCallStatusNotice.isNullOrBlank()) {
+            kotlinx.coroutines.delay(4_000L)
+            if (!isCallNoticeError) {
+                liveCallStatusNotice = null
+            }
+        }
     }
 
     val toggleLiveMicMute = {
@@ -1047,6 +1078,7 @@ fun SamAiGeminiAssistantModal(
                 userTranscript = liveUserDraft,
                 aiTranscript = liveAiDraft,
                 statusNotice = liveCallStatusNotice,
+                isNoticeError = isCallNoticeError,
                 onOrbTap = handleSaturnOrbTap,
                 onToggleMute = toggleLiveMicMute,
                 onInterruptOrSpeak = {
@@ -2258,6 +2290,7 @@ fun SamAiVoiceCallFullScreenOverlay(
     userTranscript: String = "",
     aiTranscript: String = "",
     statusNotice: String? = null,
+    isNoticeError: Boolean = true,
     onOrbTap: () -> Unit,
     onToggleMute: () -> Unit,
     onInterruptOrSpeak: () -> Unit,
@@ -2325,12 +2358,15 @@ fun SamAiVoiceCallFullScreenOverlay(
                     Spacer(modifier = Modifier.height(8.dp))
                     Surface(
                         shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFFD32F2F).copy(alpha = 0.22f),
-                        border = BorderStroke(1.dp, Color(0xFFEF5350).copy(alpha = 0.45f))
+                        color = if (isNoticeError) Color(0xFFD32F2F).copy(alpha = 0.22f) else Color.White.copy(alpha = 0.10f),
+                        border = BorderStroke(
+                            1.dp,
+                            if (isNoticeError) Color(0xFFEF5350).copy(alpha = 0.45f) else Color.White.copy(alpha = 0.16f)
+                        )
                     ) {
                         Text(
                             text = statusNotice,
-                            color = Color(0xFFFFCDD2),
+                            color = if (isNoticeError) Color(0xFFFFCDD2) else Color.White.copy(alpha = 0.88f),
                             style = MaterialTheme.typography.bodySmall,
                             textAlign = TextAlign.Center,
                             maxLines = 2,

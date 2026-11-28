@@ -72,11 +72,12 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
     companion object {
         // Modèles Google Gemini TTS officiels via API directe Google (voix masculine naturelle "Charon")
         private const val PRIMARY_TTS_MODEL = "gemini-3.8-flash-tts"
-        private const val FALLBACK_TTS_MODEL = "gemini-3.1-flash-tts-preview"
+        private const val SECONDARY_TTS_MODEL = "gemini-3.8-flash-lite-tts"
+        private const val FALLBACK_TTS_MODEL = "gemini-2.5-flash-preview-tts"
         private const val UNIFIED_GOOGLE_MALE_VOICE = "Charon"
-        private const val CACHE_PREFIX = "sam_tts_google_v7_"
-        private const val FIRST_CHUNK_TIMEOUT_MS = 2_800L
-        private const val INTER_CHUNK_STALL_TIMEOUT_MS = 3_500L
+        private const val CACHE_PREFIX = "sam_tts_google_v8_"
+        private const val FIRST_CHUNK_TIMEOUT_MS = 3_400L
+        private const val INTER_CHUNK_STALL_TIMEOUT_MS = 4_000L
         private const val NEURAL_COOLDOWN_MS = 30_000L
         private const val MAX_CONSECUTIVE_NEURAL_FAILURES = 2
 
@@ -377,24 +378,6 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         }
     }
 
-    private fun buildHumanVoiceDirectorPrompt(langCode: String, ttsInput: String): String {
-        val styleDirection = when (langCode) {
-            "en" -> "Clear natural male English voice:"
-            "es" -> "Voz masculina clara y natural:"
-            "de" -> "Klare, natürliche männliche Stimme:"
-            "ar" -> "بصوت رجالي واضح وطبيعي:"
-            "it" -> "Voce maschile chiara e naturale:"
-            "pt" -> "Voz masculina clara e natural:"
-            "ru" -> "Чётким, естественным мужским голосом:"
-            "zh" -> "用清晰自然的男性声音朗读："
-            "mos" -> "Lis cette phonétique mooré d'une voix masculine claire et naturelle :"
-            "dyu" -> "Lis cette phonétique dioula d'une voix masculine claire et naturelle :"
-            "ha" -> "Lis cette phonétique haoussa d'une voix masculine claire et naturelle :"
-            else -> "Voix masculine claire, fluide et naturelle :"
-        }
-        return "$styleDirection $ttsInput"
-    }
-
     private fun computeNaturalSpeed(userRate: Float): Float {
         return if (kotlin.math.abs(userRate - 1.0f) < 0.02f) {
             1.05f
@@ -564,22 +547,23 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
         }
 
         val ttsInput = ensureNaturalSentenceEnding(spokenText).take(2200)
-        val prompt = buildHumanVoiceDirectorPrompt(langCode, ttsInput)
         val bcp47 = toBcp47LanguageCode(langCode)
         val speechConfig = DirectSpeechConfig(
             voiceName = UNIFIED_GOOGLE_MALE_VOICE,
             languageCode = bcp47
         )
+        // Envoyer UNIQUEMENT le texte exact à prononcer : Gemini TTS lit littéralement tout texte présent dans parts[].text
         val requestContents = listOf(
             DirectContentInput(
                 role = "user",
-                parts = listOf(DirectPartInput(text = prompt))
+                parts = listOf(DirectPartInput(text = ttsInput))
             )
         )
 
         val candidateModels = listOfNotNull(
             preferredWorkingTtsModel,
             PRIMARY_TTS_MODEL,
+            SECONDARY_TTS_MODEL,
             FALLBACK_TTS_MODEL
         ).distinct()
 
@@ -1742,6 +1726,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
             .replace(Regex("(?i)\\bChatGPT\\b"), "Sam AI")
             .replace(Regex("(?i)\\bOpenAI\\b"), "Sam AI")
             .replace(Regex("(?i)\\b(je\\s+m'appelle|je\\s+suis|mon\\s+nom\\s+est|il\\s+s'appelle)\\s+Nova\\b"), "$1 Sam AI")
+            .replace(Regex("(?i)^\\s*(voix\\s+masculine[^:\\n]*:|lis\\s+cette\\s+phon[ée]tique[^:\\n]*:|phon[ée]tique\\s*:|prononciation\\s*:)\\s*"), "")
             .replace(Regex("[\\uD83C-\\uDBFF\\uDC00-\\uDFFF]+"), " ")
             .replace(Regex("[\\u2600-\\u27BF]"), " ")
             .replace(Regex("[*#_~`^\\[\\]{}<>|\\\\«»\"“”•]"), " ")

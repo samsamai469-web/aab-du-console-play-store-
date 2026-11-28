@@ -124,6 +124,7 @@ class GeminiLiveClient(
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
         private const val BUFFER_CHUNK_SIZE = 1600
         private const val LIVE_MODEL_SECONDARY = "gemini-3.8-live"
+        private const val LIVE_MODEL_TERTIARY = "gemini-2.5-flash-native-audio-preview-12-2025"
         private const val LIVE_MODEL_FALLBACK = "gemini-3.1-flash-live-preview"
     }
 
@@ -225,7 +226,7 @@ class GeminiLiveClient(
                 - Produis uniquement la traduction directe en $activeTargetLang, sans commentaires ni salutations superflues.
             """.trimIndent()
 
-            val modelsToTry = listOf(_liveMode.value.modelId, LIVE_MODEL_SECONDARY, LIVE_MODEL_FALLBACK).distinct()
+            val modelsToTry = listOf(_liveMode.value.modelId, LIVE_MODEL_SECONDARY, LIVE_MODEL_TERTIARY, LIVE_MODEL_FALLBACK).distinct()
             var connectedSession: DirectGeminiLiveSession? = null
             for (modelId in modelsToTry) {
                 if (!isSessionActive.get()) return@launch
@@ -236,7 +237,7 @@ class GeminiLiveClient(
                         systemInstruction = systemPrompt,
                         voiceName = "Charon",
                         enableGoogleSearch = false,
-                        setupTimeoutMs = 4_000L
+                        setupTimeoutMs = 7_500L
                     )
                     LiveTranslateLogger.logWebSocket("LiveSession connectée ($modelId)")
                     break

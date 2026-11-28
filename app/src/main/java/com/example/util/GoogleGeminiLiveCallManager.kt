@@ -61,6 +61,7 @@ class GoogleGeminiLiveCallManager(
         private const val INPUT_SAMPLE_RATE = 16000
         private const val OUTPUT_SAMPLE_RATE = 24000
         private const val LIVE_MODEL_PRIMARY = "gemini-3.8-live"
+        private const val LIVE_MODEL_SECONDARY = "gemini-2.5-flash-native-audio-preview-12-2025"
         private const val LIVE_MODEL_FALLBACK = "gemini-3.1-flash-live-preview"
         private const val LIVE_VOICE = "Charon"
 
@@ -78,8 +79,9 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
 2. OBÉISSANCE EXACTE ET LITTÉRALE À CE QUE L'UTILISATEUR DEMANDE DE DIRE OU DE FAIRE :
    - Si l'utilisateur te demande de DIRE, RÉPÉTER, PRONONCER ou LIRE quelque chose de précis (ex : « Dis ... », « Répète ... », « Prononce ... »), prononce EXACTEMENT et UNIQUEMENT les mots demandés par l'utilisateur, mot pour mot, sans ajouter « Bonjour », « D'accord » ni « Bien sûr ».
    - Si l'utilisateur te demande de FAIRE quelque chose (répondre à une question, expliquer, calculer, traduire, rechercher une information d'actualité en direct), réponds avec précision dès la première phrase.
-3. VOIX D'HOMME HUMAINE NATURELLE ET 100 % FRANÇAIS :
+3. VOIX D'HOMME HUMAINE NATURELLE ET 100 % FRANÇAIS (AUCUNE DIDASCALIE) :
    - Tu es un homme : utilise toujours les accords masculins ("je suis attentif", "je suis prêt").
+   - Ne prononce JAMAIS d'indications de style, de timbre ou de phonétique (ne dis jamais « voix masculine claire », « phonétique », ni aucun texte entre crochets).
    - Parle en français clair, fluide et naturel (sauf si l'utilisateur te demande explicitement de dire ou traduire une phrase dans une autre langue).
 4. ACTUALITÉS & IDENTITÉ EXCLUSIVE SAM AI :
    - Utilise Google Search en direct dès qu'une question porte sur l'actualité récente, les résultats sportifs, la politique, la météo ou des faits récents, sans jamais dire que tes connaissances s'arrêtent en 2023, 2024 ou 2025.
@@ -151,6 +153,9 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     private val _lastConnectionError = MutableStateFlow<String?>(null)
     val lastConnectionError: StateFlow<String?> = _lastConnectionError.asStateFlow()
 
+    private val _lastConnectionIsFatal = MutableStateFlow(false)
+    val lastConnectionIsFatal: StateFlow<Boolean> = _lastConnectionIsFatal.asStateFlow()
+
     private val currentUserTranscriptBuilder = StringBuilder()
     private val currentAiTranscriptBuilder = StringBuilder()
 
@@ -179,6 +184,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         _userTranscript.value = ""
         _aiTranscript.value = ""
         _lastConnectionError.value = null
+        _lastConnectionIsFatal.value = false
         _soundLevel.value = 0f
         scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
@@ -235,8 +241,15 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
     private suspend fun connectLiveSession(liveHeadlines: String): Boolean {
         val apiKey = apiKeyManager.getActiveGeminiLiveApiKey()
         if (apiKey.isBlank()) {
+            _lastConnectionIsFatal.value = true
             _lastConnectionError.value = "Clé API Google Gemini manquante."
             Log.w(TAG, "Clé API Google Gemini manquante pour l'appel Live")
+            return false
+        }
+        if (!ApiKeyManager.hasActiveInternetConnection()) {
+            _lastConnectionIsFatal.value = true
+            _lastConnectionError.value = "Connexion au service d'IA impossible. Vérifiez votre réseau Internet et réessayer."
+            Log.w(TAG, "Aucune connexion Internet active pour l'appel Live")
             return false
         }
 
@@ -244,22 +257,34 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
         val modelsToTry = listOfNotNull(
             preferredWorkingLiveModel,
             LIVE_MODEL_PRIMARY,
+            LIVE_MODEL_SECONDARY,
             LIVE_MODEL_FALLBACK
         ).distinct()
         var lastError: Throwable? = null
-        for (modelName in modelsToTry) {
+        val connectStartMs = System.currentTimeMillis()
+        val totalConnectBudgetMs = 22_000L
+
+        for ((modelIdx, modelName) in modelsToTry.withIndex()) {
             if (!isActiveCall.get()) return false
-            for (useSearchTool in listOf(true, false)) {
+            val searchOptions = if (modelIdx == 0) listOf(true, false) else listOf(false)
+            for (useSearchTool in searchOptions) {
                 if (!isActiveCall.get()) return false
+                val remainingBudgetMs = totalConnectBudgetMs - (System.currentTimeMillis() - connectStartMs)
+                if (remainingBudgetMs < 3_000L) break
+                val attemptTimeoutMs = if (modelIdx == 0 && useSearchTool) {
+                    minOf(10_000L, remainingBudgetMs)
+                } else {
+                    minOf(7_500L, remainingBudgetMs)
+                }
                 try {
-                    Log.d(TAG, "Connexion Google Gemini Live direct avec $modelName (search=$useSearchTool)...")
+                    Log.d(TAG, "Connexion Google Gemini Live direct avec $modelName (search=$useSearchTool, timeout=${attemptTimeoutMs}ms)...")
                     val session = GoogleGeminiDirectClient.connectLiveSession(
                         apiKey = apiKey,
                         model = modelName,
                         systemInstruction = systemInstructionText,
                         voiceName = LIVE_VOICE,
                         enableGoogleSearch = useSearchTool,
-                        setupTimeoutMs = 7_500L
+                        setupTimeoutMs = attemptTimeoutMs
                     )
                     if (!isActiveCall.get()) {
                         try { session.close() } catch (_: Throwable) {}
@@ -269,6 +294,7 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                     liveSession = session
                     sessionReadyAtMs = System.currentTimeMillis()
                     isSessionReady.set(true)
+                    _lastConnectionIsFatal.value = false
                     _lastConnectionError.value = null
                     _callState.value = VoiceCallState.USER_SPEAKING
                     Log.d(TAG, "Google Gemini Live direct connecté ($modelName, search=$useSearchTool)")
@@ -278,8 +304,8 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                     return true
                 } catch (tce: TimeoutCancellationException) {
                     lastError = tce
-                    Log.w(TAG, "Timeout connexion Live sur $modelName (7.5s)")
-                    break
+                    Log.w(TAG, "Timeout connexion Live sur $modelName (search=$useSearchTool, ${attemptTimeoutMs}ms)")
+                    // Si la tentative avec outil googleSearch a expiré, on retente immédiatement sans googleSearch
                 } catch (ce: CancellationException) {
                     throw ce
                 } catch (e: Throwable) {
@@ -288,18 +314,21 @@ RÈGLES ABSOLUES ET STRICTES (ZÉRO ERREUR) :
                     if (e is MissingGeminiApiKeyException ||
                         (e is GeminiApiHttpException && (e.httpCode == 401 || e.httpCode == 403))
                     ) {
+                        _lastConnectionIsFatal.value = true
                         _lastConnectionError.value = GeminiErrorHandler.parse(e).userFriendlyMessage
                         return false
                     }
-                    // Ne réessaie sans outil Google Search que sur erreur de configuration 400
-                    if (!(e is GeminiApiHttpException && e.httpCode == 400 && useSearchTool)) {
+                    // Si l'échec vient du handshake/config avec Google Search, retenter sans outil sur le même modèle
+                    if (!useSearchTool) {
                         break
                     }
                 }
             }
         }
         if (lastError != null) {
-            _lastConnectionError.value = GeminiErrorHandler.parse(lastError).userFriendlyMessage
+            val parsed = GeminiErrorHandler.parse(lastError)
+            _lastConnectionIsFatal.value = parsed.isAuthError || !ApiKeyManager.hasActiveInternetConnection()
+            _lastConnectionError.value = parsed.userFriendlyMessage
         }
         return false
     }
